@@ -1,7 +1,7 @@
 # TMB reference records
 
-Recorded 2026-11-02 on TMB_Recomp branch `harness/reference` (63cbddc) with the PS2Recomp fork's `native/renderer`
-(711b88b), deterministic mode (`PS2X_DETERMINISTIC=1`), each from a fresh user folder. Format:
+Recorded 2026-11-02 on TMB_Recomp branch `harness/reference` (c83a924) with the PS2Recomp fork's `native/renderer`
+(df2dfe2), deterministic mode (`PS2X_DETERMINISTIC=1`), each from a fresh user folder. Format:
 TMB_Recomp's `docs/REFERENCE_HARNESS.md` (`PS2XREF1`, 80 bytes per game frame: hashes of RAM, scratchpad, calls, draw
 list, threads, sound). Every run was recorded twice and both records are identical on every field; one of each is
 kept here. They contain hashes and counts only, no game data.
@@ -9,10 +9,11 @@ kept here. They contain hashes and counts only, no game data.
 | Record | Script (`scripts/`) | Frames | What |
 |---|---|---|---|
 | `boot.ref` | `ref_boot.env` (no input) | 3000 | Boot, logos, intro movie, title |
-| `match1p.ref` | `det1p.env` (`ch1p_frames.txt`) | 16000 | Challenge, Junkyard, one player with bots |
+| `match1p.ref` | `det1p.env` (`ch1p_frames.txt`) | 16000 | Challenge, one player with bots |
 | `match4p.ref` | `det4p.env` (`p1`-`p4_frames.txt`) | 17000 | Four-player split screen (no bots) |
 | `story.ref` | `ref_story.env` (`story_frames.txt`, invincible) | 11000 | Story from the start: stage 1, the Junkyard |
-| `stage-level2.ref` | `ref_2.env` | 11000 | Story started at stage 2, Midtown Expressway 104 |
+| `stage-level0.ref` | `ref_0.env` | 11000 | Story started at stage 2, Midtown Suburbs |
+| `stage-level2.ref` | `ref_2.env` | 11000 | Stage 2, Midtown Expressway 104 |
 | `stage-level5.ref` | `ref_5.env` | 11000 | Stage 3, Downtown Business District |
 | `stage-level6.ref` | `ref_6.env` | 11000 | Stage 3, Black Vista Highway |
 | `stage-level14.ref` | `ref_14.env` | 11000 | Stage 4, Minion's Stadium |
@@ -21,21 +22,19 @@ kept here. They contain hashes and counts only, no game data.
 | `stage-level4.ref` | `ref_4.env` | 11000 | Stage 7, Abandoned Skyscrapers |
 | `stage-level13.ref` | `ref_13.env` | 11000 | Rooftops, second part |
 | `stage-level20.ref` | `ref_20.env` | 11000 | Stage 8, Warhawk's Rooftop |
-| `stage-level0.ref` | `ref_0.env` | **4855** | Stage 2, Midtown Suburbs: **the game freezes at frame 4855** in both runs |
-
-## The Midtown Suburbs freeze
-
-At frame 4855 the game thread loops in `pktAddVu1ObjAsm` (0x1eabc4: the copy of an object's texture register
-blocks, the count from the object's +0x5a) with an object pointer that does not point at an object; its stack
-pointer and gp read 0 afterwards (overwritten). A normal-mode run of the same stage played ~15000 frames without it,
-with different input timing. Not known yet whether the game itself can do this or a runtime bug corrupts memory
-before; the deterministic mode reproduces it every time (`PS2X_REFERENCE_DUMP` around frame 4850).
 
 `run.sh` is the runner used (paths of the recording machine).
 
-Findings so far (2026-11-02): the bytes overwritten come from the sound driver's EE side (`unloadShellSoundBanks`,
-`loadRTSoundBanks`, `snd_UnloadBank`, `snd_GotReturns`), writing at 0xa22d28, inside the menus' `SHELL1.NGP` image,
-after `SUBURB.NGP` was loaded over it at 0x980000. Not seen on the natural path (Junkyard, shell reload, then
-Suburbs) nor in a Challenge match on Suburbs: only when a story **starts** at Suburbs through the `Story: start at`
-cheat. The runtime's malloc is not involved (never above 0x7585a0). Next: compare the sound bank calls' arguments
-on both paths (`PS2X_LOG_CALLS_TO`, diagnosis build in TMB's harness worktree).
+## The Midtown Suburbs freeze (found and fixed in the harness)
+
+The first recordings froze at frame 4855 of `stage-level0` (both runs): the game drew an object whose header had been
+overwritten and looped on its garbage texture count. Traced with a memory watch: the bytes were written by the IOP's
+sound driver answering the menus' sound teardown (`unloadShellSoundBanks`, `sceSifCallRpc` to 989SND's service
+0x123456), into memory the menus' `SHELL1.NGP` had used and `SUBURB.NGP` had just been loaded over. The cause was
+the deterministic mode itself: a disc read took no EE time, so the IOP (advanced only by EE cycles) barely ran during
+a level load and answered late. A disc read now takes a PS2 drive's time in deterministic mode (fork df2dfe2:
+114,400 EE cycles a sector, DVD at 4x), the IOP keeps pace, and every record above was re-recorded with it. Normal
+play was never affected (the IOP runs on real time there).
+
+Lesson for BozoEngine: the runtime's time model must give the IOP side (or its native replacement) the time a load
+takes, or replies the game expects before a load land after it.
