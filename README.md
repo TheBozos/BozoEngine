@@ -1,4 +1,4 @@
-# BozoRecomp
+# BozoEngine
 
 The Bozos' own toolchain for native PC ports of PlayStation 2 games: a static recompiler for the game's EE code, and a
 runtime that answers the game's calls with native PC code. **No PS2 hardware at any level**: no GS, no VU, no VIF/GIF,
@@ -12,7 +12,7 @@ Status: **planning**. Nothing here runs yet. See [docs/PLAN.md](docs/PLAN.md).
 Our ports (Twisted Metal: Black first) run today on a fork of [PS2Recomp](https://github.com/ran-j/PS2Recomp). That
 fork carries a full PS2 emulation stack (GS rasterizers, VU interpreters and JIT, VIF/GIF, the IOP interpreter, SPU2)
 which the native ports have spent months routing around, and most of its core is someone else's code under GPL-3.0.
-BozoRecomp is the native path only, written by us, under our licence:
+BozoEngine is the native path only, written by us, under our licence:
 
 - **Own it.** Code written by The Bozos, MIT-licensed. Nothing copied from PS2Recomp or any other project (see
   "Clean room" in the plan).

@@ -1,4 +1,4 @@
-# BozoRecomp: the plan
+# BozoEngine: the plan
 
 Our own toolchain, native only, replacing the PS2Recomp fork under TMB_Recomp (and later the team's other ports).
 Written 2026-11-02, from the state of TMB_Recomp 0.3.2 and the fork's `native/renderer` branch.
@@ -36,7 +36,7 @@ Goals:
 - At least as fast as today (5 ms of work per busy frame on the reference PC), build time no worse.
 
 Non-goals:
-- Running games that need hardware emulation. A port on BozoRecomp replaces each hardware-driving path natively
+- Running games that need hardware emulation. A port on BozoEngine replaces each hardware-driving path natively
   (as TMB already did) before it moves.
 - Decompilation. The game's own logic stays recompiled machine code; readable source is the decomp projects' work
   (tmb_decomp asks that no one port its code until it nears completion: we respect that).
@@ -68,7 +68,7 @@ Key choices:
   surface: `R5900Context` / `getRegU32` (~270 uses), function overrides by address, the native renderer and packs,
   a few scheduler calls. Keeping the shape lets TMB move with mechanical changes only.
 - **No IOP.** Today the game's IOP modules (989SND, PADMAN, MCMAN, ...) are recompiled and run on an IOP kernel. In
-  BozoRecomp the EE side of each library talks to a native driver directly: the pad library reads the PC's input, the
+  BozoEngine the EE side of each library talks to a native driver directly: the pad library reads the PC's input, the
   memory card library reads and writes native save files, the sound library's calls drive the native mixer. No IOP
   recompiler, no IOP kernel, no SIF.
 - **No DMA, VIF, GIF, GS, VU.** The game's draw calls are hooked where the port's native renderer takes them (TMB
@@ -104,7 +104,7 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
 - Guest memory (RAM, scratchpad), the function table and overrides, the EE kernel services TMB uses (threads,
   semaphores, event flags, alarms, vblank and timer handlers as the game installs them), the scheduler with native
   frame pacing (as `FramePacer` does today), file access to the ISO.
-- Exit: TMB boots to its title screen on BozoRecomp with the recorded kernel call trace identical to the reference.
+- Exit: TMB boots to its title screen on BozoEngine with the recorded kernel call trace identical to the reference.
 
 **Phase 3: native libraries (4-6 weeks).**
 - Pad (and multitap, 4 players), memory card (native save files, plus an importer for today's `mc0`/`mc1` card
@@ -114,15 +114,15 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
 - Exit: every scripted run matches the reference hashes (RAM, calls, draw list, sound) for its whole length.
 
 **Phase 4: move TMB (1-2 weeks).**
-- TMB_Recomp builds against BozoRecomp: its `runtime/` adapted (mechanical), the build kit and launcher pointed at
+- TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at
   the new tree, the release workflow updated.
 - Both builds side by side for a release cycle; players get the new one when the comparison is clean on every
   stage and arena and a few people have played it.
-- Exit: a TMB release built on BozoRecomp, the fork retired for TMB.
+- Exit: a TMB release built on BozoEngine, the fork retired for TMB.
 
 **Phase 5: the other ports (each when ready).**
 - CoN, VP2S, SC3, JC2, DC and the rest move when their native path no longer needs the fork's emulation, each with its
-  own reference recording. BozoRecomp takes their game-generic pieces (library implementations, renderer features)
+  own reference recording. BozoEngine takes their game-generic pieces (library implementations, renderer features)
   as they come.
 
 Total for TMB: roughly 12-18 weeks.
@@ -166,10 +166,10 @@ instead. To confirm: whose is `gitea@barrut.me` (5,000+ runtime lines)?
   trace comparison from the first boot; the deterministic mode.
 - **The sound driver.** 989SND's API is large. Mitigation: start from the calls TMB makes (recorded), our native
   mixer already plays them today.
-- **Scope creep from the other ports.** Each moves on its own schedule; BozoRecomp does not take emulation back.
+- **Scope creep from the other ports.** Each moves on its own schedule; BozoEngine does not take emulation back.
 
 ## 9. Open questions
 
-- Name (BozoRecomp is a working name), public or private until it runs.
+- Public or private until it runs (created private).
 - raylib (as today) or SDL3 for window and input: the plan works with either; SDL3 is a separate decision.
 - The authorship check of section 7 for Arzaroth's commits.
