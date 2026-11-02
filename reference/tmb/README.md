@@ -22,6 +22,7 @@ kept here. They contain hashes and counts only, no game data.
 | `stage-level4.ref` | `ref_4.env` | 11000 | Stage 7, Abandoned Skyscrapers |
 | `stage-level13.ref` | `ref_13.env` | 11000 | Rooftops, second part |
 | `stage-level20.ref` | `ref_20.env` | 11000 | Stage 8, Warhawk's Rooftop |
+| `save.ref` | `ref_save.env` (`story_frames.txt`, invincible, enemies destroyed every 750 updates) | 20000 | Story: the Junkyard won, the save to the memory card (icon.sys, LISTICON.ICO, the save, globalFile written then read back), Midtown Suburbs loaded |
 
 `run.sh` is the runner used (paths of the recording machine).
 

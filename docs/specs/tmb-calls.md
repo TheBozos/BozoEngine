@@ -52,7 +52,8 @@ direct C++ call is not recorded (a known gap of the recorder).
 
 | Call | Count | Must do |
 |---|---|---|
-| `sceMcInit`, `sceMcGetInfo`, `sceMcGetDir`, `sceMcSync` | 3-69 | Two cards (slot 1, 2), formatted, free space, the save folder's files; saves stored as native files. The open / read / write / close calls of saving and loading are not in these recordings (a save/load run is still to record) |
+| `sceMcInit`, `sceMcGetInfo`, `sceMcGetDir`, `sceMcSync` | 3-69 | Two cards (slot 1, 2), formatted, free space, the save folder's files; saves stored as native files |
+| `sceMcOpen`, `sceMcRead`, `sceMcWrite`, `sceMcClose` (and the card's `sceMcMkdir`) | (the `save` run) | The folder `BASCUS-97101`: `icon.sys` and `LISTICON.ICO` created and written (flags 0x203), the save file `BASCUS-97101` written then read (0x3, 0x1), `globalFile` (options, unlocks, progress) read at boot (missing on a fresh card: -4) and written after a level (0x202) |
 
 ## 6. Disc
 
@@ -80,5 +81,4 @@ direct C++ call is not recorded (a known gap of the recorder).
 
 ## Not seen yet
 
-Saving and loading (`sceMcOpen` / `Read` / `Write` / `Close`), the options screens, every story ending: to record
-(`save` run and longer story runs).
+The options screens and every story ending: to record (longer story runs).
