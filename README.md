@@ -1,3 +1,5 @@
+<img src="docs/branding/bozoengine_banner.png" alt="BozoEngine" width="100%">
+
 # BozoEngine
 
 The Bozos' own toolchain for native PC ports of PlayStation 2 games: a static recompiler for the game's EE code, and a
@@ -31,7 +33,8 @@ BozoEngine is the native path only, written by us, under our licence:
 | `render/`, `audio/` | The native renderer and mixer (moved from our PS2Recomp fork, where we wrote them) |
 | `app/` | Window, input, settings, launcher hooks |
 | `tests/` | Our own tests |
-| `docs/` | The plan, the specs the code is written from |
+| `docs/` | The plan, the specs the code is written from, the branding (`docs/branding/`) |
+| `tools/branding/` | `make_logo.py`: The Bozos' logos for any port (`python make_logo.py port <name> "<TITLE>" "<SUBTITLE>" [fire]`; `--help`) |
 
 ## Licence
 

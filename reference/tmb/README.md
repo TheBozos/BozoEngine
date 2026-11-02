@@ -32,3 +32,10 @@ with different input timing. Not known yet whether the game itself can do this o
 before; the deterministic mode reproduces it every time (`PS2X_REFERENCE_DUMP` around frame 4850).
 
 `run.sh` is the runner used (paths of the recording machine).
+
+Findings so far (2026-11-02): the bytes overwritten come from the sound driver's EE side (`unloadShellSoundBanks`,
+`loadRTSoundBanks`, `snd_UnloadBank`, `snd_GotReturns`), writing at 0xa22d28, inside the menus' `SHELL1.NGP` image,
+after `SUBURB.NGP` was loaded over it at 0x980000. Not seen on the natural path (Junkyard, shell reload, then
+Suburbs) nor in a Challenge match on Suburbs: only when a story **starts** at Suburbs through the `Story: start at`
+cheat. The runtime's malloc is not involved (never above 0x7585a0). Next: compare the sound bank calls' arguments
+on both paths (`PS2X_LOG_CALLS_TO`, diagnosis build in TMB's harness worktree).
