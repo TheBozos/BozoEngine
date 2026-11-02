@@ -1,0 +1,4 @@
+# Build trees
+/build*/
+# Generated code (from a game executable: never committed)
+/gen*/
