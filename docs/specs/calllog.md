@@ -455,4 +455,6 @@ record that settled it. Points this document leaves implicit, read from the logs
   switch (`kernel.md` section 3).
 - The reference record's `calls` leaves out a named stub reached by a jump and one the dispatcher runs at the bottom of
   a thread (`kernel.md` section 5).
-- Open: `kernel.md` section 9, K1 and K2 (match1p frame 5591).
+- A record's `pc` is the context's pc when it was made, not always where guest code stopped: an event taken in the
+  middle of bspVecTestIn's recursion records the recursive call's return address (match1p #18297743).
+- Open: `kernel.md` section 9, K1 (match1p frame 5773).

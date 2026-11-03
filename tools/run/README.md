@@ -46,9 +46,9 @@ The exit status is 0 when the whole log was made again with no divergence and ev
 The first record that differs stops the run:
 
 ```
-DIVERGENCE 1: vu0 0xab0: cycle 29551686356 (log 29551686372, -16); checkpoints since the last out-call: 54 (log 56)
-  log:  #17537437 CALL f5591 c29551686372 s9346104 t1 ckp56 pc 0x1cf7e0 vu0 0xab0 ra 0x1cf0a0 ...
-  here: frame 5591, cycle 29551686356, seq 9346104, thread 1 depth 0, pc 0x1cf7e0, sp 0x8ff260, 54 checkpoints ...
+DIVERGENCE 1: stub 0x21d0b8: cycle 30445672635 (log 30445672539, +96); checkpoints since the last out-call: 98 (log 86)
+  log:  #18297744 CALL f5773 c30445672539 s10068856 t1 ckp86 pc 0x21d0b8 stub 0x21d0b8 ra 0x1d116c ...
+  here: frame 5773, cycle 30445672635, seq 10068856, thread 1 depth 0, pc 0x21d0b8, sp 0x8ff230, 98 checkpoints ...
 ```
 
 `log` is the record (its index in the file, frame, cycle, seq, thread, checkpoints and pc, then its fields) and `here`
@@ -59,7 +59,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 
 | Run | Frames matching on every field | Records | Time |
 |---|---|---|---|
-| boot (`boot.clg`, 194 MB) | 3000 of 3000 | 4,650,558 of 4,650,558 | 13.4 s |
-| match1p (`match1p.clg`, 3.46 GB, streamed) | 5,591 of 16000 | 17,537,437 of 74,615,923 | 32 s |
+| boot (`boot.clg`, 194 MB) | 3000 of 3000 | 4,650,558 of 4,650,558 | 13.5 s |
+| match1p (`match1p.clg`, 3.46 GB, streamed) | 5,773 of 16000 | 18,297,744 of 74,615,923 | 35 s |
 
-What stops match1p: `kernel.md` section 9 (K1, K2).
+What stops match1p: `kernel.md` section 9 (K1).

@@ -89,6 +89,7 @@ dispatcher adds, all from the logs:
 | A call (`jal`, `jalr`, `bal`...) | 8, before the callee | yes, resuming at the target (the callee's entry or the stub) |
 | A call to a label inside the same function (texmActivateTextureAsm's calls to texmUpdateLastUsedAsm and texmFindVramSpaceAsm) | 8; a goto | no; the return to its return address is a stopping point (0 cycles) (boot frame 2088: the event taken at pc 0x1fba84, after the callee ran) |
 | A recursive call to the function's own start | 8, an ordinary call | yes (match1p #17531044) |
+| A return (`jr ra`) to anything but those calls' return addresses, by an invocation that made a recursive call or a call to one of its own labels | 0; it goes through the dispatcher (the frames below are gone) | yes |
 | A `jr` through any register but ra (a copy of ra included), and a jump table the reference does not resolve | 8, then the jump goes through the dispatcher (the jumping function's frame is gone) | yes |
 | A jump table the reference resolves: its base built in place (`lui r; addiu r, r, lo`) and an `sltiu` range check before it | 0, a switch | no |
 | A direct `j` or branch to another function, falling into the next function | 0 | no |
@@ -170,25 +171,25 @@ and traced calls, then the PS2XREF1 record.
 
 | Run | Frames | Matching (ram, scratchpad, calls, threads, eeCycle) | Records matched | Time |
 |---|---|---|---|---|
-| boot | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 13.4 s |
-| match1p | 16000 | 5,591 (frames 0-5590) on every field | 17,537,437 | 32 s |
+| boot | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 13.5 s |
+| match1p | 16000 | 5,773 (frames 0-5772) on every field | 18,297,744 of 74,615,923 | 35 s |
 
 ## 9. Open questions
 
-**K1. The cost of a recursive call's return in bspVecTestIn (match1p frame 5591).** The reference's cycle count is
-higher than BozoEngine's in stretches that call `bspVecTest` (a FUNC of 8 bytes whose `j` goes to `bspVecTestIn`, the
-next FUNC, which calls its own start): #17537437 +2 checkpoints (+16 cycles) for one call with 7 levels of recursion,
-#17538428 +4 (+32) for three calls of one level, #17560020 +3 (+24) for one call of 4 levels. Every count fits "the
-return from bspVecTestIn to its caller goes through the dispatcher, and so does each lost caller's return after it",
-but making every return out of a self-recursive function, or out of every function with calls to its own labels, go
-through the dispatcher breaks boot at frames 1 and 2. What sets bspVecTest apart (a thunk jumping to the next
-function) is the likely key; the rule is not settled.
+**K1. A recursion stopped or resumed in the middle (match1p frame 5773, #18297744).** bspVecTestIn (entered through
+bspVecTest, a FUNC of two instructions whose `j` goes to it) recurses about 17 levels; a vblank is due at the
+checkpoint of its call to bspPlaneTest2Vec. The log takes the event at the same cycle and checkpoint count (44) but
+records pc 0x201418, the return address of the recursive call, and the 42 checkpoints after it hold 12 dispatcher
+starts fewer than BozoEngine's: as if the stop happened at the recursion's return point and the lost levels then
+returned to each other without the dispatcher. The model that fits this record (a call to the function's own start is
+a goto for a function entered through such a thunk, its return addresses a stopping point, no stop between) breaks
+#17531044 (_M_erase, resumed mid-recursion after the port's override 0x1f8868 returned there: its lost levels do go
+through the dispatcher) and #17538427 (bspVecTestIn resumed at 0x201418 after the override 0x1d2ea0 returned there:
+two more dispatcher starts). What makes a stop at a recursion's return point differ from a resume there after an
+override is the open point.
 
-**K2. texmActivateTextureAsm's loop through texmFindVramSpaceAsm (match1p #17538483, 4,835 times with the cycle
-resynced).** The path bgez 0x1fbb8c, internal call to 0x1fbbec, bne back to 0x1fba94, a second internal call from
-0x1fbacc, then `jr ra` costs one 8-cycle checkpoint more in the reference than here; the same function's paths that
-leave through `jr t9` (boot: 18,016 calls) match. Possibly the same mechanism as K1 (a return out of a function that
-made calls to its own labels going through the dispatcher), which boot rules out as a general rule.
+**K2.** (settled) texmActivateTextureAsm's return after its calls to texmFindVramSpaceAsm (#17538483) and
+bspVecTestIn's return after it recursed (#17537437, #17538428, #17538329) go through the dispatcher (section 3).
 
 **K3.** Not reached by TMB, implemented from the EE kernel's documented behaviour only: alarms, event flags,
 suspend/resume, sleep/wakeup, `ReferThreadStatus`, `SetVSyncFlag` and the GS vsync callback (the kernel records the
