@@ -14,6 +14,14 @@
 //                                                         made inside other out-calls included
 //   bozo-calllog-tool writes <log.clg> <lo> <hi> [from] [to]
 //                                                         the records whose memory runs touch [lo, hi)
+//   bozo-calllog-tool memory <log.clg> <record> <out> <lo> <hi>
+//                                                         guest memory in [lo, hi) as of the end of a record
+//   bozo-calllog-tool extract <log.clg> <record> <out> <lo> <hi>
+//                                                         the bytes a record's runs hold in [lo, hi) (and a mask)
+//   bozo-calllog-tool io <log.clg>                        per hardware register: loads and stores, their values,
+//                                                         what they change and the operations made inside them
+//   bozo-calllog-tool range <log.clg> <from> <to> [bytes] [types]
+//                                                         every record in [from, to), one line each
 #include "calllog.h"
 
 #include <algorithm>
@@ -21,6 +29,8 @@
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
+#include <vector>
 
 namespace
 {
@@ -378,6 +388,355 @@ namespace
         }
         return 0;
     }
+
+    // Per hardware register (io-load and io-store out-calls): calls, the values loaded or stored (the most frequent
+    // ones), the context words and memory they change, and the operations made inside them.
+    int io(const char *path)
+    {
+        Reader log;
+        if (!log.open(path))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        struct Stats
+        {
+            uint64_t calls = 0, withRuns = 0, cycles = 0;
+            std::map<uint64_t, uint64_t> values;
+            std::set<uint32_t> words;
+            std::map<std::string, uint64_t> inside;
+        };
+        std::map<std::tuple<uint32_t, uint32_t, uint32_t>, Stats> stats; // (kind, address, size)
+        Stats *last = nullptr;
+        std::string err;
+        Call c;
+        while (const Record *r = log.peek())
+        {
+            if (r->type == kCall)
+            {
+                last = nullptr;
+                if (parse(*r, c, err) && (c.kind == kIoLoad || c.kind == kIoStore))
+                {
+                    Stats &s = stats[{c.kind, c.target, c.size}];
+                    last = &s;
+                    ++s.calls;
+                    if (!c.runs.empty())
+                        ++s.withRuns;
+                    s.cycles += c.cycleAfter - r->cycle;
+                    ++s.values[c.value[0] | (static_cast<uint64_t>(c.value[1]) << 32)];
+                    for (const auto &w : c.words)
+                        s.words.insert(w.first);
+                }
+            }
+            else if (r->inside() && last)
+            {
+                std::string k = typeName(r->type);
+                if (r->type == kOp)
+                {
+                    Op o;
+                    if (parse(*r, o, err))
+                    {
+                        k += " " + std::to_string(r->sub) + ":";
+                        for (size_t a = 0; a < o.args.size() && a < 3; ++a)
+                            k += " " + std::to_string(o.args[a]);
+                    }
+                }
+                ++last->inside[k];
+            }
+            else
+                last = nullptr;
+            log.advance();
+        }
+        for (const auto &[key, s] : stats)
+        {
+            std::printf("%s 0x%08x size %u: %llu calls, %llu with runs, %llu cycles\n", kindName(std::get<0>(key)),
+                        std::get<1>(key), std::get<2>(key), static_cast<unsigned long long>(s.calls),
+                        static_cast<unsigned long long>(s.withRuns), static_cast<unsigned long long>(s.cycles));
+            std::vector<std::pair<uint64_t, uint64_t>> v(s.values.begin(), s.values.end());
+            std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
+            std::printf("  %zu values:", v.size());
+            for (size_t i = 0; i < v.size() && i < 12; ++i)
+                std::printf(" %llx x%llu", static_cast<unsigned long long>(v[i].first), static_cast<unsigned long long>(v[i].second));
+            std::printf("\n  words:");
+            for (uint32_t w : s.words)
+                std::printf(" %u", w);
+            std::printf("\n");
+            for (const auto &[k, n] : s.inside)
+                std::printf("  inside %s x%llu\n", k.c_str(), static_cast<unsigned long long>(n));
+        }
+        return 0;
+    }
+
+    // Guest memory in [lo, hi) as of the end of a record: INIT and every record's runs applied in order up to it (a
+    // FRAME inside a call before the call's own runs, which are the call's final state).
+    int memory(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        const uint64_t upto = std::stoull(argv[3]);
+        const uint32_t lo = static_cast<uint32_t>(std::stoul(argv[5], nullptr, 0));
+        const uint32_t hi = static_cast<uint32_t>(std::stoul(argv[6], nullptr, 0));
+        std::vector<uint8_t> data(hi - lo);
+        std::string err;
+        auto apply = [&](const std::vector<Run> &runs) {
+            for (const Run &run : runs)
+            {
+                const uint32_t a = std::max(run.address, lo), b = std::min(run.address + run.length, hi);
+                for (uint32_t x = a; x < b; ++x)
+                    data[x - lo] = run.data[x - run.address];
+            }
+        };
+        Call c;
+        Mem m;
+        Frame f;
+        bool deferred = false;
+        std::vector<std::pair<uint32_t, std::vector<uint8_t>>> later;
+        while (const Record *r = log.peek())
+        {
+            if (r->index > upto)
+                break;
+            if (r->type == kCall && parse(*r, c, err))
+            {
+                if (deferred)
+                    for (auto &[a, d] : later)
+                        apply({Run{a, static_cast<uint32_t>(d.size()), d.data()}});
+                deferred = (r->flags & kFrameInside) != 0;
+                later.clear();
+                if (deferred)
+                    for (const Run &run : c.runs)
+                        later.emplace_back(run.address, std::vector<uint8_t>(run.data, run.data + run.length));
+                else
+                    apply(c.runs);
+            }
+            else if ((r->type == kMem || r->type == kInit) && parse(*r, m, err))
+                apply(m.runs);
+            else if (r->type == kFrame && parse(*r, f, err))
+            {
+                apply(f.runs);
+                for (auto &[a, d] : later)
+                    apply({Run{a, static_cast<uint32_t>(d.size()), d.data()}});
+                later.clear();
+                deferred = false;
+            }
+            log.advance();
+        }
+        for (auto &[a, d] : later)
+            apply({Run{a, static_cast<uint32_t>(d.size()), d.data()}});
+        std::FILE *o = std::fopen(argv[4], "wb");
+        if (!o)
+            return 1;
+        std::fwrite(data.data(), 1, data.size(), o);
+        std::fclose(o);
+        return 0;
+    }
+
+    // The bytes one record's memory runs hold in [lo, hi), as a file of hi - lo bytes, and a mask file (1 where a run
+    // covers the byte): to compare what a call or continuation wrote with a native answer offline.
+    int extract(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        const uint64_t index = std::stoull(argv[3]);
+        const uint32_t lo = static_cast<uint32_t>(std::stoul(argv[5], nullptr, 0));
+        const uint32_t hi = static_cast<uint32_t>(std::stoul(argv[6], nullptr, 0));
+        std::vector<uint8_t> data(hi - lo), mask(hi - lo);
+        std::string err;
+        while (const Record *r = log.peek())
+        {
+            if (r->index == index)
+            {
+                Call c;
+                Mem m;
+                Frame f;
+                const std::vector<Run> *runs = nullptr;
+                if (r->type == kCall && parse(*r, c, err))
+                    runs = &c.runs;
+                else if ((r->type == kMem || r->type == kInit) && parse(*r, m, err))
+                    runs = &m.runs;
+                else if (r->type == kFrame && parse(*r, f, err))
+                    runs = &f.runs;
+                if (runs)
+                    for (const Run &run : *runs)
+                        for (uint32_t i = 0; i < run.length; ++i)
+                            if (run.address + i >= lo && run.address + i < hi)
+                            {
+                                data[run.address + i - lo] = run.data[i];
+                                mask[run.address + i - lo] = 1;
+                            }
+                break;
+            }
+            log.advance();
+        }
+        const std::string out = argv[4];
+        std::FILE *a = std::fopen(out.c_str(), "wb"), *b = std::fopen((out + ".mask").c_str(), "wb");
+        if (!a || !b)
+            return 1;
+        std::fwrite(data.data(), 1, data.size(), a);
+        std::fwrite(mask.data(), 1, mask.size(), b);
+        std::fclose(a);
+        std::fclose(b);
+        return 0;
+    }
+
+    // Every record between two record indexes, one line each (a CALL's runs and traces below it).
+    int range(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        const uint64_t from = std::stoull(argv[3]), to = std::stoull(argv[4]);
+        const uint32_t bytesShown = argc > 5 ? static_cast<uint32_t>(std::stoul(argv[5])) : 16;
+        // Optionally only some record types: "MEM,CTX"...
+        std::set<std::string> types;
+        if (argc > 6)
+            for (size_t at = 0; at != std::string::npos;)
+            {
+                const std::string a = argv[6];
+                const size_t comma = a.find(',', at);
+                types.insert(a.substr(at, comma == std::string::npos ? std::string::npos : comma - at));
+                at = comma == std::string::npos ? comma : comma + 1;
+            }
+        const auto &names = log.names();
+        std::string err;
+        auto runs = [&](const std::vector<Run> &rs) {
+            for (const Run &run : rs)
+            {
+                std::printf("    run 0x%x +%u:", run.address, run.length);
+                for (uint32_t i = 0; i < run.length && i < bytesShown; ++i)
+                    std::printf(" %02x", run.data[i]);
+                std::printf(run.length > bytesShown ? " ...\n" : "\n");
+            }
+        };
+        while (const Record *r = log.peek())
+        {
+            if (r->index >= to)
+                break;
+            if (r->index >= from && (types.empty() || types.count(typeName(r->type))))
+            {
+                std::printf("#%llu %s%s f%u c%llu s%llu t%d ckp%u pc %x", static_cast<unsigned long long>(r->index),
+                            typeName(r->type), r->inside() ? "(in)" : "", r->frame, static_cast<unsigned long long>(r->cycle),
+                            static_cast<unsigned long long>(r->seq), r->thread, r->checkpoints, r->pc);
+                switch (r->type)
+                {
+                case kCall:
+                {
+                    Call c;
+                    if (!parse(*r, c, err))
+                        break;
+                    auto it = names.find(c.target);
+                    std::printf(" %s 0x%x %s size %u v %x %x %x %x ra %x +%llu flags %x timer %u/%u\n", kindName(c.kind), c.target,
+                                it != names.end() ? it->second.name.c_str() : "", c.size, c.value[0], c.value[1], c.value[2],
+                                c.value[3], c.ra, static_cast<unsigned long long>(c.cycleAfter - r->cycle), r->flags, c.timerBefore,
+                                c.timerAfter);
+                    if (!c.words.empty())
+                    {
+                        std::printf("    words:");
+                        for (const auto &[w, v] : c.words)
+                            std::printf(" w%u=%x", w, v);
+                        std::printf("\n");
+                    }
+                    runs(c.runs);
+                    for (const Trace &t : c.traces)
+                        std::printf("    trace %08x @%x a %x %x %x %x v0 %x flags %x\n", t.id, t.address, t.a[0], t.a[1], t.a[2],
+                                    t.a[3], t.v0, t.flags);
+                    break;
+                }
+                case kOp:
+                {
+                    Op o;
+                    if (parse(*r, o, err))
+                    {
+                        std::printf(" op %u origin %u depth %u call %lld:", r->sub, o.origin, o.depth,
+                                    static_cast<long long>(o.originCall));
+                        for (uint32_t a : o.args)
+                            std::printf(" %x", a);
+                        std::printf(" wide %llx", static_cast<unsigned long long>(o.wide));
+                    }
+                    std::printf("\n");
+                    break;
+                }
+                case kMem:
+                {
+                    Mem m;
+                    if (parse(*r, m, err))
+                    {
+                        std::printf(" source %u call %lld\n", r->sub, static_cast<long long>(m.originCall));
+                        runs(m.runs);
+                    }
+                    else
+                        std::printf("\n");
+                    break;
+                }
+                case kCtx:
+                {
+                    Ctx c;
+                    if (parse(*r, c, err))
+                    {
+                        std::printf(" thread %d depth %u:", c.thread, c.depth);
+                        for (const auto &[w, v] : c.words)
+                            std::printf(" w%u=%x", w, v);
+                    }
+                    std::printf("\n");
+                    break;
+                }
+                case kInvoke:
+                {
+                    Invoke v;
+                    if (parse(*r, v, err))
+                        std::printf(" kind %u thread %d depth %u pc %x a %x %x %x %x gp %x sp %x ra %x seq %llu flags %u tag %llx",
+                                    r->sub, v.thread, v.depth, v.pc, v.a[0], v.a[1], v.a[2], v.a[3], v.gp, v.sp, v.ra,
+                                    static_cast<unsigned long long>(v.sequence), v.flags, static_cast<unsigned long long>(v.tag));
+                    std::printf("\n");
+                    break;
+                }
+                case kInvokeEnd:
+                {
+                    InvokeEnd v;
+                    if (parse(*r, v, err))
+                        std::printf(" kind %u thread %d depth %u v0 %x v1 %x seq %llu", r->sub, v.thread, v.depth, v.v0, v.v1,
+                                    static_cast<unsigned long long>(v.sequence));
+                    std::printf("\n");
+                    break;
+                }
+                case kSwitch:
+                {
+                    Switch w;
+                    if (parse(*r, w, err))
+                        std::printf(" %d/%u -> %d/%u reason %u wait %u %u %llx", w.from, w.fromDepth, w.to, w.toDepth, r->sub,
+                                    w.waitReason, w.waitObject, static_cast<unsigned long long>(w.token));
+                    std::printf("\n");
+                    break;
+                }
+                case kFrame:
+                {
+                    Frame f;
+                    if (parse(*r, f, err))
+                    {
+                        std::printf(" ended %u runs %zu traces %zu\n", f.ended, f.runs.size(), f.traces.size());
+                        runs(f.runs);
+                    }
+                    else
+                        std::printf("\n");
+                    break;
+                }
+                default: std::printf("\n"); break;
+                }
+            }
+            log.advance();
+        }
+        return 0;
+    }
 }
 
 int main(int argc, char **argv)
@@ -393,10 +752,22 @@ int main(int argc, char **argv)
         return calls(argc, argv);
     if (cmd == "writes" && argc >= 5)
         return writes(argc, argv);
+    if (cmd == "memory" && argc >= 7)
+        return memory(argc, argv);
+    if (cmd == "extract" && argc >= 7)
+        return extract(argc, argv);
+    if (cmd == "io" && argc >= 3)
+        return io(argv[2]);
+    if (cmd == "range" && argc >= 5)
+        return range(argc, argv);
     std::fprintf(stderr, "usage: bozo-calllog-tool externals <out.txt> <log.clg>... [--merge <externals.txt>]\n"
                          "       bozo-calllog-tool survey <log.clg>\n"
                          "       bozo-calllog-tool dump <log.clg> <target>[,<target>...] [n] [skip]\n"
                          "       bozo-calllog-tool calls <log.clg> <name>[,<name>...]\n"
-                         "       bozo-calllog-tool writes <log.clg> <lo> <hi> [from record] [to record]\n");
+                         "       bozo-calllog-tool writes <log.clg> <lo> <hi> [from record] [to record]\n"
+                         "       bozo-calllog-tool memory <log.clg> <record> <out.bin> <lo> <hi>\n"
+                         "       bozo-calllog-tool extract <log.clg> <record> <out.bin> <lo> <hi>\n"
+                         "       bozo-calllog-tool io <log.clg>\n"
+                         "       bozo-calllog-tool range <log.clg> <from record> <to record> [bytes shown] [types]\n");
     return 2;
 }
