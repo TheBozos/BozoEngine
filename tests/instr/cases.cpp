@@ -58,7 +58,8 @@ namespace itest
         // FCR31 flag bits (r5900.md "FPU"): invalid, division by zero, overflow, underflow, and their sticky copies.
         constexpr uint32_t kI = 1u << 17, kD = 1u << 16, kO = 1u << 15, kU = 1u << 14;
         constexpr uint32_t kSI = 1u << 6, kSD = 1u << 5, kSO = 1u << 4, kSU = 1u << 3;
-        constexpr uint32_t kFlagMask = kI | kD | kO | kU | kSI | kSD | kSO | kSU;
+        constexpr uint32_t kDivZero = 1u << 20; // set by a division by zero, as the reference does (Q7)
+        constexpr uint32_t kFlagMask = kI | kD | kO | kU | kSI | kSD | kSO | kSU | kDivZero;
 
         void set(Ctx &c, int n, uint64_t v) { c.r[n].ud[0] = v; }
         uint64_t get(const Ctx &c, int n) { return c.r[n].ud[0]; }
@@ -532,6 +533,33 @@ namespace itest
                     },
                     {addiu(v0, a0, 1)});
             }
+            {
+                // An external address marked "stub" (EmitOptions::externals): every transfer to it goes to the runtime.
+                const Env e = nextEnv();
+                Asm s(e.base);
+                s.jumpTo(3, e.callee)(nop).jumpTo(2, e.callee)(nop);
+                add("a stub address: jal and j both go through bozo_call_indirect", s.finish(), none,
+                    [e](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                        k.eq("v0 (the callee ran twice)", get(c, v0), 2);
+                        k.eq("transfers through the runtime", rt.indirect.size(), 2);
+                        k.eq("target", rt.indirect.empty() ? 0 : rt.indirect[0], e.callee);
+                    },
+                    {addiu(v0, v0, 1)});
+                g_cases.back().calleeExternal = 1;
+            }
+            {
+                // "override": calls go to the runtime; a direct jump runs the guest code there.
+                const Env e = nextEnv();
+                Asm s(e.base);
+                s.jumpTo(3, e.callee)(nop).jumpTo(2, e.callee)(nop);
+                add("an override address: jal goes through bozo_call_indirect, j runs the guest code", s.finish(), none,
+                    [e](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                        k.eq("v0 (the callee ran twice)", get(c, v0), 2);
+                        k.eq("transfers through the runtime", rt.indirect.size(), 1);
+                    },
+                    {addiu(v0, v0, 1)});
+                g_cases.back().calleeExternal = 2;
+            }
             for (int input : {1, 5})
             {
                 const Env e = nextEnv();
@@ -670,25 +698,35 @@ namespace itest
                 });
             fpuCase("add.s 1 + 2", {add_s(10, 1, 2)}, {0x3F800000u, 0x40000000u}, {{10, 0x40400000u}}, 0);
             fpuCase("add.s rounds toward zero (1 + 0.75 ulp = 1)", {add_s(10, 1, 2)}, {0x3F800000u, 0x33C00000u}, {{10, 0x3F800000u}});
-            fpuCase("sub.s without guard bits (Q1): 1 - (1 - 2^-24) = 2^-23", {sub_s(10, 1, 2)}, {0x3F800000u, 0x3F7FFFFFu}, {{10, 0x34000000u}});
+            fpuCase("sub.s with one guard bit (Q1): 1 - (1 - 2^-24) = 2^-24 exactly", {sub_s(10, 1, 2)}, {0x3F800000u, 0x3F7FFFFFu}, {{10, 0x33800000u}});
+            // 1 - 1.5 * 2^-24: exact and truncated 0x3F7FFFFE; no guard bit 1.0; one guard bit 1 - 2^-24.
+            fpuCase("sub.s with one guard bit (Q1): 1 - 0.75 ulp = 1 - 2^-24", {sub_s(10, 1, 2)}, {0x3F800000u, 0x33C00000u}, {{10, 0x3F7FFFFFu}});
+            // Captured (story #657, mathfManhatDist): -44.654480 - (-2^-20): the subtrahend is past the guard bit.
+            fpuCase("sub.s drops an operand below the guard bit (Q1)", {sub_s(10, 1, 2)}, {0xC2329E30u, 0xB5800000u}, {{10, 0xC2329E30u}});
             fpuCase("sub.s exact cancellation gives +0, also for negatives", {sub_s(10, 1, 1), sub_s(11, 2, 2)}, {0x3F800000u, 0xBF800000u},
                     {{10, 0}, {11, 0}});
             fpuCase("add.s of zeros (Q2): -0 + -0 = -0, -0 + +0 = +0", {add_s(10, 1, 1), add_s(11, 1, 2)}, {0x80000000u, 0}, {{10, 0x80000000u}, {11, 0}});
-            fpuCase("add.s overflow saturates to +max, O and SO set", {add_s(10, 1, 1)}, {0x7FFFFFFFu}, {{10, 0x7FFFFFFFu}}, kO | kSO);
+            fpuCase("add.s overflow saturates to +max; FCR31 unchanged (Q7)", {add_s(10, 1, 1)}, {0x7FFFFFFFu}, {{10, 0x7FFFFFFFu}}, 0);
             fpuCase("add.s reaching exponent 255 is not an overflow", {add_s(10, 1, 1)}, {0x7F7FFFFFu}, {{10, 0x7FFFFFFFu}}, 0);
             fpuCase("exponent 255 is an ordinary number: 'Inf' * 0.5", {mul_s(10, 1, 2)}, {0x7F800000u, 0x3F000000u}, {{10, 0x7F000000u}}, 0);
             fpuCase("exponent 255 is an ordinary number: 'NaN' * 0.5", {mul_s(10, 1, 2)}, {0x7FC00000u, 0x3F000000u}, {{10, 0x7F400000u}}, 0);
-            fpuCase("mul.s overflow saturates with the product's sign", {mul_s(10, 1, 2)}, {0x7F000000u, 0xC0800000u}, {{10, 0xFFFFFFFFu}}, kO | kSO);
+            fpuCase("mul.s overflow saturates with the product's sign; FCR31 unchanged", {mul_s(10, 1, 2)}, {0x7F000000u, 0xC0800000u}, {{10, 0xFFFFFFFFu}}, 0);
             fpuCase("denormal operands are zero", {mul_s(10, 1, 2), add_s(11, 1, 1)}, {0x00400000u, 0x40000000u}, {{10, 0}, {11, 0}});
-            fpuCase("mul.s underflow flushes to zero, U and SU set", {mul_s(10, 1, 2)}, {0x00800000u, 0x3F000000u}, {{10, 0}}, kU | kSU);
+            fpuCase("mul.s underflow flushes to zero; FCR31 unchanged", {mul_s(10, 1, 2)}, {0x00800000u, 0x3F000000u}, {{10, 0}}, 0);
+            fpuCase("mul.s rounds to nearest (Q10): 1.5 * (1.5 + 2^-23) = 2.25 + 0.75 ulp", {mul_s(10, 1, 2)}, {0x3FC00000u, 0x3FC00001u}, {{10, 0x40100001u}});
+            // (1 + u) * 1.5 = 1.5 + 1.5 u, (1 + 3u) * 1.5 = 1.5 + 4.5 u (u = 2^-23): halves go to the even neighbour.
+            fpuCase("mul.s ties go to even", {mul_s(10, 1, 2), mul_s(11, 3, 2)}, {0x3F800001u, 0x3FC00000u, 0x3F800003u},
+                    {{10, 0x3FC00002u}, {11, 0x3FC00004u}});
             fpuCase("mul.s underflow keeps the sign", {mul_s(10, 1, 2)}, {0x80800000u, 0x3F000000u}, {{10, 0x80000000u}});
             fpuCase("mul.s 1.5 * -2.5", {mul_s(10, 1, 2)}, {0x3FC00000u, 0xC0200000u}, {{10, 0xC0700000u}}, 0);
-            fpuCase("div.s rounds toward zero: 1/3", {div_s(10, 1, 2)}, {0x3F800000u, 0x40400000u}, {{10, 0x3EAAAAAAu}}, 0);
-            fpuCase("div.s by zero: +max, D and SD", {div_s(10, 1, 2)}, {0x3F800000u, 0}, {{10, 0x7FFFFFFFu}}, kD | kSD);
-            fpuCase("div.s -1 by zero: -max", {div_s(10, 1, 2)}, {0xBF800000u, 0}, {{10, 0xFFFFFFFFu}}, kD | kSD);
-            fpuCase("div.s 0/0: max, I and SI (Q3)", {div_s(10, 1, 2)}, {0, 0}, {{10, 0x7FFFFFFFu}}, kI | kSI);
-            fpuCase("sqrt.s of 4 and 2 (truncated)", {sqrt_s(10, 1), sqrt_s(11, 2)}, {0x40800000u, 0x40000000u}, {{10, 0x40000000u}, {11, 0x3FB504F3u}}, 0);
-            fpuCase("sqrt.s of -4: sqrt(|x|), I flag (Q3)", {sqrt_s(10, 1)}, {0xC0800000u}, {{10, 0x40000000u}}, kI | kSI);
+            fpuCase("div.s rounds to nearest (Q3): 1/3, 2/3", {div_s(10, 1, 2), div_s(11, 3, 2)}, {0x3F800000u, 0x40400000u, 0x40000000u},
+                    {{10, 0x3EAAAAABu}, {11, 0x3F2AAAABu}}, 0);
+            fpuCase("div.s by zero: +max, FCR31 bit 20 only (Q7)", {div_s(10, 1, 2)}, {0x3F800000u, 0}, {{10, 0x7FFFFFFFu}}, kDivZero);
+            fpuCase("div.s -1 by zero: -max", {div_s(10, 1, 2)}, {0xBF800000u, 0}, {{10, 0xFFFFFFFFu}}, kDivZero);
+            fpuCase("div.s 0/0: max (Q3), FCR31 bit 20", {div_s(10, 1, 2)}, {0, 0}, {{10, 0x7FFFFFFFu}}, kDivZero);
+            fpuCase("sqrt.s of 4, 2 and 3 (rounded to nearest)", {sqrt_s(10, 1), sqrt_s(11, 2), sqrt_s(12, 3)}, {0x40800000u, 0x40000000u, 0x40400000u},
+                    {{10, 0x40000000u}, {11, 0x3FB504F3u}, {12, 0x3FDDB3D7u}}, 0);
+            fpuCase("sqrt.s of -4: sqrt(|x|), FCR31 unchanged (Q3)", {sqrt_s(10, 1)}, {0xC0800000u}, {{10, 0x40000000u}}, 0);
             fpuCase("rsqrt.s 1/sqrt(4)", {rsqrt_s(10, 1, 2)}, {0x3F800000u, 0x40800000u}, {{10, 0x3F000000u}}, 0);
             fpuCase("abs.s / neg.s / mov.s are bit operations", {abs_s(10, 1), neg_s(11, 2), mov_s(12, 1), neg_s(13, 3)},
                     {0xFFC00000u, 0, 0x00000001u}, {{10, 0x7FC00000u}, {11, 0x80000000u}, {12, 0xFFC00000u}, {13, 0x80000001u}});
@@ -696,9 +734,9 @@ namespace itest
                     {fbits(2.9f), fbits(-2.9f), fbits(3e9f), fbits(-3e9f)},
                     {{10, 2}, {11, 0xFFFFFFFEu}, {12, 0x7FFFFFFFu}, {13, 0x80000000u}});
             fpuCase("cvt.w.s of 0.5 and of a denormal is 0", {cvt_w_s(10, 1), cvt_w_s(11, 2)}, {0x3F000000u, 0x00000005u}, {{10, 0}, {11, 0}});
-            fpuCase("cvt.s.w truncates past 24 bits", {cvt_s_w(10, 1), cvt_s_w(11, 2), cvt_s_w(12, 3), cvt_s_w(13, 4)},
-                    {16777217u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x80000000u},
-                    {{10, 0x4B800000u}, {11, 0x4EFFFFFFu}, {12, 0xBF800000u}, {13, 0xCF000000u}});
+            fpuCase("cvt.s.w rounds to nearest even past 24 bits (Q9)", {cvt_s_w(10, 1), cvt_s_w(11, 2), cvt_s_w(12, 3), cvt_s_w(13, 4), cvt_s_w(14, 5)},
+                    {16777217u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x80000000u, 16777219u},
+                    {{10, 0x4B800000u}, {11, 0x4F000000u}, {12, 0xBF800000u}, {13, 0xCF000000u}, {14, 0x4B800002u}});
             fpuCase("max.s / min.s", {max_s(10, 1, 2), min_s(11, 1, 2)}, {fbits(-1.0f), fbits(-2.0f)}, {{10, fbits(-1.0f)}, {11, fbits(-2.0f)}});
             fpuCase("the accumulator: adda, madd, msub, mula, madda, msuba, suba",
                     {adda_s(1, 2), madd_s(10, 2, 3), msub_s(11, 2, 3), mula_s(2, 3), madda_s(1, 2), madd_s(12, 4, 4), msuba_s(1, 1),
@@ -975,6 +1013,45 @@ namespace itest
                     k.eq("vi2", get(c, v1), 8);
                     k.eq("quad 7 x", rd32(rt.vu0Memory, 7 * 16), 0x100);
                     k.eq("quad 7 w (not in dest)", rd32(rt.vu0Memory, 7 * 16 + 12), 0xDEAD);
+                });
+            add("VU0's add rounds to nearest (the FPU's truncates)", {vadd(X, 3, 1, 2), vsub(Y, 3, 1, 2)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    c.vu0_vf[1].u[0] = c.vu0_vf[1].u[1] = 0x3F800000u; // 1.0
+                    c.vu0_vf[2].u[0] = c.vu0_vf[2].u[1] = 0x33C00000u; // 0.75 ulp of 1.0
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    k.eq("1 + 0.75 ulp", c.vu0_vf[3].u[0], 0x3F800001u);
+                    k.eq("1 - 1.5 * 2^-24, a tie: to even", c.vu0_vf[3].u[1], 0x3F7FFFFEu);
+                });
+            add("FMAC flags (Q11): MAC Z/S per field, status and sticky; vf0 as destination still sets them",
+                {vsub(XYZW, 0, 1, 2), cfc2(v0, 17), cfc2(v1, 16), vadd(X, 3, 1, 1), cfc2(t0, 17), cfc2(t1, 16)},
+                [](Ctx &c, uint8_t *, Runtime &) { setV(c, 1, 1, 2, 3, 4); setV(c, 2, 1, 3, 2, 4); },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    k.eq("MAC after (0, -1, 1, 0)", get(c, v0), 0x49);
+                    k.eq("status: Z, S and their sticky bits", get(c, v1), 0xC3);
+                    eqV(k, "vf0", c, 0, 0, 0, 0, 1);
+                    k.eq("MAC after vadd.x (fields outside dest are 0)", get(c, t0), 0);
+                    k.eq("status: sticky bits kept", get(c, t1), 0xC0);
+                });
+            add("FMAC flags: O for a result of exponent 255, and for a saturated one; max/mini leave the flags",
+                {vmul(X, 3, 1, 2), cfc2(v0, 17), cfc2(v1, 16), vmul(Y, 3, 1, 1), cfc2(t0, 17), vmax(XYZW, 4, 2, 2), cfc2(t1, 17)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    c.vu0_vf[1].u[0] = c.vu0_vf[1].u[1] = 0x7F000000u; // 2^127
+                    c.vu0_vf[2].u[0] = 0x40000000u;                     // 2
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    k.eq("2^128 = 0x7F800000", c.vu0_vf[3].u[0], 0x7F800000u);
+                    k.eq("MAC O.x", get(c, v0), 0x8000);
+                    k.eq("status O and OS", get(c, v1), 0x208);
+                    k.eq("2^254 saturates", c.vu0_vf[3].u[1], 0x7FFFFFFFu);
+                    k.eq("MAC O.y", get(c, t0), 0x4000);
+                    k.eq("MAC after vmax", get(c, t1), 0x4000);
+                });
+            add("vdiv by zero: Q = max, status D and DS", {vdiv(1, 0, 2, 0), cfc2(v0, 16)},
+                [](Ctx &c, uint8_t *, Runtime &) { setV(c, 1, 3, 0, 0, 0); setV(c, 2, 0, 0, 0, 0); },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    k.eq("Q", c.vu0_q_bits, 0x7FFFFFFFu);
+                    k.eq("status", get(c, v0), 0x820);
                 });
             add("vcallms, cfc2 VPU-STAT, ctc2 FBRST go to the runtime; vnop", {vnop, vcallms(0x278), cfc2(v0, 29), ctc2(a0, 28)},
                 [](Ctx &c, uint8_t *, Runtime &rt) { rt.vpuStat = 0x100; set(c, a0, 2); },

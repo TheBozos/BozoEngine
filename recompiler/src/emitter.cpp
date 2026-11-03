@@ -129,21 +129,28 @@ namespace bozo
         auto vbc = [&]() { return std::format("bozo::vu0::bc(BZ_VF({}), {})", ft, i.vbc()); };
         const std::string vq = "bozo::vu0::broadcast(ctx->vu0_q_bits)";
         const std::string vi = "bozo::vu0::broadcast(ctx->vu0_i_bits)";
+        // FMAC instructions change the MAC and status flags even when they write vf00 (a compare): then the result goes
+        // to a temporary.
+        auto vdst = [&](uint32_t r) { return r == 0 ? std::string("bz_vf_discard") : std::format("BZ_VF({})", r); };
+        auto vtmp = [&](uint32_t r, const std::string &code) {
+            return r == 0 ? "{ Vu0Vector bz_vf_discard; " + code + " }" : code;
+        };
         auto vop = [&](const char *fn, const std::string &second) {
+            return vtmp(fd, std::format("bozo::vu0::{}(ctx, {}, BZ_VF({}), {}, {});", fn, vdst(fd), fs, second, dest));
+        };
+        auto vminmax = [&](const char *fn, const std::string &second) {
             if (fd == 0)
-                return std::string(); // vf00 is constant
+                return std::string(); // vf00 is constant; max/mini do not change the flags
             return std::format("bozo::vu0::{}(BZ_VF({}), BZ_VF({}), {}, {});", fn, fd, fs, second, dest);
         };
         auto vacc = [&](const char *fn, const std::string &second) {
-            return std::format("bozo::vu0::{}(ctx->vu0_acc, BZ_VF({}), {}, {});", fn, fs, second, dest);
+            return std::format("bozo::vu0::{}(ctx, ctx->vu0_acc, BZ_VF({}), {}, {});", fn, fs, second, dest);
         };
         auto vmac = [&](const char *fn, const std::string &second) { // madd/msub into fd
-            if (fd == 0)
-                return std::string();
-            return std::format("bozo::vu0::{}(BZ_VF({}), ctx->vu0_acc, BZ_VF({}), {}, {});", fn, fd, fs, second, dest);
+            return vtmp(fd, std::format("bozo::vu0::{}(ctx, {}, ctx->vu0_acc, BZ_VF({}), {}, {});", fn, vdst(fd), fs, second, dest));
         };
         auto vmaca = [&](const char *fn, const std::string &second) { // madda/msuba into ACC
-            return std::format("bozo::vu0::{}(ctx->vu0_acc, ctx->vu0_acc, BZ_VF({}), {}, {});", fn, fs, second, dest);
+            return std::format("bozo::vu0::{}(ctx, ctx->vu0_acc, ctx->vu0_acc, BZ_VF({}), {}, {});", fn, fs, second, dest);
         };
         auto vunary = [&](const char *fn, const std::string &extra) { // ft = f(fs) (abs, move, mr32, itof, ftoi)
             if (ft == 0)
@@ -410,8 +417,8 @@ namespace bozo
         case Op::VADDbc: return vop("add", vbc());
         case Op::VSUBbc: return vop("sub", vbc());
         case Op::VMULbc: return vop("mul", vbc());
-        case Op::VMAXbc: return vop("max", vbc());
-        case Op::VMINIbc: return vop("mini", vbc());
+        case Op::VMAXbc: return vminmax("max", vbc());
+        case Op::VMINIbc: return vminmax("mini", vbc());
         case Op::VMADDbc: return vmac("madd", vbc());
         case Op::VMSUBbc: return vmac("msub", vbc());
         case Op::VADDq: return vop("add", vq);
@@ -422,19 +429,19 @@ namespace bozo
         case Op::VADDi: return vop("add", vi);
         case Op::VSUBi: return vop("sub", vi);
         case Op::VMULi: return vop("mul", vi);
-        case Op::VMAXi: return vop("max", vi);
-        case Op::VMINIi: return vop("mini", vi);
+        case Op::VMAXi: return vminmax("max", vi);
+        case Op::VMINIi: return vminmax("mini", vi);
         case Op::VMADDi: return vmac("madd", vi);
         case Op::VMSUBi: return vmac("msub", vi);
         case Op::VADD: return vop("add", std::format("BZ_VF({})", ft));
         case Op::VSUB: return vop("sub", std::format("BZ_VF({})", ft));
         case Op::VMUL: return vop("mul", std::format("BZ_VF({})", ft));
-        case Op::VMAX: return vop("max", std::format("BZ_VF({})", ft));
-        case Op::VMINI: return vop("mini", std::format("BZ_VF({})", ft));
+        case Op::VMAX: return vminmax("max", std::format("BZ_VF({})", ft));
+        case Op::VMINI: return vminmax("mini", std::format("BZ_VF({})", ft));
         case Op::VMADD: return vmac("madd", std::format("BZ_VF({})", ft));
         case Op::VMSUB: return vmac("msub", std::format("BZ_VF({})", ft));
         case Op::VOPMSUB:
-            return fd == 0 ? "" : std::format("bozo::vu0::opmsub(BZ_VF({}), ctx->vu0_acc, BZ_VF({}), BZ_VF({}));", fd, fs, ft);
+            return vtmp(fd, std::format("bozo::vu0::opmsub(ctx, {}, ctx->vu0_acc, BZ_VF({}), BZ_VF({}));", vdst(fd), fs, ft));
         case Op::VADDAbc: return vacc("add", vbc());
         case Op::VSUBAbc: return vacc("sub", vbc());
         case Op::VMULAbc: return vacc("mul", vbc());
@@ -455,7 +462,7 @@ namespace bozo
         case Op::VMULA: return vacc("mul", std::format("BZ_VF({})", ft));
         case Op::VMADDA: return vmaca("madd", std::format("BZ_VF({})", ft));
         case Op::VMSUBA: return vmaca("msub", std::format("BZ_VF({})", ft));
-        case Op::VOPMULA: return std::format("bozo::vu0::opmula(ctx->vu0_acc, BZ_VF({}), BZ_VF({}));", fs, ft);
+        case Op::VOPMULA: return std::format("bozo::vu0::opmula(ctx, ctx->vu0_acc, BZ_VF({}), BZ_VF({}));", fs, ft);
         case Op::VNOP: return "/* vnop */";
         case Op::VABS: return vunary("abs", "");
         case Op::VMOVE: return vunary("move", "");
@@ -502,10 +509,10 @@ namespace bozo
                                (ft & 15u) == 0 ? std::string() : std::format("{0} = ({0} - 1u) & 0xFFFFu;", viReg(ft)), fs,
                                viReg(ft), dest);
         case Op::VDIV:
-            return std::format("ctx->vu0_q_bits = bozo::vu0::div(BZ_VF({}).u[{}], BZ_VF({}).u[{}]);", fs, i.vfsf(), ft, i.vftf());
-        case Op::VSQRT: return std::format("ctx->vu0_q_bits = bozo::vu0::sqrt(BZ_VF({}).u[{}]);", ft, i.vftf());
+            return std::format("ctx->vu0_q_bits = bozo::vu0::div(ctx, BZ_VF({}).u[{}], BZ_VF({}).u[{}]);", fs, i.vfsf(), ft, i.vftf());
+        case Op::VSQRT: return std::format("ctx->vu0_q_bits = bozo::vu0::sqrt(ctx, BZ_VF({}).u[{}]);", ft, i.vftf());
         case Op::VRSQRT:
-            return std::format("ctx->vu0_q_bits = bozo::vu0::rsqrt(BZ_VF({}).u[{}], BZ_VF({}).u[{}]);", fs, i.vfsf(), ft, i.vftf());
+            return std::format("ctx->vu0_q_bits = bozo::vu0::rsqrt(ctx, BZ_VF({}).u[{}], BZ_VF({}).u[{}]);", fs, i.vfsf(), ft, i.vftf());
         case Op::VWAITQ: return "/* vwaitq: Q is ready at once */";
         case Op::VMTIR: // vmtir vi[it], vf[fs].fsf
             return (ft & 15u) == 0 ? "" : std::format("{} = BZ_VF({}).u[{}] & 0xFFFFu;", viReg(ft), fs, i.vfsf());

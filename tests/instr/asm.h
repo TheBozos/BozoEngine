@@ -224,6 +224,7 @@ namespace tasm
     constexpr uint32_t vadd(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(40, dest, fd, fs, ft); }
     constexpr uint32_t vmadd(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(41, dest, fd, fs, ft); }
     constexpr uint32_t vmul(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(42, dest, fd, fs, ft); }
+    constexpr uint32_t vmax(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(43, dest, fd, fs, ft); }
     constexpr uint32_t vsub(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(44, dest, fd, fs, ft); }
     constexpr uint32_t vmsub(uint32_t dest, uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(45, dest, fd, fs, ft); }
     constexpr uint32_t vopmsub(uint32_t fd, uint32_t fs, uint32_t ft) { return vu1(46, XYZ, fd, fs, ft); }

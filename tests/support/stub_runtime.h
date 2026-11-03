@@ -17,6 +17,7 @@ struct Runtime
 
     // What the code asked for, in order ("syscall 0x3c", "break 0x7", "callms 0x278", "io-read 0x10000000"...).
     std::vector<std::string> events;
+    std::vector<uint32_t> indirect; // every bozo_call_indirect target, in order
     uint32_t yields = 0;
     uint32_t cop0[32] = {};
     bool interruptsEnabled = true;

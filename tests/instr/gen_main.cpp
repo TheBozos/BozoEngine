@@ -64,6 +64,10 @@ int main(int argc, char **argv)
 
     bozo::EmitOptions options;
     options.prefix = "instr";
+    for (size_t i = 0; i < cases.size(); ++i)
+        if (cases[i].calleeExternal)
+            options.externals[envFor(i).callee] =
+                cases[i].calleeExternal == 1 ? bozo::ExternalKind::Stub : bozo::ExternalKind::Override;
     options.maxBytesPerFile = ~size_t(0); // one file: instr_000.cpp
     bozo::Emitter emitter(analysis, options);
     std::string error;

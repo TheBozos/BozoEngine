@@ -3,10 +3,13 @@
 // format is not IEEE 754:
 //   - exponent 255 is an ordinary exponent (no infinity, no NaN): the largest magnitude is 0x7FFFFFFF (about 3.4e38*2);
 //   - exponent 0 is zero whatever the mantissa (denormals read as zero of the same sign, and are never produced);
-//   - results are rounded toward zero; a result too large saturates to +/-0x7FFFFFFF (overflow flag), one too small
-//     becomes zero of its sign (underflow flag);
-//   - an addition aligns the smaller operand to the larger one's last mantissa bit, dropping the bits below it, before
-//     adding (no guard bits) (open question Q1).
+//   - a result too large saturates to +/-0x7FFFFFFF (overflow flag), one too small becomes zero of its sign (underflow
+//     flag).
+// Rounding, as the reference captures settle it (r5900.md section 12):
+//   - the FPU's add and sub align the smaller operand with one guard bit below the larger one's last mantissa bit
+//     (the bits below it dropped), add, normalise and truncate (Q1);
+//   - VU0's add and sub round the exact sum to nearest even;
+//   - mul (FPU and VU0), div, sqrt and cvt.s.w round the exact result to nearest even (Q3, Q9, Q10).
 // Everything here is plain integer arithmetic, so results do not depend on the host's float unit or its mode.
 #pragma once
 
@@ -25,6 +28,8 @@ namespace bozo::ps2f
     constexpr uint32_t kFlagSD = 1u << 5;
     constexpr uint32_t kFlagSO = 1u << 4;
     constexpr uint32_t kFlagSU = 1u << 3;
+    // Bit 20: not among the documented flags; the reference sets it when a div.s divides by zero (r5900.md Q7).
+    constexpr uint32_t kFlagDivZeroSeen = 1u << 20;
 
     constexpr uint32_t kSign = 0x80000000u;
     constexpr uint32_t kMax = 0x7FFFFFFFu; // the largest magnitude
@@ -34,7 +39,7 @@ namespace bozo::ps2f
     inline bool isZero(uint32_t x) { return expOf(x) == 0; }                    // zero or denormal
 
     // Pack a sign, a biased exponent (may be out of range) and a 24-bit mantissa with its leading 1, with saturation.
-    // `flags` collects the O/U flags (the caller ORs them into FCR31 or drops them).
+    // `flags` collects the O/U flags (the caller keeps or drops them).
     inline uint32_t pack(uint32_t sign, int32_t exp, uint32_t mant24, uint32_t &flags)
     {
         if (exp > 255)
@@ -50,76 +55,147 @@ namespace bozo::ps2f
         return sign | (static_cast<uint32_t>(exp) << 23) | (mant24 & 0x7FFFFFu);
     }
 
-    // a + b.
+    // Pack a mantissa with its leading 1 at bit 23 + `extra`, rounding the `extra` low bits (and `sticky`, any nonzero
+    // bits below them) to nearest even.
+    inline uint32_t packNearest(uint32_t sign, int32_t exp, uint64_t mant, uint32_t extra, bool sticky, uint32_t &flags)
+    {
+        if (extra)
+        {
+            const uint64_t half = 1ull << (extra - 1);
+            const uint64_t rest = mant & ((1ull << extra) - 1);
+            mant >>= extra;
+            if (rest > half || (rest == half && (sticky || (mant & 1u))))
+            {
+                ++mant;
+                if (mant >> 24)
+                {
+                    mant >>= 1;
+                    ++exp;
+                }
+            }
+        }
+        return pack(sign, exp, static_cast<uint32_t>(mant), flags);
+    }
+
+    // Zero operands of an addition: the other operand; two zeros give -0 only when both are -0 (Q2).
+    inline bool addZeros(uint32_t a, uint32_t b, uint32_t &out)
+    {
+        const bool za = isZero(a), zb = isZero(b);
+        if (!za && !zb)
+            return false;
+        out = !za ? a : !zb ? b : (a & b & kSign);
+        return true;
+    }
+
+    // a + b on the FPU: one guard bit, then truncation (Q1).
     inline uint32_t add(uint32_t a, uint32_t b, uint32_t &flags)
     {
-        uint32_t ea = expOf(a), eb = expOf(b);
-        if (ea == 0 || eb == 0)
-        {
-            if (ea != 0)
-                return a;
-            if (eb != 0)
-                return b;
-            // Both zero: -0 only when both are -0 (r5900.md, open question Q2).
-            return (a & b & kSign);
-        }
-        // Order by magnitude: a is the larger.
-        if ((a & kMax) < (b & kMax))
+        uint32_t z;
+        if (addZeros(a, b, z))
+            return z;
+        if ((a & kMax) < (b & kMax)) // a is the larger
         {
             const uint32_t t = a;
             a = b;
             b = t;
-            ea = expOf(a);
-            eb = expOf(b);
         }
-        const uint32_t d = ea - eb;
-        const uint32_t ma = mantOf(a);
-        const uint32_t mb = d >= 24 ? 0u : (mantOf(b) >> d); // bits below a's last mantissa bit dropped
+        const uint32_t ea = expOf(a), d = ea - expOf(b);
+        const uint32_t ma = mantOf(a) << 1;                        // 25 bits: the mantissa and one guard bit
+        const uint32_t mb = d >= 25 ? 0u : ((mantOf(b) << 1) >> d); // the bits below the guard bit dropped
         const uint32_t sign = a & kSign;
         int32_t e = static_cast<int32_t>(ea);
         uint32_t m;
         if (((a ^ b) & kSign) == 0)
         {
             m = ma + mb;
-            if (m & 0x1000000u)
+            if (m >> 25)
             {
-                m >>= 1; // round toward zero: the bit shifted out is dropped
+                m >>= 1;
                 ++e;
             }
         }
         else
         {
-            m = ma - mb; // |a| >= |b| so no borrow
+            m = ma - mb;
             if (m == 0)
                 return 0; // exact cancellation: +0
-            const int lead = __builtin_clz(m) - 8; // shifts to bring the leading 1 back to bit 23
+            const int lead = __builtin_clz(m) - 7; // shifts to bring the leading 1 back to bit 24
             m <<= lead;
             e -= lead;
         }
-        return pack(sign, e, m, flags);
+        return pack(sign, e, m >> 1, flags); // truncate the guard bit
     }
 
     inline uint32_t sub(uint32_t a, uint32_t b, uint32_t &flags) { return add(a, b ^ kSign, flags); }
 
-    // a * b, the exact product truncated.
+    // a + b on VU0: the exact sum rounded to nearest even.
+    inline uint32_t addNearest(uint32_t a, uint32_t b, uint32_t &flags)
+    {
+        uint32_t z;
+        if (addZeros(a, b, z))
+            return z;
+        if ((a & kMax) < (b & kMax))
+        {
+            const uint32_t t = a;
+            a = b;
+            b = t;
+        }
+        const uint32_t ea = expOf(a), d = ea - expOf(b);
+        // Three extra bits (guard, round, sticky) are enough to round an addition exactly.
+        const uint64_t ma = static_cast<uint64_t>(mantOf(a)) << 3;
+        uint64_t mb = static_cast<uint64_t>(mantOf(b)) << 3;
+        if (d >= 27)
+            mb = 1; // only the sticky bit is left
+        else if (d)
+        {
+            const bool sticky = (mb & ((1ull << d) - 1)) != 0;
+            mb = (mb >> d) | (sticky ? 1u : 0u);
+        }
+        const uint32_t sign = a & kSign;
+        int32_t e = static_cast<int32_t>(ea);
+        uint64_t m;
+        if (((a ^ b) & kSign) == 0)
+        {
+            m = ma + mb;
+            if (m >> 27)
+            {
+                m = (m >> 1) | (m & 1u);
+                ++e;
+            }
+        }
+        else
+        {
+            m = ma - mb;
+            if (m == 0)
+                return 0;
+            while (!(m >> 26))
+            {
+                m <<= 1;
+                --e;
+            }
+        }
+        return packNearest(sign, e, m, 3, false, flags);
+    }
+    inline uint32_t subNearest(uint32_t a, uint32_t b, uint32_t &flags) { return addNearest(a, b ^ kSign, flags); }
+
+    // a * b: the exact product rounded to nearest even (Q10).
     inline uint32_t mul(uint32_t a, uint32_t b, uint32_t &flags)
     {
         const uint32_t sign = (a ^ b) & kSign;
         if (isZero(a) || isZero(b))
             return sign;
-        uint64_t m = static_cast<uint64_t>(mantOf(a)) * mantOf(b); // 2^46 <= m < 2^48
+        const uint64_t m = static_cast<uint64_t>(mantOf(a)) * mantOf(b); // 2^46 <= m < 2^48
         int32_t e = static_cast<int32_t>(expOf(a)) + static_cast<int32_t>(expOf(b)) - 127;
         if (m >> 47)
         {
-            m >>= 24;
             ++e;
+            return packNearest(sign, e, m, 24, false, flags);
         }
-        else
-            m >>= 23;
-        return pack(sign, e, static_cast<uint32_t>(m), flags);
+        return packNearest(sign, e, m, 23, false, flags);
     }
 
-    // a / b. Division by zero: D flag (I flag for 0/0), result +/-max with the sign of a xor b (Q3).
+    // a / b: the quotient rounded to nearest even. Division by zero: D flag (I flag for 0/0), result +/-max with the
+    // sign of a xor b (Q3).
     inline uint32_t div(uint32_t a, uint32_t b, uint32_t &flags)
     {
         const uint32_t sign = (a ^ b) & kSign;
@@ -130,20 +206,16 @@ namespace bozo::ps2f
         }
         if (isZero(a))
             return sign;
-        const uint64_t q = (static_cast<uint64_t>(mantOf(a)) << 24) / mantOf(b); // 2^23 <= q < 2^25, truncated
-        int32_t e = static_cast<int32_t>(expOf(a)) - static_cast<int32_t>(expOf(b)) + 127;
-        uint32_t m;
-        if (q >> 24)
-            m = static_cast<uint32_t>(q >> 1);
-        else
-        {
-            m = static_cast<uint32_t>(q);
-            --e;
-        }
-        return pack(sign, e, m, flags);
+        const uint64_t n = static_cast<uint64_t>(mantOf(a)) << 26;
+        const uint64_t q = n / mantOf(b); // 2^25 < q < 2^27
+        const bool sticky = n % mantOf(b) != 0;
+        const int32_t e = static_cast<int32_t>(expOf(a)) - static_cast<int32_t>(expOf(b)) + 127;
+        if (q >> 26)
+            return packNearest(sign, e, q, 3, sticky, flags);
+        return packNearest(sign, e - 1, q, 2, sticky, flags);
     }
 
-    // The square root of |x| truncated; a negative x sets the I flag (Q3). sqrt(-0) is +0.
+    // The square root of |x| rounded to nearest; a negative x sets the I flag (Q3). sqrt(-0) is +0.
     inline uint32_t sqrt(uint32_t x, uint32_t &flags)
     {
         if (isZero(x))
@@ -157,17 +229,18 @@ namespace bozo::ps2f
             m <<= 1;
             --e;
         }
-        const uint64_t n = m << 23; // 2^46 <= n < 2^48; sqrt(n) has 24 bits
+        const uint64_t n = m << 25; // 2^48 <= n < 2^50: the root has 25 bits, one below the mantissa
         uint64_t s = static_cast<uint64_t>(std::sqrt(static_cast<double>(n)));
         while (s * s > n)
             --s;
         while ((s + 1) * (s + 1) <= n)
             ++s;
         uint32_t ignored = 0;
-        return pack(0, e / 2 + 127, static_cast<uint32_t>(s), ignored);
+        return packNearest(0, e / 2 + 127, s, 1, s * s != n, ignored);
     }
 
-    // a / sqrt(b): the root truncated, then the quotient truncated (Q3). b = 0: D flag, +/-max with a's sign.
+    // a / sqrt(b): the root rounded, then the quotient rounded (not used by TMB: unchecked, Q3). b = 0: D flag,
+    // +/-max with a's sign.
     inline uint32_t rsqrt(uint32_t a, uint32_t b, uint32_t &flags)
     {
         if (isZero(b))
@@ -211,7 +284,7 @@ namespace bozo::ps2f
         return (x & kSign) ? (0u - v) : v;
     }
 
-    // cvt.s.w: an integer to float, truncated toward zero when it needs more than 24 bits.
+    // cvt.s.w: an integer to float, rounded to nearest even when it needs more than 24 bits (Q9).
     inline uint32_t fromInt(uint32_t i)
     {
         if (i == 0)
@@ -219,9 +292,10 @@ namespace bozo::ps2f
         const uint32_t sign = i & kSign;
         const uint32_t mag = sign ? (0u - i) : i; // 0x80000000 stays 0x80000000 = 2^31
         const int top = 31 - __builtin_clz(mag);  // position of the leading 1
-        const uint32_t m = top >= 23 ? (mag >> (top - 23)) : (mag << (23 - top));
         uint32_t ignored = 0;
-        return pack(sign, top + 127, m, ignored);
+        if (top > 23)
+            return packNearest(sign, top + 127, mag, static_cast<uint32_t>(top - 23), false, ignored);
+        return pack(sign, top + 127, mag << (23 - top), ignored);
     }
 
     // VU0's fixed-point conversions (VITOFn / VFTOIn): n fraction bits.

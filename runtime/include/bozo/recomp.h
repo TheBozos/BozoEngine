@@ -99,21 +99,33 @@ namespace bozo
         }
     }
 
-    // ---- FPU wrappers: the FCR31 flags collected into the context ----
-    BOZO_INLINE uint32_t fadd(R5900Context *ctx, uint32_t a, uint32_t b) { return ps2f::add(a, b, ctx->fcr31); }
-    BOZO_INLINE uint32_t fsub(R5900Context *ctx, uint32_t a, uint32_t b) { return ps2f::sub(a, b, ctx->fcr31); }
-    BOZO_INLINE uint32_t fmul(R5900Context *ctx, uint32_t a, uint32_t b) { return ps2f::mul(a, b, ctx->fcr31); }
-    BOZO_INLINE uint32_t fdiv(R5900Context *ctx, uint32_t a, uint32_t b) { return ps2f::div(a, b, ctx->fcr31); }
-    BOZO_INLINE uint32_t fsqrt(R5900Context *ctx, uint32_t b) { return ps2f::sqrt(b, ctx->fcr31); }
-    BOZO_INLINE uint32_t frsqrt(R5900Context *ctx, uint32_t a, uint32_t b) { return ps2f::rsqrt(a, b, ctx->fcr31); }
-    // Accumulator forms: madd = acc + a*b, msub = acc - a*b (the product truncated first: Q6).
-    BOZO_INLINE uint32_t fmadd(R5900Context *ctx, uint32_t acc, uint32_t a, uint32_t b)
+    // ---- FPU wrappers ----
+    // The arithmetic leaves FCR31's flags as they are (Q7: the reference captures never show an operation changing
+    // them, division by zero and overflow included); only the compares change FCR31 (its C bit).
+    BOZO_INLINE uint32_t fadd(R5900Context *, uint32_t a, uint32_t b) { uint32_t f = 0; return ps2f::add(a, b, f); }
+    BOZO_INLINE uint32_t fsub(R5900Context *, uint32_t a, uint32_t b) { uint32_t f = 0; return ps2f::sub(a, b, f); }
+    BOZO_INLINE uint32_t fmul(R5900Context *, uint32_t a, uint32_t b) { uint32_t f = 0; return ps2f::mul(a, b, f); }
+    // Division by zero (x/0 and 0/0) sets FCR31 bit 20, which the reference keeps (Q7); nothing else touches it.
+    BOZO_INLINE uint32_t fdiv(R5900Context *ctx, uint32_t a, uint32_t b)
     {
-        return ps2f::add(acc, ps2f::mul(a, b, ctx->fcr31), ctx->fcr31);
+        uint32_t f = 0;
+        if (BOZO_UNLIKELY(ps2f::isZero(b)))
+            ctx->fcr31 |= ps2f::kFlagDivZeroSeen;
+        return ps2f::div(a, b, f);
     }
-    BOZO_INLINE uint32_t fmsub(R5900Context *ctx, uint32_t acc, uint32_t a, uint32_t b)
+    BOZO_INLINE uint32_t fsqrt(R5900Context *, uint32_t b) { uint32_t f = 0; return ps2f::sqrt(b, f); }
+    BOZO_INLINE uint32_t frsqrt(R5900Context *, uint32_t a, uint32_t b) { uint32_t f = 0; return ps2f::rsqrt(a, b, f); }
+    // Accumulator forms: madd = acc + a*b, msub = acc - a*b: the product rounded first, then the FPU's sum (Q6; TMB
+    // has none of them, unchecked).
+    BOZO_INLINE uint32_t fmadd(R5900Context *, uint32_t acc, uint32_t a, uint32_t b)
     {
-        return ps2f::sub(acc, ps2f::mul(a, b, ctx->fcr31), ctx->fcr31);
+        uint32_t f = 0;
+        return ps2f::add(acc, ps2f::mul(a, b, f), f);
+    }
+    BOZO_INLINE uint32_t fmsub(R5900Context *, uint32_t acc, uint32_t a, uint32_t b)
+    {
+        uint32_t f = 0;
+        return ps2f::sub(acc, ps2f::mul(a, b, f), f);
     }
     BOZO_INLINE void fcompare(R5900Context *ctx, bool c)
     {

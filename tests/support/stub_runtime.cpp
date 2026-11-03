@@ -18,6 +18,7 @@ namespace
 
 void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target)
 {
+    rt->indirect.push_back(target);
     const BozoFunctionEntry *end = rt->table + rt->tableSize;
     const BozoFunctionEntry *it = std::lower_bound(rt->table, end, target,
                                                    [](const BozoFunctionEntry &e, uint32_t a) { return e.address < a; });
