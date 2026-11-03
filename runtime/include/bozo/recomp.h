@@ -25,12 +25,17 @@ namespace bozo
     // A 32-bit result written to a 64-bit register: sign-extended (the MIPS rule for 32-bit operations).
     BOZO_INLINE uint64_t sx32(uint32_t v) { return static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(v))); }
 
-    // The scheduler's checkpoint (abi.md section 3): count guest cycles, call the runtime past the limit.
-    BOZO_INLINE void checkpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles)
+    // The scheduler's checkpoint (abi.md section 3): count guest cycles, call the runtime past the limit. `pc` is
+    // where the guest code goes on from (a transfer's target): the runtime may stop the thread here (it does not
+    // return then) and run it on from ctx->pc later.
+    BOZO_INLINE void checkpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
     {
         ctx->cycles += cycles;
         if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
+        {
+            ctx->pc = pc;
             bozo_yield(rdram, ctx, rt);
+        }
     }
 
     // ---- Multiply and divide (r5900.md "Multiply and divide") ----

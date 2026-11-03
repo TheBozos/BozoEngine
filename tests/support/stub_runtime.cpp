@@ -30,6 +30,8 @@ void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
     rt->events.push_back(hexEvent("unknown-target", target));
 }
 
+void bozo_resume_failed(uint8_t *, R5900Context *, Runtime *rt, uint32_t pc) { rt->events.push_back(hexEvent("resume-failed", pc)); }
+
 void bozo_yield(uint8_t *, R5900Context *ctx, Runtime *rt)
 {
     ++rt->yields;

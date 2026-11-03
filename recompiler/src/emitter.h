@@ -19,6 +19,10 @@ namespace bozo
         Override, // a port function bound to the address: calls (jal, jalr, bal) only; a direct jump (j, a branch) or a
                   // fall-through runs the guest code there
     };
+    // The EE cycles a checkpoint charges (calllog.md section 2: the reference's time model).
+    constexpr uint32_t kBackwardCycles = 32; // a taken backward branch or jump to a label of the same function
+    constexpr uint32_t kLeaveCycles = 8;     // a call or jump that leaves the function
+
     // Reads an externals file: one address per line, "stub 0x1234" or "override 0x1234"; '#' starts a comment.
     bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error);
 

@@ -12,7 +12,12 @@
 //    the runtime's function table.
 //  - If the delay slot of a branch is itself a label (reached by another branch), it is emitted a second time as an
 //    ordinary instruction after the branch, and the branch's fall-through path skips over that copy.
-//  - Scheduler checkpoints at function entry and before every backward goto.
+//  - Scheduler checkpoints with the reference's EE time model (calllog.md section 2): before every taken backward
+//    goto (kBackwardCycles) and before every call or jump leaving the function (kLeaveCycles); none at function entry
+//    or at a return. A checkpoint that fires stops the thread with ctx->pc at the transfer's target.
+//  - Every function can be entered at any label (its start, its extra entries, the return address after each call,
+//    branch targets): the resume table, through which the dispatcher runs a thread on from where it stopped. A return
+//    leaves its target in ctx->pc.
 #include "emitter.h"
 
 #include <algorithm>
@@ -541,9 +546,13 @@ namespace bozo
     {
         const Program &p = a_.program();
 
-        // Labels: branch and jump targets inside the function, jump table entries, extra entries, and the address after
-        // a delay slot that is itself a label (the branch's fall-through skips the delay slot's second copy).
+        // Labels: branch and jump targets inside the function, jump table entries, extra entries, the address after
+        // a delay slot that is itself a label (the branch's fall-through skips the delay slot's second copy), and the
+        // return address of every call (where a thread stopped inside the callee resumes).
         std::set<uint32_t> labels(f.extraEntries.begin(), f.extraEntries.end());
+        for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+            if (opFlags(decode(p.read32(a))) & LNK)
+                labels.insert(a + 8);
         for (const auto &[jr, t] : f.jumpTables)
             labels.insert(t.targets.begin(), t.targets.end());
         for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
@@ -569,42 +578,46 @@ namespace bozo
         labels.insert(extra.begin(), extra.end());
 
         auto label = [](uint32_t a) { return std::format("L_{:x}", a); };
+        // The EE time model (calllog.md section 2): a taken backward branch or jump to a label of the same function is
+        // a checkpoint charged kBackwardCycles; a call or jump leaving the function is one charged kLeaveCycles, made
+        // before the transfer (if it fires, the thread resumes at the target). A return is not charged.
+        auto leave = [&](const std::string &target) {
+            return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {});", kLeaveCycles, target);
+        };
         // A transfer to `target` from the instruction at `from`: goto inside the function, else a tail call.
         auto jumpTo = [&](uint32_t target, uint32_t from) -> std::string {
             if (target >= f.start && target < f.end && !isExternal(target, false))
             {
                 if (target <= from)
-                    return std::format("bozo::checkpoint(rdram, ctx, rt, {}); goto {};", (from - target) / 4 + 2, label(target));
+                    return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {}); goto {};", kBackwardCycles, hex(target), label(target));
                 return std::format("goto {};", label(target));
             }
-            return callTo(target, false) + " return;";
+            return leave(hex(target)) + " " + callTo(target, false) + " return;";
+        };
+        // A call (jal, bal...): charged, then the callee; execution continues at the return address's label.
+        auto callAt = [&](uint32_t target) { return leave(hex(target)) + " " + callTo(target, true); };
+        // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
+        // which runs the caller from there when its C++ frame is gone (a thread resumed after stopping).
+        auto ret = [&](uint32_t reg, const std::string &delay) {
+            return std::format("{{ const uint32_t target = BZ_W({}); {} ctx->pc = target; return; }}", reg, delay);
         };
 
-        const bool multiEntry = !f.extraEntries.empty();
         const std::string name = cppName(f.symbol, f.start);
         out += std::format("// {} [0x{:x}, 0x{:x})\n", f.symbol.empty() ? "(no symbol)" : f.symbol, f.start, f.end);
-        if (multiEntry)
-            out += std::format("static void body_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t entry)\n{{\n", f.start);
-        else
-            out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt)\n{{\n", name);
-
-        // Entry: the scheduler checkpoint, charged with the instructions up to the first control transfer.
-        uint32_t straight = 1;
-        for (uint32_t a = f.start; a + 4 <= f.end && straight < 64; a += 4, ++straight)
-            if (hasDelaySlot(decode(p.read32(a))))
-                break;
-        out += std::format("    ctx->pc = {};\n    bozo::checkpoint(rdram, ctx, rt, {});\n", multiEntry ? "entry" : hex(f.start), straight);
+        // Every function can be entered at any of its labels (`entry`, 0 for its start): its extra entries, and the
+        // points where a stopped thread resumes (abi.md section 3; the dispatcher's resume table).
+        out += std::format("static void body_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t entry)\n{{\n", f.start);
+        out += std::format("    ctx->pc = entry ? entry : {};\n", hex(f.start));
         // A jr through a register we could not resolve may be a return through a copy of ra: compare with the
         // return address the function was entered with.
         if (!f.unresolvedJr.empty())
             out += "    const uint32_t entryRa = BZ_W(31);\n";
-        if (multiEntry)
-        {
-            out += "    switch (entry)\n    {\n";
-            for (uint32_t e : f.extraEntries)
-                out += std::format("    case {}: goto {};\n", hex(e), label(e));
-            out += "    default: break;\n    }\n";
-        }
+        out += "    if (BOZO_UNLIKELY(entry != 0))\n    {\n        switch (entry)\n        {\n";
+        for (uint32_t e : labels)
+            if (e >= f.start && e < f.end && e != f.start)
+                out += std::format("        case {}: goto {};\n", hex(e), label(e));
+        out += std::format("        case {}: break;\n", hex(f.start));
+        out += "        default: bozo_resume_failed(rdram, ctx, rt, entry); return;\n        }\n    }\n";
 
         auto line = [&](const Insn &i, const std::string &code) {
             if (opt_.comments)
@@ -662,7 +675,7 @@ namespace bozo
                 }
                 const uint32_t target = i.branchTarget();
                 const std::string link = (flags & LNK) ? std::format("BZ_D(31) = {}; ", hex64(a + 8)) : std::string();
-                const std::string go = (flags & LNK) ? callTo(target, true) : jumpTo(target, a);
+                const std::string go = (flags & LNK) ? callAt(target) : jumpTo(target, a);
                 if (cond == "true")
                     code = std::format("{}{} {}", link, delay, go);
                 else if (cond == "false")
@@ -675,11 +688,11 @@ namespace bozo
             else if (i.op == Op::J)
                 code = delay + " " + jumpTo(i.jumpTarget(), a);
             else if (i.op == Op::JAL)
-                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callTo(i.jumpTarget(), true));
+                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callAt(i.jumpTarget()));
             else if (i.op == Op::JR)
             {
                 if (s == 31 || f.returnJr.count(a))
-                    code = delay + " return;";
+                    code = ret(s, delay);
                 else if (auto jt = f.jumpTables.find(a); jt != f.jumpTables.end())
                 {
                     code = std::format("{{ const uint32_t target = BZ_W({}); {} switch (target) {{ ", s, delay);
@@ -687,17 +700,17 @@ namespace bozo
                     for (uint32_t tg : jt->second.targets)
                         if (seen.insert(tg).second)
                             code += std::format("case {}: {} ", hex(tg), jumpTo(tg, a));
-                    code += "default: break; } bozo_call_indirect(rdram, ctx, rt, target); return; }";
+                    code += "default: break; } " + leave("target") + " bozo_call_indirect(rdram, ctx, rt, target); return; }";
                 }
                 else
-                    code = std::format("{{ const uint32_t target = BZ_W({}); {} if (target == entryRa) return; "
-                                       "bozo_call_indirect(rdram, ctx, rt, target); return; }}",
-                                       s, delay);
+                    code = std::format("{{ const uint32_t target = BZ_W({}); {} if (target == entryRa) {{ ctx->pc = target; return; }} "
+                                       "{} bozo_call_indirect(rdram, ctx, rt, target); return; }}",
+                                       s, delay, leave("target"));
             }
             else if (i.op == Op::JALR)
             {
                 const std::string link = i.rd() == 0 ? std::string() : std::format("BZ_D({}) = {}; ", i.rd(), hex64(a + 8));
-                code = std::format("{{ const uint32_t target = BZ_W({}); {}{} bozo_call_indirect(rdram, ctx, rt, target); }}", s, link, delay);
+                code = std::format("{{ const uint32_t target = BZ_W({}); {}{} {} bozo_call_indirect(rdram, ctx, rt, target); }}", s, link, delay, leave("target"));
             }
             line(i, code);
             if (labels.count(a + 4))
@@ -715,16 +728,17 @@ namespace bozo
         // Falling off the end: continue into the next function.
         if (labels.count(f.end))
             out += label(f.end) + ":;\n";
-        out += "    " + callTo(f.end, false) + "\n}\n";
+        out += "    " + leave(hex(f.end)) + " " + callTo(f.end, false) + "\n}\n";
 
-        if (multiEntry)
-        {
+        out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) {{ body_0x{:x}(rdram, ctx, rt, 0); }}\n",
+                           name, f.start);
+        for (uint32_t e : f.extraEntries)
             out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) {{ body_0x{:x}(rdram, ctx, rt, {}); }}\n",
-                               name, f.start, hex(f.start));
-            for (uint32_t e : f.extraEntries)
-                out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) {{ body_0x{:x}(rdram, ctx, rt, {}); }}\n",
-                                   entryName(f, e), f.start, hex(e));
-        }
+                               entryName(f, e), f.start, hex(e));
+        // The dispatcher's way in at any resume point: ctx->pc.
+        out += std::format("void resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) "
+                           "{{ body_0x{:x}(rdram, ctx, rt, ctx->pc == {} ? 0 : ctx->pc); }}\n",
+                           f.start, f.start, hex(f.start));
         out += "\n";
     }
 
@@ -737,9 +751,13 @@ namespace bozo
             out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", cppName(f.symbol, f.start));
             for (uint32_t e : f.extraEntries)
                 out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", entryName(f, e));
+            out += std::format("void resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", f.start);
         }
         out += std::format("\n// Every function and extra entry by address, sorted.\nextern const BozoFunctionEntry {0}_function_table[];\n"
-                           "extern const size_t {0}_function_count;\n",
+                           "extern const size_t {0}_function_count;\n"
+                           "// Every function's range and its resume entry (enters it at ctx->pc), sorted.\n"
+                           "extern const BozoResumeEntry {0}_resume_table[];\n"
+                           "extern const size_t {0}_resume_count;\n",
                            opt_.prefix);
     }
 
@@ -758,6 +776,10 @@ namespace bozo
         for (const auto &[addr, n] : entries)
             out += std::format("    {{0x{:x}u, {}}},\n", addr, n);
         out += std::format("}};\nconst size_t {0}_function_count = sizeof({0}_function_table) / sizeof({0}_function_table[0]);\n", opt_.prefix);
+        out += std::format("\nconst BozoResumeEntry {}_resume_table[] = {{\n", opt_.prefix);
+        for (const Function &f : a_.functions())
+            out += std::format("    {{0x{:x}u, 0x{:x}u, resume_0x{:x}}},\n", f.start, f.end, f.start);
+        out += std::format("}};\nconst size_t {0}_resume_count = sizeof({0}_resume_table) / sizeof({0}_resume_table[0]);\n", opt_.prefix);
     }
 
 

@@ -13,13 +13,26 @@ struct BozoFunctionEntry
     RecompiledFunction function;
 };
 
+// Every guest function's range [start, end) and the entry that runs it from any of its labels at ctx->pc (the
+// dispatcher's way back into a thread that stopped: abi.md section 3).
+struct BozoResumeEntry
+{
+    uint32_t start;
+    uint32_t end;
+    RecompiledFunction resume;
+};
+
+// A resume entry was asked for a pc that is not one of its function's labels.
+void bozo_resume_failed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc);
+
 // A call or jump through a register (jalr, jr to a non-return address, a computed tail call): the runtime finds
 // `target` in its table (overrides first) and calls it. Unknown targets are the runtime's to report.
 void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target);
 
 // ---- Scheduling ----------------------------------------------------------------------------------------------------
-// Called by the generated checkpoint when ctx->cycles reaches ctx->cycleLimit (function entries, backward branches).
-// The runtime may switch guest threads here, end a frame, or raise the limit and return.
+// Called by the generated checkpoint when ctx->cycles reaches ctx->cycleLimit (backward branches, calls and jumps
+// leaving a function), with ctx->pc set to where the guest code goes on. The runtime may stop the thread here (switch
+// threads, run a handler: it then does not return) or raise the limit and return.
 void bozo_yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
 
 // ---- Exceptions and system instructions ----------------------------------------------------------------------------

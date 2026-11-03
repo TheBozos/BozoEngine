@@ -23,6 +23,17 @@ namespace bozo
         return -1;
     }
 
+    const BozoResumeEntry *FunctionTable::resumeEntry(uint32_t pc) const
+    {
+        const BozoResumeEntry *end = resume_ + resumeCount_;
+        const BozoResumeEntry *it =
+            std::upper_bound(resume_, end, pc, [](uint32_t a, const BozoResumeEntry &e) { return a < e.start; });
+        if (it == resume_)
+            return nullptr;
+        --it;
+        return pc < it->end ? it : nullptr;
+    }
+
     RecompiledFunction FunctionTable::generated(uint32_t address) const
     {
         const BozoFunctionEntry *end = table_ + count_;
@@ -68,6 +79,10 @@ void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
 }
 
 void bozo_yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) { rt->services->yield(rdram, ctx, rt); }
+void bozo_resume_failed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
+{
+    rt->services->resumeFailed(rdram, ctx, rt, pc);
+}
 
 void bozo_syscall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code) { rt->services->syscall(rdram, ctx, rt, code); }
 void bozo_break(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code) { rt->services->breakpoint(rdram, ctx, rt, code); }

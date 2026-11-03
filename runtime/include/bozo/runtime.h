@@ -65,6 +65,13 @@ namespace bozo
             count_ = count;
         }
         RecompiledFunction generated(uint32_t address) const; // nullptr if none
+        // The resume table (every function's range and the entry running it from ctx->pc).
+        void setResume(const BozoResumeEntry *table, size_t count)
+        {
+            resume_ = table;
+            resumeCount_ = count;
+        }
+        const BozoResumeEntry *resumeEntry(uint32_t pc) const; // the function holding pc, nullptr if none
         void setOverride(uint32_t address, RecompiledFunction fn);
         RecompiledFunction override(uint32_t address) const; // nullptr if none
         void clearOverrides() { overrides_.clear(); }
@@ -73,6 +80,8 @@ namespace bozo
     private:
         const BozoFunctionEntry *table_ = nullptr;
         size_t count_ = 0;
+        const BozoResumeEntry *resume_ = nullptr;
+        size_t resumeCount_ = 0;
         std::vector<BozoFunctionEntry> overrides_; // sorted by address
     };
 
@@ -85,6 +94,8 @@ namespace bozo
         // A transfer to an address with neither an override nor generated code.
         virtual void unknownTarget(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target) = 0;
         virtual void yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) = 0;
+        // A resume entry asked for a pc that is not one of its function's labels (a resume point the analysis missed).
+        virtual void resumeFailed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc) { unknownTarget(rdram, ctx, rt, pc); }
         virtual void syscall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code) = 0;
         virtual void breakpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code) = 0;
         virtual void trap(uint8_t *rdram, R5900Context *ctx, Runtime *rt) = 0;
