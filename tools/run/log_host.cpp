@@ -440,7 +440,8 @@ namespace bozo::run
                                 c.ra, c.sp),
                     &r, true);
         log_.advance();
-        auto n = nativeAt_.find(target);
+        // A call the run was cut inside (its end not recorded) stays the log's.
+        auto n = (r.flags & kCut) ? nativeAt_.end() : nativeAt_.find(target);
         answer(ctx, r, c, true, n != nativeAt_.end() ? n->second : nullptr);
     }
 
@@ -543,7 +544,7 @@ namespace bozo::run
         if (auto it = logged.find(kWordPc); it != logged.end() && it->second != c.ra)
             diff += std::format(" the log's call returns to 0x{:x}, not its ra 0x{:x};", it->second, c.ra);
         diff += compareMemory(c.runs);
-        if (c.cycleAfter != r.cycle)
+        if (c.cycleAfter != r.cycle && !f.frameBoundary)
             diff += std::format(" the log's call takes {} EE cycles (native: 0);", c.cycleAfter - r.cycle);
         if (c.timerAfter != c.timerBefore)
             diff += " the log's call changes the pending timer-poll cycles;";
@@ -619,7 +620,7 @@ namespace bozo::run
         for (const Trace &t : c.traces)
         {
             auto it = idNames_.find(t.id);
-            if (it == idNames_.end())
+            if (it == idNames_.end() || !libs::Libraries::follows(it->second))
                 continue;
             const libs::Function *f = libs_.find(it->second);
             if (!f || !(f->library & opt_.native))
@@ -1092,6 +1093,7 @@ namespace bozo::run
         }
         calls_.clear();
         ++frame_;
+        libs_.framesEnded = frame_;
         const uint32_t limit = opt_.frames ? opt_.frames : log_.header().frameLimit;
         if (limit && frame_ >= limit)
         {

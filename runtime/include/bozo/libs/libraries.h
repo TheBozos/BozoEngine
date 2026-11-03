@@ -43,6 +43,9 @@ namespace bozo::libs
         const char *name; // the game's symbol (a leading "ps2_" in a log's name is ignored)
         Library library;
         Handler handler;
+        // The call ends the game's frame and waits for the vblank (sceGsSyncV): its time and its frame end are the
+        // runtime's frame boundary, not the library's (in a pinned run, the log's).
+        bool frameBoundary = false;
     };
 
     // The game's heap as the reference runtime keeps it: blocks carved from guest memory from the heap's start
@@ -93,6 +96,8 @@ namespace bozo::libs
         // the calls game code makes inside them). False with `why` when the call's recorded result disagrees with
         // the native state.
         bool observeTraced(const std::string &name, const uint32_t a[4], uint32_t v0, std::string &why);
+        // Whether a traced call to `name` touches native state (rand, srand, malloc, free).
+        static bool follows(const std::string &name);
         // A call answered from a log, after its effects were applied (`g` holds its context and memory).
         bool observeAnswered(const std::string &name, Guest &g, std::string &why);
 
@@ -102,6 +107,9 @@ namespace bozo::libs
         GsState gs;
         PadState pad;
         McState mc;
+        // Game frames ended so far: the runtime's count at its frame boundary (sceGsSyncV's result and the pad
+        // script follow it).
+        uint32_t framesEnded = 0;
         // printf's output (the game's debug text) goes to the host's stdout unless off.
         bool printOutput = true;
 

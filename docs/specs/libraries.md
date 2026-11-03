@@ -127,3 +127,56 @@ its own), so the kernels give the reference's bits: 8,780,783 calls in match1p (
 from the reference on about 6 calls in 10,000. A portable bit-exact answer needs the Universal CRT's float sine and
 cosine reproduced; their inputs here are always within [-pi/4, pi/4] (the reduction's), so an exhaustive table of
 where they differ from the correctly rounded value (about 1e9 inputs each to scan, once, on Windows) would do it.
+
+## 4. Kernel-side calls still in the log
+
+None. Every NAME class 1 (kernel) function of the boot and match1p logs is native since phase 2 (`kernel.md`; `bozo-run`
+prints a note for any kernel function it would leave to the log, and prints none): `FlushCache` (30,121 calls in boot, 2,675,616 in match1p) and
+the other trivial ones (`EnableCache`, `DisableCache`, `GetMemorySize`, `GsGetIMR`/`GsPutIMR`, `SetGsCrt`...) included.
+The SIF-side helpers that look kernel-like (`sceSifGetSreg`, `sceSifSetSreg`, `sceSifInitIopHeap`...) are library
+calls of the SIF and stay with batch B.
+
+## 5. The GS library (`gs`)
+
+Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
+`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`.
+(`sceGsExecLoadImage` and `sceGsExecStoreImage` are not called in TMB's runs; the reference had `sceGsSyncV` and
+`sceGsSetDefLoadImage` as port overrides, kind 2 in the logs, the others as library stubs.)
+
+There is no GS. The SetDef functions build, in guest memory, the packets the game sends later (the sends themselves are
+DMA and GIF stores, answered from the log until the native renderer takes the draws); the native library writes them
+exactly as the reference did. Their layout follows the game's own libgraph (its code in the ELF, `0x2033b0`-`0x204e80`)
+where the reference agrees with it; where it does not, the reference wins (the records), noted below. What a renderer
+needs is kept in `GsState` (`bozo/libs/gs.h`).
+
+| Function | Native answer | Where the reference differs from the game's libgraph |
+|---|---|---|
+| `sceGsResetGraph(mode, interlace, video, field)` | mode 0: keeps the display mode; writes `{interlace, video, field, 3}` as bytes at scratchpad `0x100`; sets the kernel's field rate (`OP` 37, 60000/1001 in NTSC); returns 0 | the reference writes its own 4 bytes at scratchpad `0x100` (the game's libgraph keeps them in its GParam at `0x4e1f30`, which the reference leaves alone) and does not call `SetGsCrt` |
+| `sceGsResetPath()` | nothing (no result) | |
+| `sceGsSetDefDispEnv(disp, psm, w, h, dx, dy)` | PMODE `0x66`, SMODE2 (from the display mode), DISPFB, DISPLAY (magnification `(w + 2559) / w`, the vertical start 50/25 in NTSC), BGCOLOR 0; returns 0 | the horizontal start is 652 in NTSC (the game's libgraph: 636) |
+| `sceGsSetDefDrawEnv(env, psm, w, h, ztest, zpsm)`, `...DrawEnv2` | the eight A+D pairs (FRAME, ZBUF with the Z buffer after two frame buffers, XYOFFSET at 2048 - w/2, SCISSOR, PRMODECONT and COLCLAMP or'ed with 1, DTHE for 16-bit formats, TEST) for context 1 or 2; returns 8 | |
+| `sceGsSetDefClear(clear, ztest, x, y, w, h, r, g, b, a, z)` | TEST, PRIM sprite, RGBAQ (Q 1.0), two XYZ2, TEST; returns 0 | returns 0 (libgraph: 6) |
+| `sceGsSetDefLoadImage(lp, dbp, dbw, dpsm, x, y, w, h)` | the GIF tag, BITBLTBUF, TRXPOS, TRXREG, TRXDIR 0, the IMAGE tag (its size from the format, as libgraph's table); returns 0 | BITBLTBUF has SBW = 1; returns 0 (libgraph: 6) |
+| `sceGsSetDefStoreImage(sp, sbp, sbw, spsm, x, y, w, h)` | VIF codes, the GIF tag, BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR 1; returns 0 | the first VIF code is a NOP (libgraph: MSKPATH3); BITBLTBUF has DBW = 1; returns 0 (libgraph: 7) |
+| `sceGsPutDrawEnv(packet)` | the A+D pairs kept in `GsState::registers`; returns 0 | |
+| `sceGsSyncPath(mode, timeout)` | 0: nothing is ever in flight | |
+| `sceGsSyncV(mode)` | 1 when the frames ended by then (this one included) are odd, else 0 | (settled on all 8 calls of boot and 2,290 of match1p; the vblank count's parity matches only half of them) |
+
+`sceGsSyncV` is where the game's frame ends (the FRAME record inside the call). Its result is the library's; the wait
+for the vblank and the frame end are the runtime's frame boundary: in a pinned run their time and the FRAME record come
+from the log (`Function::frameBoundary`), in the real runtime from the presentation of the frame.
+
+A call the run was cut inside (match1p's last `sceGsSyncV`, record flag `cut`: its result is not recorded) stays
+answered from the log.
+
+**What the native renderer will need from here** (phase 3's renderer, or TMB's native renderer moved over in phase 4):
+the display mode (`interlace`, `videoMode`, `fieldMode`), the display environment (DISPFB: the frame buffer's width and
+format; DISPLAY: position, magnification and size of the picture), the draw environment registers the game sets
+(FRAME, ZBUF, XYOFFSET, SCISSOR, TEST, DTHE, COLCLAMP of both contexts), and the image transfers set up (GS buffer base,
+width, format, rectangle, direction; the last 64 kept). The pixel data of uploads never goes through here: TMB's native
+renderer takes textures from the game's own assets; the packets the game kicks (`sceGsExecLoadImage` and the DMA chains)
+are still answered from the log as stores, until the renderer takes them (no-packets plan).
+
+Results: boot 20,982 calls native (`sceGsSyncPath` 17,966, `sceGsPutDrawEnv` 2,994, `sceGsSyncV` 6, the SetDef and
+Reset calls 16), match1p 117,534 (`sceGsSyncPath` 95,644, `sceGsPutDrawEnv` 19,291, `sceGsSyncV` 2,289,
+`sceGsSetDefStoreImage` 74, `sceGsSetDefDispEnv` 65, ...), 0 divergences.

@@ -224,6 +224,11 @@ namespace bozo::libs
         return heap;
     }
 
+    bool Libraries::follows(const std::string &name)
+    {
+        return name == "rand" || name == "srand" || name == "malloc" || name == "free";
+    }
+
     bool Libraries::observeTraced(const std::string &name, const uint32_t a[4], uint32_t v0, std::string &why)
     {
         if (name == "rand")
