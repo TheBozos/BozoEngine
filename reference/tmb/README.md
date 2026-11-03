@@ -60,3 +60,24 @@ earlier passes called but never tried (they were only ever called inside a sampl
 1,564 guest functions these runs call have samples; the other 46 only block or are interrupted (thread entry points,
 the main loops, disc loads, movie decoding). The reference build's own replay of every sample (`selfcheck.txt` in each
 folder) matches bit for bit on all 9,232.
+
+## Call logs (phase 2)
+
+The whole run as BozoEngine's phase 2 needs it (`docs/specs/calllog.md`, format `PS2XCLG1`;
+`tools/capture/calllog_read.py` lists and checks them): every out-call in order with its point and effects, and every
+change made outside guest code (the dispatcher's, the libraries' continuations', the IOP's) with the point it was made,
+the thread switches, handlers and kernel operations. Recorded 2026-11-03 on TMB_Recomp `harness/reference` (c83a924)
+with the fork's `harness/calllog` (6dc3de9; code generated with `capture_hooks`), deterministic mode, fresh user
+folder. They hold game memory, so they are kept outside the repository, in `D:\BozoCaptures\tmb\calllog\`.
+
+| Run | Script | Frames | Records | Calls | Size | SHA-256 |
+|---|---|---|---|---|---|---|
+| `boot` | `ref_boot.env` | 3000 | 4,650,558 | 2,432,936 | 194 MB | `b7745379...b6ab1f3aea` |
+
+Checked on the reference build (`calllog.md` section 9): a second recording is the same file (but for the run name);
+the strict recording is the same; the substitution check matches all 4,650,558 records with every window's effects
+taken from the log, its reference record identical to `boot.ref` on every field; the full replay (every call but the
+EE kernel's answered from the log, the IOP stopped, only guest code, the kernel and the scheduler running) makes the
+same 4,650,556 records as the log (the last two: the frame-3000 call the run ends inside) and its reference record
+equals `boot.ref` on `ram`, `scratchpad`, `calls`, `threads` and `eeCycle` for all 3000 frames (`draws` and `sound`
+are not fed in a replay). In the boot run the IOP never changes EE state outside a call.

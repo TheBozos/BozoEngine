@@ -114,6 +114,11 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   semaphores, event flags, alarms, vblank and timer handlers as the game installs them), the scheduler with native
   frame pacing (as `FramePacer` does today), file access to the ISO.
 - Exit: TMB boots to its title screen on BozoEngine with the recorded kernel call trace identical to the reference.
+- **Reference side (2026-11-03): ready for boot.** The call log (`specs/calllog.md`, `PS2XCLG1`): the whole boot run's
+  out-calls with their effects, and every change made outside guest code with its exact point; what BozoEngine
+  implements natively (the EE kernel, section 6 there) and what it answers from the log. The reference build replays
+  its own log with only guest code, its kernel and its scheduler running: every record and the PS2XREF1 fields `ram`,
+  `scratchpad`, `calls`, `threads`, `eeCycle` match `boot.ref` for all 3000 frames.
 
 **Phase 3: native libraries (4-6 weeks).**
 - Pad (and multitap, 4 players), memory card (native save files, plus an importer for today's `mc0`/`mc1` card
