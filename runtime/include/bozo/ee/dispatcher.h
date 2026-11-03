@@ -104,6 +104,8 @@ namespace bozo::ee
         // Binds the host's out-call handler at a guest address (a library function or a port override).
         void bindLibrary(uint32_t address);
         bool isKernelCall(uint32_t address) const { return kernelCalls_.count(address) != 0; }
+        // The heap's start as SetupHeap (syscall 61) returned it (0 before): where the game's malloc starts.
+        uint32_t heapStart() const { return heapStart_; }
 
         // The main thread starts at `entry` with sp `sp`; the dispatcher then runs until the host ends the run.
         void boot(uint32_t entry, uint32_t sp);
@@ -192,6 +194,7 @@ namespace bozo::ee
         Kernel kernel_;
         std::map<uint32_t, KernelCall> kernelCalls_;
         uint64_t cycle_ = 0;
+        uint32_t heapStart_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
         uint32_t timerPending_ = 0;

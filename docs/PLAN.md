@@ -138,6 +138,13 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   largest piece, banks, sequences, voices, effects), movies (the PSS stream through FFmpeg, picture and sound), the
   display mode and vblank, the font and libc helpers the game links.
 - Exit: every scripted run matches the reference hashes (RAM, calls, draw list, sound) for its whole length.
+- **Status (2026-11-03): batch A native** (`specs/libraries.md`, `runtime/libs/`): the C library and libm (bit-exact:
+  the reference's heap, its 64-bit `rand`, its sine and cosine), the GS library (packets as the reference built them,
+  display mode, environments and transfers kept for the renderer), libpad (two DualShock 2s from a frame-keyed script
+  or, later, the PC's input) and libmc (two formatted cards on host files). `bozo-run --pinned` makes every one of
+  their calls natively and checks it against its record (result registers, every byte written): boot and match1p
+  still match every frame and record, 0 divergences. Batch B (CD, SIF/989SND, libmpeg, VU0 microprograms, I/O) is
+  still answered from the log.
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at

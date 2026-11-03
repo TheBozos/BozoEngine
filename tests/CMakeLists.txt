@@ -43,3 +43,12 @@ if(MINGW)
   target_link_options(bozo-runtime-tests PRIVATE -static)
 endif()
 add_test(NAME runtime COMMAND bozo-runtime-tests)
+
+# The native libraries (runtime/libs): what no call log checks yet (the memory card's save path), and the heap and
+# rand rules.
+add_executable(bozo-libs-tests libs/libs_tests.cpp)
+target_link_libraries(bozo-libs-tests PRIVATE bozo_libs)
+if(MINGW)
+  target_link_options(bozo-libs-tests PRIVATE -static)
+endif()
+add_test(NAME libs COMMAND bozo-libs-tests)

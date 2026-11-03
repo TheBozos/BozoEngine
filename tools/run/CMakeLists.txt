@@ -21,7 +21,7 @@ endif()
 
 if(BOZO_TMB_ELF AND BOZO_CALLLOGS)
   add_executable(bozo-run main.cpp log_host.cpp)
-  target_link_libraries(bozo-run PRIVATE bozo_calllog bozo_runtime_core bozo_tmb_generated)
+  target_link_libraries(bozo-run PRIVATE bozo_calllog bozo_libs bozo_runtime_core bozo_tmb_generated)
   target_compile_options(bozo-run PRIVATE -Wall -Wextra)
   target_compile_definitions(bozo-run PRIVATE BOZO_RUN_ELF="${BOZO_TMB_ELF}")
   if(MINGW)

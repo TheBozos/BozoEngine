@@ -1,0 +1,132 @@
+// bozo-libs-tests: the native libraries' parts no call log checks yet (docs/specs/libraries.md): the memory card's
+// save path (the `save` run has no call log), and the heap and rand rules on their own.
+#include "bozo/libs/libraries.h"
+
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+
+namespace
+{
+    int g_failures = 0;
+    void eq(const char *what, long long got, long long want)
+    {
+        if (got == want)
+            return;
+        ++g_failures;
+        std::printf("FAIL %s: %lld, expected %lld\n", what, got, want);
+    }
+
+    struct Machine
+    {
+        std::unique_ptr<Runtime> rt = std::make_unique<Runtime>();
+        R5900Context ctx;
+        bozo::libs::Libraries libs;
+
+        // Calls a native function with up to eight arguments; returns v0.
+        int32_t call(const char *name, std::initializer_list<uint32_t> args)
+        {
+            int i = 0;
+            for (uint32_t a : args)
+            {
+                if (i < 4)
+                    ctx.r[4 + i].sd[0] = static_cast<int32_t>(a);
+                else
+                    ctx.r[8 + i - 4].sd[0] = static_cast<int32_t>(a);
+                ++i;
+            }
+            const bozo::libs::Function *f = libs.find(name);
+            if (!f)
+            {
+                ++g_failures;
+                std::printf("FAIL no native %s\n", name);
+                return 0;
+            }
+            bozo::libs::Guest g(*rt, &ctx);
+            f->handler(libs, g);
+            return ctx.r[2].sw[0];
+        }
+        // sceMcSync's result.
+        int32_t result()
+        {
+            call("sceMcSync", {0, 0x100000, 0x100004});
+            int32_t r;
+            std::memcpy(&r, rt->memory.ram() + 0x100004, 4);
+            return r;
+        }
+        void string(uint32_t at, const char *s) { std::memcpy(rt->memory.ram() + at, s, std::strlen(s) + 1); }
+    };
+
+    void memoryCard()
+    {
+        Machine m;
+        m.call("sceMcInit", {});
+        m.call("sceMcGetInfo", {0, 0, 0x100010, 0x100014, 0x100018});
+        eq("first GetInfo: a new card", m.result(), -1);
+        m.call("sceMcGetInfo", {0, 0, 0x100010, 0x100014, 0x100018});
+        eq("second GetInfo", m.result(), 0);
+        uint32_t freeClusters;
+        std::memcpy(&freeClusters, m.rt->memory.ram() + 0x100014, 4);
+        eq("free clusters of an empty card", freeClusters, 0x2000);
+
+        // The save run's sequence (tmb-calls.md section 5): the folder, its files, the save, globalFile.
+        m.string(0x101000, "BASCUS-97101/globalFile");
+        m.call("sceMcGetDir", {0, 0, 0x101000, 0, 1, 0x102000});
+        eq("globalFile on a fresh card", m.result(), -4);
+        m.string(0x101000, "/BASCUS-97101");
+        m.call("sceMcMkdir", {0, 0, 0x101000});
+        eq("Mkdir", m.result(), 0);
+        m.call("sceMcMkdir", {0, 0, 0x101000});
+        eq("Mkdir again", m.result(), -8);
+        m.string(0x101000, "/BASCUS-97101/icon.sys");
+        m.call("sceMcOpen", {0, 0, 0x101000, 0x203});
+        const int32_t fd = m.result();
+        eq("Open with CREAT", fd > 0, 1);
+        m.string(0x103000, "PS2D-icon");
+        m.call("sceMcWrite", {static_cast<uint32_t>(fd), 0x103000, 964});
+        eq("Write", m.result(), 964);
+        m.call("sceMcClose", {static_cast<uint32_t>(fd)});
+        eq("Close", m.result(), 0);
+        m.call("sceMcOpen", {0, 0, 0x101000, 0x1});
+        const int32_t rd = m.result();
+        m.call("sceMcRead", {static_cast<uint32_t>(rd), 0x104000, 2000});
+        eq("Read what was written", m.result(), 964);
+        eq("Read's bytes", std::memcmp(m.rt->memory.ram() + 0x104000, "PS2D-icon", 10), 0);
+        m.call("sceMcClose", {static_cast<uint32_t>(rd)});
+        m.string(0x101000, "BASCUS-97101/*");
+        m.call("sceMcGetDir", {0, 0, 0x101000, 0, 50, 0x102000});
+        eq("the folder's listing: ., .., icon.sys", m.result(), 3);
+        eq("third entry's name", std::strcmp(reinterpret_cast<const char *>(m.rt->memory.ram() + 0x102000 + 128 + 32), "icon.sys"), 0);
+        m.string(0x101000, "*");
+        m.call("sceMcGetDir", {0, 0, 0x101000, 0, 50, 0x102000});
+        eq("the root: ., .., BASCUS-97101", m.result(), 3);
+        m.string(0x101000, "BASCUS-97101/missing");
+        m.call("sceMcOpen", {0, 0, 0x101000, 0x1});
+        eq("Open of a missing file", m.result(), -4);
+    }
+
+    void heapAndRand()
+    {
+        Machine m;
+        m.libs.heap.reset(0x751b20, 0x2000000);
+        eq("malloc 0x3c0", m.call("malloc", {0x3c0}), 0x751b20);
+        eq("malloc 0x408", m.call("malloc", {0x408}), 0x751ee0);
+        m.call("free", {0x751ee0});
+        eq("malloc 0x1008 reuses the freed block", m.call("malloc", {0x1008}), 0x751ee0);
+        eq("malloc 0x18 rounds to 16", m.call("malloc", {0x18}), 0x752ef0);
+        eq("next", m.call("malloc", {0x18}), 0x752f10);
+        m.call("srand", {0});
+        eq("rand 1", m.call("rand", {}), 0);
+        eq("rand 2", m.call("rand", {}), 0x5851f42d);
+        eq("rand 3", m.call("rand", {}), 0x40b18ccf);
+    }
+}
+
+int main()
+{
+    memoryCard();
+    heapAndRand();
+    std::printf("%s\n", g_failures ? "FAILED" : "all passed");
+    return g_failures ? 1 : 0;
+}

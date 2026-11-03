@@ -27,7 +27,8 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--quiet]\n");
+                     "                [--pinned] [--native libc,libm,gs,pad,mc|all|none]\n"
+                     "                [--pad-script [port=]file] [--card-dir dir] [--quiet]\n");
         return 2;
     }
 
@@ -53,6 +54,8 @@ int main(int argc, char **argv)
     if (argc < 2)
         return usage();
     std::string logPath = argv[1], refPath, outPath, elfPath = BOZO_RUN_ELF;
+    std::vector<std::pair<int, std::string>> padScripts;
+    std::string cardDir;
     run::Options opt;
     for (int k = 2; k < argc; ++k)
     {
@@ -76,6 +79,25 @@ int main(int argc, char **argv)
             opt.quiet = true;
         else if (a == "--pinned")
             opt.pinned = true;
+        else if (a == "--pad-script")
+        {
+            // [port=]file: port 1 or 2 (1 when omitted)
+            std::string v = value();
+            int port = 0;
+            if (v.size() > 2 && v[1] == '=' && (v[0] == '1' || v[0] == '2'))
+            {
+                port = v[0] - '1';
+                v = v.substr(2);
+            }
+            padScripts.emplace_back(port, v);
+        }
+        else if (a == "--card-dir")
+            cardDir = value();
+        else if (a == "--native")
+        {
+            if (!libs::parseLibraries(value(), opt.native))
+                return usage();
+        }
         else
             return usage();
     }
@@ -113,6 +135,19 @@ int main(int argc, char **argv)
     }
 
     run::LogHost host(log, opt);
+    libs::ScriptInput padScript;
+    for (const auto &[port, path] : padScripts)
+    {
+        std::vector<uint8_t> text;
+        std::string err;
+        if (!readFile(path, text) || !padScript.load(port, std::string(text.begin(), text.end()), err))
+        {
+            std::fprintf(stderr, "pad script %s: %s\n", path.c_str(), err.empty() ? "cannot read it" : err.c_str());
+            return 2;
+        }
+    }
+    host.libraries().pad.input = &padScript;
+    host.libraries().mc.hostDirectory = cardDir; // empty: cards in memory, fresh and formatted
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
@@ -169,6 +204,21 @@ int main(int argc, char **argv)
         std::printf("frames matching the reference: ram %s, scratchpad %s, calls %s, threads %s, eeCycle %s\n",
                     pct(s.ram, s.frames, b1), pct(s.scratchpad, s.frames, b2), pct(s.calls, s.frames, b3),
                     pct(s.threads, s.frames, b4), pct(s.eeCycle, s.frames, b5));
+    {
+        const run::NativeStats &n = host.nativeStats();
+        std::printf("native libraries:");
+        uint64_t total = 0;
+        for (unsigned bit = 0; bit < 5; ++bit)
+            if (opt.native & (1u << bit))
+            {
+                std::printf(" %s %llu", libs::libraryName(static_cast<libs::Library>(1u << bit)),
+                            static_cast<unsigned long long>(n.calls[bit]));
+                total += n.calls[bit];
+            }
+        std::printf("%s (%llu calls answered natively); %llu answered calls followed; %llu divergences\n",
+                    opt.native ? "" : " none", static_cast<unsigned long long>(total),
+                    static_cast<unsigned long long>(n.observed), static_cast<unsigned long long>(n.divergences));
+    }
     if (opt.pinned)
     {
         const run::PinnedStats &p = host.pinnedStats();

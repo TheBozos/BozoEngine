@@ -1,77 +1,402 @@
-// bozo-calllog-tool: what the build needs from call logs before bozo-run exists.
+// bozo-calllog-tool: what the build needs from call logs before bozo-run exists, and what phase 3 reads from them.
 //   bozo-calllog-tool externals <out.txt> <log.clg>... [--merge <externals.txt>]
 //                                                         the addresses the generated code must route to the runtime:
 //                                                         every named stub (NAME classes 1 and 2) and every override
 //                                                         (OVRD, and NAME class 3), as bozo-recomp --externals reads them
+//   bozo-calllog-tool survey <log.clg>                    per stub or override target: calls, the context words its
+//                                                         calls change, the memory they write, the EE cycles they take,
+//                                                         the traced calls and records made inside them
+//   bozo-calllog-tool dump <log.clg> <target>[,...] [n] [skip]
+//                                                         the first n CALL records at the targets (after skipping
+//                                                         some) with their inputs, context words, memory runs and
+//                                                         records inside
+//   bozo-calllog-tool calls <log.clg> <name>[,...]        every call to the named stubs in run order, the traced calls
+//                                                         made inside other out-calls included
+//   bozo-calllog-tool writes <log.clg> <lo> <hi> [from] [to]
+//                                                         the records whose memory runs touch [lo, hi)
 #include "calllog.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <set>
 #include <string>
 
-int main(int argc, char **argv)
+namespace
 {
     using namespace bozo::calllog;
-    if (argc < 4 || std::string(argv[1]) != "externals")
+
+    int externals(int argc, char **argv)
     {
-        std::fprintf(stderr, "usage: bozo-calllog-tool externals <out.txt> <log.clg>...\n");
-        return 2;
-    }
-    std::map<uint32_t, std::string> out; // address -> kind (a stub wins)
-    int logs = 0;
-    for (int k = 3; k < argc; ++k)
-    {
-        if (std::string(argv[k]) == "--merge" && k + 1 < argc)
+        std::map<uint32_t, std::string> out; // address -> kind (a stub wins)
+        int logs = 0;
+        for (int k = 3; k < argc; ++k)
         {
-            // Another externals file ("stub 0x..." / "override 0x..." lines) merged in.
-            std::FILE *m = std::fopen(argv[++k], "r");
-            if (!m)
+            if (std::string(argv[k]) == "--merge" && k + 1 < argc)
             {
-                std::fprintf(stderr, "cannot read %s\n", argv[k]);
+                // Another externals file ("stub 0x..." / "override 0x..." lines) merged in.
+                std::FILE *m = std::fopen(argv[++k], "r");
+                if (!m)
+                {
+                    std::fprintf(stderr, "cannot read %s\n", argv[k]);
+                    return 1;
+                }
+                char line[256];
+                while (std::fgets(line, sizeof(line), m))
+                {
+                    char kind[32] = {};
+                    unsigned long address = 0;
+                    if (line[0] == '#' || std::sscanf(line, "%31s %lx", kind, &address) != 2)
+                        continue;
+                    if (std::string(kind) == "stub")
+                        out[static_cast<uint32_t>(address)] = "stub";
+                    else
+                        out.emplace(static_cast<uint32_t>(address), "override");
+                }
+                std::fclose(m);
+                continue;
+            }
+            ++logs;
+            std::map<uint32_t, NameInfo> names;
+            std::set<uint32_t> overrides;
+            std::string err;
+            if (!readNames(argv[k], names, overrides, err))
+            {
+                std::fprintf(stderr, "%s\n", err.c_str());
                 return 1;
             }
-            char line[256];
-            while (std::fgets(line, sizeof(line), m))
-            {
-                char kind[32] = {};
-                unsigned long address = 0;
-                if (line[0] == '#' || std::sscanf(line, "%31s %lx", kind, &address) != 2)
-                    continue;
-                if (std::string(kind) == "stub")
-                    out[static_cast<uint32_t>(address)] = "stub";
+            for (const auto &[address, info] : names)
+                if (info.cls == 1 || info.cls == 2)
+                    out[address] = "stub";
                 else
-                    out.emplace(static_cast<uint32_t>(address), "override");
-            }
-            std::fclose(m);
-            continue;
+                    out.emplace(address, "override");
+            for (uint32_t address : overrides)
+                out.emplace(address, "override");
         }
-        ++logs;
-        std::map<uint32_t, NameInfo> names;
-        std::set<uint32_t> overrides;
-        std::string err;
-        if (!readNames(argv[k], names, overrides, err))
+        std::FILE *f = std::fopen(argv[2], "w");
+        if (!f)
         {
-            std::fprintf(stderr, "%s\n", err.c_str());
+            std::fprintf(stderr, "cannot write %s\n", argv[2]);
             return 1;
         }
-        for (const auto &[address, info] : names)
-            if (info.cls == 1 || info.cls == 2)
-                out[address] = "stub";
-            else
-                out.emplace(address, "override");
-        for (uint32_t address : overrides)
-            out.emplace(address, "override");
+        std::fprintf(f, "# Generated by bozo-calllog-tool from %d call logs. Do not edit.\n", logs);
+        for (const auto &[address, kind] : out)
+            std::fprintf(f, "%s 0x%x\n", kind.c_str(), address);
+        std::fclose(f);
+        return 0;
     }
-    std::FILE *f = std::fopen(argv[2], "w");
-    if (!f)
+
+    struct TargetStats
     {
-        std::fprintf(stderr, "cannot write %s\n", argv[2]);
-        return 1;
+        uint64_t calls = 0, withRuns = 0, runBytes = 0, traces = 0, inside = 0, unwound = 0, frameInside = 0;
+        uint32_t maxRuns = 0;
+        std::set<uint32_t> words;
+        std::map<uint64_t, uint64_t> costs; // EE cycles taken -> calls (the first 12 distinct values)
+        uint64_t otherCosts = 0;
+        std::map<uint32_t, uint64_t> insideTypes;
+    };
+
+    int survey(const char *path)
+    {
+        Reader log;
+        if (!log.open(path))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        std::map<std::pair<uint32_t, uint32_t>, TargetStats> stats; // (kind, target)
+        TargetStats *last = nullptr;
+        std::string err;
+        Call c;
+        while (const Record *r = log.peek())
+        {
+            if (r->type == kCall)
+            {
+                if (!parse(*r, c, err))
+                {
+                    std::fprintf(stderr, "record %llu: %s\n", static_cast<unsigned long long>(r->index), err.c_str());
+                    return 1;
+                }
+                last = nullptr;
+                if (c.kind == kStub || c.kind == kOverride)
+                {
+                    TargetStats &s = stats[{c.kind, c.target}];
+                    last = &s;
+                    ++s.calls;
+                    for (const auto &w : c.words)
+                        s.words.insert(w.first);
+                    if (!c.runs.empty())
+                        ++s.withRuns;
+                    s.maxRuns = std::max<uint32_t>(s.maxRuns, static_cast<uint32_t>(c.runs.size()));
+                    for (const Run &run : c.runs)
+                        s.runBytes += run.length;
+                    s.traces += c.traces.size();
+                    if (r->flags & kUnwound)
+                        ++s.unwound;
+                    if (r->flags & kFrameInside)
+                        ++s.frameInside;
+                    const uint64_t cost = c.cycleAfter - r->cycle;
+                    if (s.costs.count(cost) || s.costs.size() < 12)
+                        ++s.costs[cost];
+                    else
+                        ++s.otherCosts;
+                }
+            }
+            else if (r->inside() && last)
+            {
+                ++last->inside;
+                ++last->insideTypes[r->type * 100u + (r->type == kOp ? r->sub : 0u)];
+            }
+            else
+                last = nullptr;
+            log.advance();
+        }
+        if (!log.error().empty())
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+        const auto &names = log.names();
+        for (const auto &[key, s] : stats)
+        {
+            auto it = names.find(key.second);
+            std::printf("%s 0x%07x %s: %llu calls, unwound %llu, frame inside %llu, with runs %llu (max %u runs, %llu bytes), "
+                        "traces %llu, inside %llu\n",
+                        kindName(key.first), key.second, it != names.end() ? it->second.name.c_str() : "?",
+                        static_cast<unsigned long long>(s.calls), static_cast<unsigned long long>(s.unwound),
+                        static_cast<unsigned long long>(s.frameInside), static_cast<unsigned long long>(s.withRuns), s.maxRuns,
+                        static_cast<unsigned long long>(s.runBytes), static_cast<unsigned long long>(s.traces),
+                        static_cast<unsigned long long>(s.inside));
+            std::printf("  words:");
+            for (uint32_t w : s.words)
+                std::printf(" %u", w);
+            std::printf("\n  cycles:");
+            for (const auto &[cost, n] : s.costs)
+                std::printf(" %llu x%llu", static_cast<unsigned long long>(cost), static_cast<unsigned long long>(n));
+            if (s.otherCosts)
+                std::printf(" (+%llu other)", static_cast<unsigned long long>(s.otherCosts));
+            if (!s.insideTypes.empty())
+            {
+                std::printf("\n  inside:");
+                for (const auto &[t, n] : s.insideTypes)
+                    std::printf(" %s%s%u x%llu", typeName(t / 100), t % 100 ? "/" : "", t % 100, static_cast<unsigned long long>(n));
+            }
+            std::printf("\n");
+        }
+        return 0;
     }
-    std::fprintf(f, "# Generated by bozo-calllog-tool from %d call logs. Do not edit.\n", logs);
-    for (const auto &[address, kind] : out)
-        std::fprintf(f, "%s 0x%x\n", kind.c_str(), address);
-    std::fclose(f);
-    return 0;
+
+    int dump(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        std::set<uint32_t> targets; // a comma-separated list
+        for (size_t at = 0; at != std::string::npos;)
+        {
+            const std::string a = argv[3];
+            const size_t comma = a.find(',', at);
+            targets.insert(static_cast<uint32_t>(std::stoul(a.substr(at, comma == std::string::npos ? std::string::npos : comma - at), nullptr, 0)));
+            at = comma == std::string::npos ? comma : comma + 1;
+        }
+        uint64_t n = argc > 4 ? std::stoull(argv[4]) : 10, skip = argc > 5 ? std::stoull(argv[5]) : 0;
+        std::string err;
+        Call c;
+        bool printing = false;
+        while (const Record *r = log.peek())
+        {
+            if (r->type == kCall)
+            {
+                printing = false;
+                if (!parse(*r, c, err))
+                    return 1;
+                if ((c.kind == kStub || c.kind == kOverride) && targets.count(c.target))
+                {
+                    if (skip)
+                        --skip;
+                    else
+                    {
+                        if (n == 0)
+                            break;
+                        --n;
+                        printing = true;
+                        std::printf("#%llu %x f%u c%llu +%llu s%llu t%d flags %x: a %x %x %x %x t %x %x %x %x f12 %08x f13 %08x ra %x sp "
+                                    "%x\n",
+                                    static_cast<unsigned long long>(r->index), c.target, r->frame, static_cast<unsigned long long>(r->cycle),
+                                    static_cast<unsigned long long>(c.cycleAfter - r->cycle), static_cast<unsigned long long>(r->seq),
+                                    r->thread, r->flags, c.value[0], c.value[1], c.value[2], c.value[3], c.t[0], c.t[1], c.t[2],
+                                    c.t[3], c.f12, c.f13, c.ra, c.sp);
+                        std::printf("  words:");
+                        for (const auto &[w, v] : c.words)
+                            std::printf(" w%u=%x", w, v);
+                        std::printf("\n");
+                        for (const Run &run : c.runs)
+                        {
+                            std::printf("  run 0x%x +%u:", run.address, run.length);
+                            for (uint32_t i = 0; i < run.length && i < 96; ++i)
+                                std::printf(" %02x", run.data[i]);
+                            std::printf(run.length > 96 ? " ...\n" : "\n");
+                        }
+                        for (const Trace &t : c.traces)
+                            std::printf("  trace %08x @%x a %x %x %x %x v0 %x flags %x\n", t.id, t.address, t.a[0], t.a[1], t.a[2],
+                                        t.a[3], t.v0, t.flags);
+                    }
+                }
+            }
+            else if (printing && r->inside())
+            {
+                std::printf("  inside: %s", typeName(r->type));
+                if (r->type == kOp)
+                {
+                    Op o;
+                    if (parse(*r, o, err))
+                    {
+                        std::printf(" op %u origin %u depth %u:", r->sub, o.origin, o.depth);
+                        for (uint32_t a : o.args)
+                            std::printf(" %x", a);
+                        std::printf(" wide %llx", static_cast<unsigned long long>(o.wide));
+                    }
+                }
+                std::printf("\n");
+            }
+            else
+                printing = false;
+            log.advance();
+        }
+        return 0;
+    }
+
+    // Every call to the named stubs in run order: the CALL records at their addresses and the traced calls (calllog.md
+    // 4.10) made inside other calls (an override running game code that calls them). One line each:
+    //   C|T <record> <name> a0 a1 a2 a3 <v0 or -> (C: v0 is '-' when the call left v0 as it was)
+    int calls(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        std::set<std::string> wanted;
+        for (size_t at = 0; at != std::string::npos;)
+        {
+            const std::string a = argv[3];
+            const size_t comma = a.find(',', at);
+            wanted.insert(a.substr(at, comma == std::string::npos ? std::string::npos : comma - at));
+            at = comma == std::string::npos ? comma : comma + 1;
+        }
+        std::map<uint32_t, std::string> byAddress, byId;
+        log.peek(); // NAME is read with the first chunks
+        for (const auto &[address, info] : log.names())
+            if (wanted.count(info.name))
+            {
+                byAddress[address] = info.name;
+                // The traced id: FNV-1a 32 of the name, top bit clear.
+                uint32_t h = 2166136261u;
+                for (unsigned char ch : info.name)
+                    h = (h ^ ch) * 16777619u;
+                byId[h & 0x7FFFFFFFu] = info.name;
+            }
+        std::string err;
+        Call c;
+        auto traces = [&](const Record &r, const std::vector<Trace> &ts) {
+            for (const Trace &t : ts)
+                if (auto it = byId.find(t.id); it != byId.end())
+                    std::printf("T %llu %s %x %x %x %x %x\n", static_cast<unsigned long long>(r.index), it->second.c_str(), t.a[0],
+                                t.a[1], t.a[2], t.a[3], t.v0);
+        };
+        while (const Record *r = log.peek())
+        {
+            if (r->type == kCall && parse(*r, c, err))
+            {
+                if (auto it = byAddress.find(c.target); it != byAddress.end() && (c.kind == kStub || c.kind == kOverride))
+                {
+                    std::printf("C %llu %s %x %x %x %x ", static_cast<unsigned long long>(r->index), it->second.c_str(), c.value[0],
+                                c.value[1], c.value[2], c.value[3]);
+                    bool have = false;
+                    for (const auto &[w, v] : c.words)
+                        if (w == 8)
+                        {
+                            std::printf("%x\n", v);
+                            have = true;
+                        }
+                    if (!have)
+                        std::printf("-\n");
+                }
+                traces(*r, c.traces); // all of them, those before a frame end inside it included
+            }
+            log.advance();
+        }
+        return 0;
+    }
+
+    // Every record whose memory runs touch [lo, hi) (flat addresses), between two record indexes.
+    int writes(int argc, char **argv)
+    {
+        Reader log;
+        if (!log.open(argv[2]))
+        {
+            std::fprintf(stderr, "%s\n", log.error().c_str());
+            return 1;
+        }
+        const uint32_t lo = static_cast<uint32_t>(std::stoul(argv[3], nullptr, 0));
+        const uint32_t hi = static_cast<uint32_t>(std::stoul(argv[4], nullptr, 0));
+        const uint64_t from = argc > 5 ? std::stoull(argv[5]) : 0, to = argc > 6 ? std::stoull(argv[6]) : ~0ull;
+        std::string err;
+        Call c;
+        Mem m;
+        Frame f;
+        uint64_t shown = 0;
+        while (const Record *r = log.peek())
+        {
+            if (r->index >= to)
+                break;
+            if (r->index >= from)
+            {
+                const std::vector<Run> *runs = nullptr;
+                uint32_t target = 0;
+                if (r->type == kCall && parse(*r, c, err))
+                {
+                    runs = &c.runs;
+                    target = c.target;
+                }
+                else if ((r->type == kMem || r->type == kInit) && parse(*r, m, err))
+                    runs = &m.runs;
+                else if (r->type == kFrame && parse(*r, f, err))
+                    runs = &f.runs;
+                if (runs)
+                    for (const Run &run : *runs)
+                        if (run.address < hi && run.address + run.length > lo)
+                        {
+                            std::printf("#%llu %s 0x%x f%u: run 0x%x +%u\n", static_cast<unsigned long long>(r->index),
+                                        typeName(r->type), target, r->frame, run.address, run.length);
+                            if (++shown >= 200)
+                                return 0;
+                        }
+            }
+            log.advance();
+        }
+        return 0;
+    }
+}
+
+int main(int argc, char **argv)
+{
+    const std::string cmd = argc > 1 ? argv[1] : "";
+    if (cmd == "externals" && argc >= 4)
+        return externals(argc, argv);
+    if (cmd == "survey" && argc >= 3)
+        return survey(argv[2]);
+    if (cmd == "dump" && argc >= 4)
+        return dump(argc, argv);
+    if (cmd == "calls" && argc >= 4)
+        return calls(argc, argv);
+    if (cmd == "writes" && argc >= 5)
+        return writes(argc, argv);
+    std::fprintf(stderr, "usage: bozo-calllog-tool externals <out.txt> <log.clg>... [--merge <externals.txt>]\n"
+                         "       bozo-calllog-tool survey <log.clg>\n"
+                         "       bozo-calllog-tool dump <log.clg> <target>[,<target>...] [n] [skip]\n"
+                         "       bozo-calllog-tool calls <log.clg> <name>[,<name>...]\n"
+                         "       bozo-calllog-tool writes <log.clg> <lo> <hi> [from record] [to record]\n");
+    return 2;
 }
