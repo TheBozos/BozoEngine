@@ -39,6 +39,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--trace-checkpoints` | with `--trace-from`: also every checkpoint passed (where it goes on, the cycle, the charge) and every dispatcher start |
 | `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
 | `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
+| `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--quiet` | only the summary |
 
 The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference: on

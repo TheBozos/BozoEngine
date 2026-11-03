@@ -180,3 +180,38 @@ are still answered from the log as stores, until the renderer takes them (no-pac
 Results: boot 20,982 calls native (`sceGsSyncPath` 17,966, `sceGsPutDrawEnv` 2,994, `sceGsSyncV` 6, the SetDef and
 Reset calls 16), match1p 117,534 (`sceGsSyncPath` 95,644, `sceGsPutDrawEnv` 19,291, `sceGsSyncV` 2,289,
 `sceGsSetDefStoreImage` 74, `sceGsSetDefDispEnv` 65, ...), 0 divergences.
+
+## 6. Controllers (`pad`)
+
+Native: `scePadInit`, `scePadPortOpen`, `scePadGetState`, `scePadGetReqState`, `scePadInfoMode`, `scePadSetMainMode`,
+`scePadInfoAct`, `scePadSetActAlign`, `scePadSetActDirect`, `scePadInfoPressMode`, `scePadEnterPressMode`,
+`scePadRead`. (The Logitech wheel's `lgDevInit` and `input*Lg*` are the game's own functions over the USB driver, port
+overrides in the reference: they stay with the log.)
+
+The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0; no multitap (slots 1-3 report nothing).
+Their state comes from a `PadInput` (`bozo/libs/pad.h`): `ScriptInput` reads the reference runs' frame-keyed scripts
+(`harness.md` section 1, `reference/tmb/scripts/*_frames.txt`: `frame:BUTTON/frames`, the button held for the reads
+made at game frames [frame, frame + frames), port 1 unless given). A PC input source (keyboard, gamepads) implements the
+same interface later; `rumble()` receives the motor levels the game sets.
+
+| Function | Native answer (settled on the records) |
+|---|---|
+| `scePadInit`, `scePadPortOpen` | 1 (every slot opens) |
+| `scePadGetState(port, slot)` | 6 (stable); 5 (executing a command) in the frame `scePadSetMainMode` or `scePadEnterPressMode` was called and the next; 0 for slots 1-3 |
+| `scePadGetReqState` | 0 (the request completed) |
+| `scePadInfoMode(port, slot, term, offs)` | terms 1 and 2 (current, extended ID): 4 before analog mode is set, 7 once `scePadSetMainMode(.., 1, ..)` completed |
+| `scePadInfoAct(port, slot, -1, 0)` | 2 actuators |
+| `scePadSetMainMode`, `scePadSetActAlign`, `scePadSetActDirect`, `scePadInfoPressMode`, `scePadEnterPressMode` | 1 (the modes, the alignment and the motor levels kept) |
+| `scePadRead(port, slot, data)` | 1, and the data: status 0, the mode ID (`0x79` in pressure mode, `0x73` analog, `0x41` digital), the buttons active low, then the right and left sticks, then twelve pressures |
+
+The script's button maps as the reference's input did: the D-pad also pushes the left stick to its end (left `lx = 0`,
+right `lx = 0xff`, up `ly = 0`, down `ly = 0xff`); a pressed button reports pressure `0xff`. The reference's pressure
+order is right, left, up, down, triangle, circle, cross, square, **L1, L2, R1, R2** (match1p: L1 at byte 16, R1 at byte
+18; L2 and R2 are never pressed in the reference runs, so their places are the two left). In pressure mode a read writes
+20 bytes.
+
+Check: `bozo-run match1p.clg ... --pad-script reference/tmb/scripts/ch1p_frames.txt` (`det1p.env`'s
+`PS2X_PAD_SCRIPT`); boot runs without a script (`ref_boot.env` has none: both pads idle).
+
+Results: boot 29,973 calls native (`scePadGetState` 23,960, `scePadRead` 5,968, ...), match1p 161,084
+(`scePadGetState` 127,848, `scePadRead` 31,940, `scePadSetActDirect` 1,251, ...), 0 divergences.

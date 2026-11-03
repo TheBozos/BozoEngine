@@ -27,7 +27,8 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc|all|none] [--quiet]\n");
+                     "                [--pinned] [--native libc,libm,gs,pad,mc|all|none]\n"
+                     "                [--pad-script [port=]file] [--quiet]\n");
         return 2;
     }
 
@@ -53,6 +54,7 @@ int main(int argc, char **argv)
     if (argc < 2)
         return usage();
     std::string logPath = argv[1], refPath, outPath, elfPath = BOZO_RUN_ELF;
+    std::vector<std::pair<int, std::string>> padScripts;
     run::Options opt;
     for (int k = 2; k < argc; ++k)
     {
@@ -76,6 +78,18 @@ int main(int argc, char **argv)
             opt.quiet = true;
         else if (a == "--pinned")
             opt.pinned = true;
+        else if (a == "--pad-script")
+        {
+            // [port=]file: port 1 or 2 (1 when omitted)
+            std::string v = value();
+            int port = 0;
+            if (v.size() > 2 && v[1] == '=' && (v[0] == '1' || v[0] == '2'))
+            {
+                port = v[0] - '1';
+                v = v.substr(2);
+            }
+            padScripts.emplace_back(port, v);
+        }
         else if (a == "--native")
         {
             if (!libs::parseLibraries(value(), opt.native))
@@ -118,6 +132,18 @@ int main(int argc, char **argv)
     }
 
     run::LogHost host(log, opt);
+    libs::ScriptInput padScript;
+    for (const auto &[port, path] : padScripts)
+    {
+        std::vector<uint8_t> text;
+        std::string err;
+        if (!readFile(path, text) || !padScript.load(port, std::string(text.begin(), text.end()), err))
+        {
+            std::fprintf(stderr, "pad script %s: %s\n", path.c_str(), err.empty() ? "cannot read it" : err.c_str());
+            return 2;
+        }
+    }
+    host.libraries().pad.input = &padScript;
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
