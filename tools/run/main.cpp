@@ -27,7 +27,7 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--quiet]\n");
+                     "                [--pinned] [--native libc,libm,gs,pad,mc|all|none] [--quiet]\n");
         return 2;
     }
 
@@ -76,6 +76,11 @@ int main(int argc, char **argv)
             opt.quiet = true;
         else if (a == "--pinned")
             opt.pinned = true;
+        else if (a == "--native")
+        {
+            if (!libs::parseLibraries(value(), opt.native))
+                return usage();
+        }
         else
             return usage();
     }
@@ -169,6 +174,21 @@ int main(int argc, char **argv)
         std::printf("frames matching the reference: ram %s, scratchpad %s, calls %s, threads %s, eeCycle %s\n",
                     pct(s.ram, s.frames, b1), pct(s.scratchpad, s.frames, b2), pct(s.calls, s.frames, b3),
                     pct(s.threads, s.frames, b4), pct(s.eeCycle, s.frames, b5));
+    {
+        const run::NativeStats &n = host.nativeStats();
+        std::printf("native libraries:");
+        uint64_t total = 0;
+        for (unsigned bit = 0; bit < 5; ++bit)
+            if (opt.native & (1u << bit))
+            {
+                std::printf(" %s %llu", libs::libraryName(static_cast<libs::Library>(1u << bit)),
+                            static_cast<unsigned long long>(n.calls[bit]));
+                total += n.calls[bit];
+            }
+        std::printf("%s (%llu calls answered natively); %llu answered calls followed; %llu divergences\n",
+                    opt.native ? "" : " none", static_cast<unsigned long long>(total),
+                    static_cast<unsigned long long>(n.observed), static_cast<unsigned long long>(n.divergences));
+    }
     if (opt.pinned)
     {
         const run::PinnedStats &p = host.pinnedStats();

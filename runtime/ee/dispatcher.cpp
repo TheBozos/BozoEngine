@@ -235,7 +235,10 @@ namespace bozo::ee
         if (number == 60) // SetupThread(gp, stack, stack size, args, root): the main thread's stack
             ret(ctx, static_cast<int32_t>(kernel_.threadSetup(arg(ctx, 1), arg(ctx, 2), arg(ctx, 0))));
         else // SetupHeap(start, size): the heap starts at the end of the program, aligned to 16 bytes
-            ret(ctx, static_cast<int32_t>((arg(ctx, 0) + 15u) & ~15u));
+        {
+            heapStart_ = (arg(ctx, 0) + 15u) & ~15u;
+            ret(ctx, static_cast<int32_t>(heapStart_));
+        }
         host_.kernelCallEnd(*this, ctx, at, false);
         markOutcallEnd(ctx);
         updateLimit(ctx);

@@ -6,6 +6,7 @@
 #include "calllog.h"
 
 #include "bozo/ee/dispatcher.h"
+#include "bozo/libs/libraries.h"
 #include "bozo/reference.h"
 
 #include <cstdint>
@@ -27,6 +28,17 @@ namespace bozo::run
         // Pinned mode (kernel.md section 4): the vblank's events are taken at the log's points (out-calls before,
         // checkpoints since the last one, pc); EE time is reported, not checked.
         bool pinned = false;
+        // The native libraries answering their calls instead of the log (libs::Library bits), each call checked
+        // against its record: result registers and every byte of memory written.
+        uint32_t native = libs::kAllLibraries;
+    };
+
+    // Per library: calls answered natively, and the native state checked against calls answered from the log.
+    struct NativeStats
+    {
+        uint64_t calls[8] = {};
+        uint64_t observed = 0; // traced or answered calls the native state followed
+        uint64_t divergences = 0;
     };
 
     // Pinned mode: how far BozoEngine's own clock and checkpoint count are from the log's (reported, not checked).
@@ -63,6 +75,8 @@ namespace bozo::run
 
         const FieldStats &stats() const { return stats_; }
         const PinnedStats &pinnedStats() const { return pinned_; }
+        const NativeStats &nativeStats() const { return native_; }
+        libs::Libraries &libraries() { return libs_; }
         uint32_t errors() const { return errors_; }
         uint64_t recordsMatched() const { return matched_; }
         uint64_t calls() const { return seq_; }
@@ -106,11 +120,19 @@ namespace bozo::run
         const calllog::Record *nextEvent();
         // An out-call answered from the log: the CALL is checked, applied, and the records inside it made again.
         const calllog::Record &takeCall(uint8_t kind, uint32_t target, R5900Context *ctx, calllog::Call &c);
-        void answer(R5900Context *ctx, const calllog::Record &r, calllog::Call &c, bool traced);
+        // `native`: the call is made by the native library instead (and checked against the record).
+        void answer(R5900Context *ctx, const calllog::Record &r, calllog::Call &c, bool traced,
+                    const libs::Function *native = nullptr);
+        void runNative(R5900Context *ctx, const calllog::Record &r, const calllog::Call &c, const libs::Function &f);
+        // How the memory a native call wrote differs from the record's runs ("" when it does not).
+        std::string compareMemory(const std::vector<calllog::Run> &runs);
+        // Native state following a call answered from the log, and the calls made inside it.
+        void observe(R5900Context *ctx, const calllog::Record &r, const calllog::Call &c);
         void applyWords(R5900Context *ctx, const calllog::Call &c);
         void applyRuns(const std::vector<calllog::Run> &runs);
         // The records made inside a call (OPs of depth 0, INVOKE, FRAME), made again in order.
-        bool insideRecords(R5900Context *ctx, uint64_t callSeq, const calllog::Call &c, uint32_t &tracesTaken);
+        bool insideRecords(R5900Context *ctx, uint64_t callSeq, const calllog::Call &c, uint32_t &tracesTaken,
+                           bool native = false);
         void endFrame(const calllog::Record &r, const calllog::Frame &f, uint32_t openId, const uint32_t *openArgs);
         void continuation(uint32_t origin, uint32_t memSource, const char *what);
         void trace(const calllog::Record &r, const char *note = "");
@@ -160,6 +182,12 @@ namespace bozo::run
         bool blockedInCall_ = false;
         // Contexts the log alone knows: a library handler's first context, a library continuation's changes.
         std::set<std::pair<int32_t, uint32_t>> lenient_;
+        // The native libraries, the functions bound by address, and the traced calls' names by id.
+        libs::Libraries libs_;
+        std::map<uint32_t, const libs::Function *> nativeAt_;
+        std::map<uint32_t, std::string> idNames_;
+        libs::Journal journal_;
+        NativeStats native_;
         // CPCOND0 from the game's DMA register stores (replay.md section 3).
         uint32_t dmaDone_ = 0, dmaPcr_ = 0;
         bool dmaPcrKnown_ = false;

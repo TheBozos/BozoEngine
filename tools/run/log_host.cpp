@@ -92,6 +92,8 @@ namespace bozo::run
     {
         d_ = &d;
         d.kernel().setObserver(this);
+        libs_.attach(d);
+        libs_.printOutput = !opt_.quiet;
         names_ = log_.names();
         uint32_t kernel = 0;
         for (const auto &[address, info] : names_)
@@ -109,7 +111,10 @@ namespace bozo::run
                     std::printf("note: kernel function %s (0x%x) has no native implementation: answered from the log\n",
                                 info.name.c_str(), address);
                 d.bindLibrary(address);
+                if (const libs::Function *f = libs_.find(info.name); f && (f->library & opt_.native))
+                    nativeAt_[address] = f;
             }
+            idNames_[traceIds_[address]] = info.name.rfind("ps2_", 0) == 0 ? info.name.substr(4) : info.name;
         }
         for (uint32_t address : log_.overrides())
             if (!d.isKernelCall(address))
@@ -275,7 +280,7 @@ namespace bozo::run
             std::memcpy(flat + r.address, r.data, r.length);
     }
 
-    bool LogHost::insideRecords(R5900Context *ctx, uint64_t callSeq, const Call &c, uint32_t &tracesTaken)
+    bool LogHost::insideRecords(R5900Context *ctx, uint64_t callSeq, const Call &c, uint32_t &tracesTaken, bool native)
     {
         bool invoked = false;
         std::string err;
@@ -286,6 +291,13 @@ namespace bozo::run
                 break;
             const Record r = *p;
             d_->setNow(ctx, r.cycle); // the library's own time inside the call
+            if (native && r.type != kFrame)
+            {
+                // A native call makes its own operations (matched as they are made): anything left is one it missed.
+                diverge(std::format("the native call did not make the log's {} inside it", typeName(r.type)), &r, true);
+                log_.advance();
+                continue;
+            }
             switch (r.type)
             {
             case kOp:
@@ -341,7 +353,7 @@ namespace bozo::run
         return invoked;
     }
 
-    void LogHost::answer(R5900Context *ctx, const Record &r, Call &c, bool traced)
+    void LogHost::answer(R5900Context *ctx, const Record &r, Call &c, bool traced, const libs::Function *native)
     {
         const uint64_t callSeq = seq_++;
         ++matched_;
@@ -354,16 +366,25 @@ namespace bozo::run
         std::memcpy(openArgs_, args, sizeof(args));
         blockedInCall_ = false;
         const bool frameInside = (r.flags & kFrameInside) != 0;
-        applyWords(ctx, c);
-        if (!frameInside)
-            applyRuns(c.runs);
+        if (!native)
+        {
+            applyWords(ctx, c);
+            if (!frameInside)
+                applyRuns(c.runs);
+        }
         d_->kernel().setOrigin(ee::kOriginCall, callSeq);
+        if (native)
+            runNative(ctx, r, c, *native);
         uint32_t tracesTaken = 0;
         const uint32_t frameBefore = frame_;
-        const bool invoked = insideRecords(ctx, callSeq, c, tracesTaken);
-        applyWords(ctx, c);
-        if (frameInside)
-            applyRuns(c.runs);
+        const bool invoked = insideRecords(ctx, callSeq, c, tracesTaken, native != nullptr);
+        if (!native)
+        {
+            applyWords(ctx, c);
+            if (frameInside)
+                applyRuns(c.runs);
+            observe(ctx, r, c);
+        }
         d_->setNow(ctx, c.cycleAfter);
         d_->setTimerPending(c.timerAfter);
         if (id && frame_ == frameBefore)
@@ -419,7 +440,8 @@ namespace bozo::run
                                 c.ra, c.sp),
                     &r, true);
         log_.advance();
-        answer(ctx, r, c, true);
+        auto n = nativeAt_.find(target);
+        answer(ctx, r, c, true, n != nativeAt_.end() ? n->second : nullptr);
     }
 
     void LogHost::vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address)
@@ -486,6 +508,141 @@ namespace bozo::run
         if (dmaPcrKnown_)
             return dmaPcr_ != 0 && (dmaDone_ & dmaPcr_) == dmaPcr_;
         return dmaDone_ != 0;
+    }
+
+    // ---- Native library calls ----------------------------------------------------------------------------------
+
+    void LogHost::runNative(R5900Context *ctx, const Record &r, const Call &c, const libs::Function &f)
+    {
+        uint32_t &status = d_->runtime().cop0Status;
+        ContextWords entry;
+        toWords(*ctx, status, entry);
+        journal_.clear();
+        libs::Guest g(d_->runtime(), ctx, &journal_);
+        std::string diff;
+        try
+        {
+            f.handler(libs_, g);
+        }
+        catch (const libs::BadAccess &b)
+        {
+            diff += std::format(" an access to 0x{:x} ({} bytes) outside guest memory;", b.address, b.bytes);
+        }
+        ContextWords now;
+        toWords(*ctx, status, now);
+        std::map<uint32_t, uint32_t> logged(c.words.begin(), c.words.end());
+        for (uint32_t w = 0; w < kContextWords; ++w)
+        {
+            if (w == kWordPc)
+                continue;
+            auto it = logged.find(w);
+            const uint32_t want = it != logged.end() ? it->second : entry[w];
+            if (now[w] != want)
+                diff += std::format(" w{} {:x} (log {:x})", w, now[w], want);
+        }
+        if (auto it = logged.find(kWordPc); it != logged.end() && it->second != c.ra)
+            diff += std::format(" the log's call returns to 0x{:x}, not its ra 0x{:x};", it->second, c.ra);
+        diff += compareMemory(c.runs);
+        if (c.cycleAfter != r.cycle)
+            diff += std::format(" the log's call takes {} EE cycles (native: 0);", c.cycleAfter - r.cycle);
+        if (c.timerAfter != c.timerBefore)
+            diff += " the log's call changes the pending timer-poll cycles;";
+        if (!c.traces.empty())
+            diff += std::format(" the log's call made {} traced calls;", c.traces.size());
+        unsigned bit = 0;
+        while (bit < 7 && !(f.library & (1u << bit)))
+            ++bit;
+        ++native_.calls[bit];
+        if (!diff.empty())
+        {
+            ++native_.divergences;
+            diverge(std::format("native {} ({}) differs from the log:{}", f.name, libs::libraryName(f.library), diff), &r, true);
+            // Going on (--max-errors): the log's effect replaces the native one.
+            uint8_t *flat = d_->runtime().memory.flat();
+            for (size_t i = journal_.entries.size(); i-- > 0;)
+            {
+                const libs::Journal::Entry &e = journal_.entries[i];
+                std::memcpy(flat + e.flat, journal_.old.data() + e.oldAt, e.length);
+            }
+            for (uint32_t w = 0; w < kContextWords; ++w)
+                if (w != kWordPc)
+                    setContextWord(*ctx, status, w, entry[w]);
+            applyWords(ctx, c);
+            applyRuns(c.runs);
+        }
+    }
+
+    std::string LogHost::compareMemory(const std::vector<Run> &runs)
+    {
+        const uint8_t *flat = d_->runtime().memory.flat();
+        for (const Run &run : runs)
+            if (std::memcmp(flat + run.address, run.data, run.length) != 0)
+            {
+                uint32_t i = 0;
+                while (flat[run.address + i] == run.data[i])
+                    ++i;
+                return std::format(" memory 0x{:x}: {:02x} (log {:02x}, run 0x{:x} +{});", run.address + i, flat[run.address + i],
+                                   run.data[i], run.address, run.length);
+            }
+        // Bytes the native call changed that the log's call did not: each written range's bytes as they were before
+        // the call (an earlier write to the same bytes holds their older value) against now, outside the log's runs.
+        auto covered = [&](uint32_t a) {
+            for (const Run &run : runs)
+                if (a >= run.address && a < run.address + run.length)
+                    return true;
+            return false;
+        };
+        const auto &entries = journal_.entries;
+        std::vector<uint8_t> before;
+        for (size_t k = 0; k < entries.size(); ++k)
+        {
+            const libs::Journal::Entry &e = entries[k];
+            before.assign(journal_.old.begin() + static_cast<std::ptrdiff_t>(e.oldAt),
+                          journal_.old.begin() + static_cast<std::ptrdiff_t>(e.oldAt + e.length));
+            for (size_t j = 0; j < k; ++j)
+            {
+                const libs::Journal::Entry &p = entries[j];
+                const uint32_t lo = std::max(p.flat, e.flat), hi = std::min(p.flat + p.length, e.flat + e.length);
+                for (uint32_t a = lo; a < hi; ++a)
+                    before[a - e.flat] = journal_.old[p.oldAt + (a - p.flat)];
+            }
+            for (uint32_t i = 0; i < e.length; ++i)
+                if (flat[e.flat + i] != before[i] && !covered(e.flat + i))
+                    return std::format(" memory 0x{:x}: {:02x} (log unchanged {:02x});", e.flat + i, flat[e.flat + i], before[i]);
+        }
+        return "";
+    }
+
+    void LogHost::observe(R5900Context *ctx, const Record &r, const Call &c)
+    {
+        std::string why;
+        for (const Trace &t : c.traces)
+        {
+            auto it = idNames_.find(t.id);
+            if (it == idNames_.end())
+                continue;
+            const libs::Function *f = libs_.find(it->second);
+            if (!f || !(f->library & opt_.native))
+                continue;
+            ++native_.observed;
+            if (!libs_.observeTraced(it->second, t.a, t.v0, why))
+            {
+                ++native_.divergences;
+                diverge("native state: " + why, &r, true);
+            }
+        }
+        // A library answered from the log that takes from the native heap (libraries.md section 2.2).
+        if (c.kind == kStub && (opt_.native & libs::kLibc))
+            if (auto n = names_.find(c.target); n != names_.end() && n->second.name == "sceMpegCreate")
+            {
+                libs::Guest g(d_->runtime(), ctx);
+                ++native_.observed;
+                if (!libs_.observeAnswered(n->second.name, g, why))
+                {
+                    ++native_.divergences;
+                    diverge("native state: " + why, &r, true);
+                }
+            }
     }
 
     // ---- Kernel calls ------------------------------------------------------------------------------------------
