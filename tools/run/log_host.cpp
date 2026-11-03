@@ -384,6 +384,8 @@ namespace bozo::run
             if (frameInside)
                 applyRuns(c.runs);
             observe(ctx, r, c);
+            if (frameInside)
+                libs_.io.t0Rebase = true; // the port's frame boundary restarts timer 0 (libraries.md section 11)
         }
         d_->setNow(ctx, c.cycleAfter);
         d_->setTimerPending(c.timerAfter);
@@ -465,6 +467,27 @@ namespace bozo::run
         value[0] = c.value[0] | (static_cast<uint64_t>(c.value[1]) << 32);
         value[1] = c.value[2] | (static_cast<uint64_t>(c.value[3]) << 32);
         log_.advance();
+        if ((opt_.native & libs::kIo) && libs::ioKnown(address, size, false))
+        {
+            if ((address & 0x1FFFFFFFu) == 0x10000000u && libs_.io.t0Rebase)
+            {
+                // The timer's count restarted inside the port's frame boundary (answered from the log): it goes on
+                // from the log's value here. The override's own last read of the count is not in the log either: the
+                // log's pending poll cycles say whether it read this same value.
+                libs_.io.t0Rebase = false;
+                libs_.io.t0Start = c.value[0] & 0xFFFFu;
+                libs_.io.t0Base = d_->now(ctx);
+                libs_.io.t0LastRead = c.timerAfter != c.timerBefore ? libs_.io.t0Start : ~0u;
+                ++native_.observed;
+            }
+            libs_.ioAccess = libs::IoAccess{address, size, false, 0, c.timerBefore};
+            answer(ctx, r, c, false, &libs::Libraries::ioFunction());
+            value[0] = libs_.ioAccess.value; // equal to the log's when no divergence was reported
+            value[1] = 0;
+            return;
+        }
+        if (opt_.native & libs::kIo)
+            ++native_.notNative;
         answer(ctx, r, c, false);
     }
 
@@ -485,7 +508,15 @@ namespace bozo::run
                                 c.size, c.value[0]),
                     &r, true);
         log_.advance();
-        // CPCOND0 and the VU0 image follow the game's DMA stores.
+        if ((opt_.native & libs::kIo) && libs::ioKnown(address, size, true))
+        {
+            libs_.ioAccess = libs::IoAccess{address, size, true, value[0], c.timerBefore};
+            answer(ctx, r, c, false, &libs::Libraries::ioFunction());
+            return;
+        }
+        if (opt_.native & libs::kIo)
+            ++native_.notNative;
+        // Answered from the log: CPCOND0 and the VU0 image follow the game's DMA stores.
         trackDma(address, got[0]);
         if ((address & 0x1FFFFFFFu) == 0x10008030u)
             vif0Tadr_ = got[0];
@@ -514,6 +545,8 @@ namespace bozo::run
 
     bool LogHost::cop0Condition(ee::Dispatcher &, R5900Context *)
     {
+        if (opt_.native & libs::kIo)
+            return libs_.io.cpcond0();
         if (dmaPcrKnown_)
             return dmaPcr_ != 0 && (dmaDone_ & dmaPcr_) == dmaPcr_;
         return dmaDone_ != 0;
@@ -583,7 +616,17 @@ namespace bozo::run
         }
         else if (logCycles != 0 && !f.frameBoundary)
             diff += std::format(" the log's call takes {} EE cycles (native: 0);", logCycles);
-        if (c.timerAfter != c.timerBefore)
+        if (&f == &libs::Libraries::ioFunction())
+        {
+            // A hardware register: a load's value, and the timer-poll cycles a poll leaves pending.
+            const libs::IoAccess &a = libs_.ioAccess;
+            const uint64_t logged = c.value[0] | (static_cast<uint64_t>(c.value[1]) << 32);
+            if (!a.store && a.value != logged)
+                diff += std::format(" loads {:x} (log {:x});", a.value, logged);
+            if (a.timerPending != c.timerAfter)
+                diff += std::format(" leaves {} timer-poll cycles pending (log {});", a.timerPending, c.timerAfter);
+        }
+        else if (c.timerAfter != c.timerBefore)
             diff += " the log's call changes the pending timer-poll cycles;";
         if (!c.traces.empty())
             diff += std::format(" the log's call made {} traced calls;", c.traces.size());
@@ -1115,6 +1158,9 @@ namespace bozo::run
         if (!same)
             diverge("OP differs: the kernel made " + mine(), &r);
         checkPoint(r, d_->now(), "OP");
+        // libmpeg (answered from the log) queueing the game's nodata callback: its decoder took the IPU's input.
+        if (e.op == ee::kOpQueue && e.argc > 0 && e.args[0] == ee::kInvokeLibraryCall)
+            libs_.io.ipuDemand = true;
         if (e.op == ee::kOpBlock && d_->currentThread() && static_cast<int32_t>(e.args[0]) == d_->currentThread()->id)
             blockedInCall_ = true;
         log_.advance();
@@ -1124,6 +1170,8 @@ namespace bozo::run
 
     bool LogHost::dmacStatusSet(uint32_t cause)
     {
+        if (opt_.native & libs::kIo)
+            return cause < 10 && (libs_.io.stat & (1u << cause)) != 0;
         const Record *p = log_.peek();
         if (!p || p->type != kOp || p->sub != ee::kOpIrq)
             return false;

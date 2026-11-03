@@ -160,6 +160,7 @@ namespace bozo::libs
         case kMc: return "mc";
         case kCd: return "cd";
         case kVu0: return "vu0";
+        case kIo: return "io";
         default: return "?";
         }
     }

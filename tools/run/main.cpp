@@ -28,7 +28,7 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0|all|none]\n"
+                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io|all|none]\n"
                      "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
         return 2;
     }

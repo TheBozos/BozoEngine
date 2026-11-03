@@ -6,6 +6,7 @@
 #include "bozo/libs/cd.h"
 #include "bozo/libs/gs.h"
 #include "bozo/libs/guest.h"
+#include "bozo/libs/io.h"
 #include "bozo/libs/mc.h"
 #include "bozo/libs/pad.h"
 
@@ -33,9 +34,10 @@ namespace bozo::libs
         kMc = 1u << 4,   // libmc
         kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
         kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
-        kAllLibraries = (1u << 7) - 1,
+        kIo = 1u << 7,   // the hardware registers the game loads and stores (DMA, timer 0, the GS's privileged ones)
+        kAllLibraries = (1u << 8) - 1,
     };
-    constexpr unsigned kLibraryCount = 7;
+    constexpr unsigned kLibraryCount = 8;
 
     // Which microcode VU0's code memory holds: the image of the VIF0 chain the game kicked last (libraries.md
     // section 10). TMB's two chains are static data in its ELF.
@@ -57,7 +59,7 @@ namespace bozo::libs
         void kick(uint32_t chcr, uint32_t tadr);
     };
     const char *libraryName(Library l);
-    // "libc,libm,gs,pad,mc,cd,vu0", "all" or "none" -> a mask; false on an unknown name.
+    // "libc,libm,gs,pad,mc,cd,vu0,io", "all" or "none" -> a mask; false on an unknown name.
     bool parseLibraries(const std::string &list, uint32_t &mask);
 
     class Libraries;
@@ -176,6 +178,10 @@ namespace bozo::libs
         McState mc;
         CdState cd;
         Vu0State vu0;
+        IoState io;
+        IoAccess ioAccess;
+        // The I/O library as a function: makes the access in `ioAccess`.
+        static const Function &ioFunction();
         // Game frames ended so far: the runtime's count at its frame boundary (sceGsSyncV's result and the pad
         // script follow it).
         uint32_t framesEnded = 0;

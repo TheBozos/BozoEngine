@@ -18,7 +18,8 @@ add_library(bozo_libs STATIC
   libs/pad.cpp
   libs/mc.cpp
   libs/cd.cpp
-  libs/vu0.cpp)
+  libs/vu0.cpp
+  libs/io.cpp)
 target_link_libraries(bozo_libs PUBLIC bozo_runtime_core)
 target_compile_options(bozo_libs PRIVATE -Wall -Wextra)
 # The VU0 programs compute in single precision rounded toward zero, as the reference does: the host's float operations
