@@ -57,6 +57,8 @@ namespace bozo::libs
         }
         void retU(uint32_t v) { ret(static_cast<int32_t>(v)); }
         void retFloat(uint32_t bits) { ctx_->fu[0] = bits; }
+        // The EE cycles the call takes (a timed call's; 0 for the others).
+        uint64_t cycles = 0;
 
         // ---- Memory ----
         // A host pointer to `bytes` bytes of guest memory at `address`; throws BadAccess when there is none.

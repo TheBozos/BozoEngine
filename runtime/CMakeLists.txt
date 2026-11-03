@@ -16,6 +16,7 @@ add_library(bozo_libs STATIC
   libs/libm.cpp
   libs/gs.cpp
   libs/pad.cpp
-  libs/mc.cpp)
+  libs/mc.cpp
+  libs/cd.cpp)
 target_link_libraries(bozo_libs PUBLIC bozo_runtime_core)
 target_compile_options(bozo_libs PRIVATE -Wall -Wextra)

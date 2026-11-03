@@ -158,6 +158,7 @@ namespace bozo::libs
         case kGs: return "gs";
         case kPad: return "pad";
         case kMc: return "mc";
+        case kCd: return "cd";
         default: return "?";
         }
     }
@@ -177,12 +178,15 @@ namespace bozo::libs
             else
             {
                 bool known = false;
-                for (Library l : {kLibc, kLibm, kGs, kPad, kMc})
+                for (unsigned bit = 0; bit < kLibraryCount; ++bit)
+                {
+                    const Library l = static_cast<Library>(1u << bit);
                     if (n == libraryName(l))
                     {
                         mask |= l;
                         known = true;
                     }
+                }
                 if (!known)
                     return false;
             }
@@ -200,6 +204,7 @@ namespace bozo::libs
         addGs(functions_);
         addPad(functions_);
         addMc(functions_);
+        addCd(functions_);
         for (size_t i = 0; i < functions_.size(); ++i)
             byName_[functions_[i].name] = i;
     }
@@ -222,6 +227,42 @@ namespace bozo::libs
             heap.reset(start, 0x2000000u);
         }
         return heap;
+    }
+
+    uint64_t Libraries::now(Guest &g) const
+    {
+        return d_ ? d_->now(g.context()) : 0;
+    }
+
+    uint64_t Libraries::vblankTokenFor(uint64_t cycle) const
+    {
+        if (!d_)
+            return 0;
+        const ee::Kernel &k = d_->kernel();
+        const uint64_t next = k.nextVblankStart(), field = k.field();
+        // Woken at the vblank whose count first exceeds the token: the next one (next) or a later one.
+        const uint64_t later = cycle > next && field ? (cycle - next + field - 1) / field : 0;
+        return k.vblankCount() + later;
+    }
+
+    void Libraries::waitVblank(uint64_t token, int32_t fixedResult, std::function<void(Libraries &, Guest &)> then)
+    {
+        ee::Kernel &k = d_->kernel();
+        const int32_t id = k.running();
+        const bool completion = static_cast<bool>(then);
+        if (completion)
+            continuations_[id] = std::move(then);
+        k.block(id, ee::kWaitVblank, 0, static_cast<uint32_t>(fixedResult), 0, completion, token, fixedResult);
+    }
+
+    std::function<void(Libraries &, Guest &)> Libraries::takeContinuation(int32_t thread)
+    {
+        auto it = continuations_.find(thread);
+        if (it == continuations_.end())
+            return {};
+        auto c = std::move(it->second);
+        continuations_.erase(it);
+        return c;
     }
 
     bool Libraries::follows(const std::string &name)

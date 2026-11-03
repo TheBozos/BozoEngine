@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -36,7 +37,8 @@ namespace bozo::run
     // Per library: calls answered natively, and the native state checked against calls answered from the log.
     struct NativeStats
     {
-        uint64_t calls[8] = {};
+        uint64_t calls[16] = {};
+        uint64_t timeDiffers = 0; // timed calls whose EE time is not the log's (free mode: reported, the log's kept)
         uint64_t observed = 0; // traced or answered calls the native state followed
         uint64_t divergences = 0;
     };
@@ -135,6 +137,10 @@ namespace bozo::run
                            bool native = false);
         void endFrame(const calllog::Record &r, const calllog::Frame &f, uint32_t openId, const uint32_t *openArgs);
         void continuation(uint32_t origin, uint32_t memSource, const char *what);
+        // A native library's continuation (origin resume): made on the thread's context, checked against the log's
+        // MEM records of that source (its operations are matched as the kernel makes them).
+        void nativeContinuation(ee::Thread &t, std::function<void(libs::Libraries &, libs::Guest &)> run, uint32_t memSource,
+                                const char *what);
         void trace(const calllog::Record &r, const char *note = "");
         uint32_t traceId(uint8_t kind, uint32_t target, const R5900Context *ctx) const; // 0: not traced
         void addTraces(const std::vector<calllog::Trace> &t, size_t from);

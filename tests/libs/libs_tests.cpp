@@ -123,10 +123,29 @@ namespace
     }
 }
 
+// The CD stream's free-mode drive (libraries.md section 8): a sector every kSectorCycles from sceCdStStart, paused
+// while the ring is full.
+static void cdStream()
+{
+    using namespace bozo::libs;
+    CdState cd;
+    cd.ringSectors = 0x50;
+    cd.producedAt = 1000;
+    cd.advance(1000 + 10 * kSectorCycles + 5);
+    eq("sectors arrived after 10 periods", static_cast<long long>(cd.produced), 10);
+    eq("the next one's cycle", static_cast<long long>(cd.readyAt(11)), 1000 + 11 * kSectorCycles);
+    cd.advance(1000 + 500 * kSectorCycles);
+    eq("the ring fills and the drive waits", static_cast<long long>(cd.produced), 0x50);
+    cd.delivered = 0x20;
+    eq("reading on from a full ring", static_cast<long long>(cd.readyAt(0x40)),
+       1000 + 500 * kSectorCycles + 0x10 * kSectorCycles);
+}
+
 int main()
 {
     memoryCard();
     heapAndRand();
+    cdStream();
     std::printf("%s\n", g_failures ? "FAILED" : "all passed");
     return g_failures ? 1 : 0;
 }

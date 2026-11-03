@@ -299,6 +299,7 @@ namespace bozo::ee
         uint32_t vblankCount() const { return vblankCount_; }
         uint64_t nextVblankStart() const { return nextStart_; }
         uint64_t nextVblankEnd() const { return nextEnd_; }
+        uint64_t field() const { return fieldCycles_; } // a field's length in EE cycles
         // The next scheduler event's cycle.
         uint64_t nextEvent() const { return nextStart_ < nextEnd_ ? nextStart_ : nextEnd_; }
         // Processes every event due at or before `cycle`, in order (origin: events).

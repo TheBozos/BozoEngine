@@ -481,8 +481,8 @@ namespace bozo::run
             diverge(std::format("io-store 0x{:x}: size {} value {:x}, the log has size {} value {:x}", address, size, got[0],
                                 c.size, c.value[0]),
                     &r, true);
-        trackDma(address, got[0]);
         log_.advance();
+        trackDma(address, got[0]);
         answer(ctx, r, c, false);
     }
 
@@ -521,6 +521,28 @@ namespace bozo::run
         journal_.clear();
         libs::Guest g(d_->runtime(), ctx, &journal_);
         std::string diff;
+        // A timed call in a pinned run decides about time as the reference did (kernel.md section 4): the EE cycles
+        // the log's call took, and whether its thread waited and until when (the log's block, the first operation
+        // inside it).
+        const uint64_t logCycles = c.cycleAfter - r.cycle;
+        libs_.pin = libs::Pin{};
+        if (f.timed && opt_.pinned)
+        {
+            libs_.pin.active = true;
+            libs_.pin.cycles = logCycles;
+            for (const Run &run : c.runs)
+                libs_.pin.writtenEnd = std::max(libs_.pin.writtenEnd, run.address + run.length);
+            if (const Record *p = log_.peek(); p && p->inside() && p->seq == r.seq && p->type == kOp && p->sub == ee::kOpBlock)
+            {
+                Op o;
+                std::string err;
+                if (parse(*p, o, err))
+                {
+                    libs_.pin.waits = true;
+                    libs_.pin.token = o.wide;
+                }
+            }
+        }
         try
         {
             f.handler(libs_, g);
@@ -544,14 +566,21 @@ namespace bozo::run
         if (auto it = logged.find(kWordPc); it != logged.end() && it->second != c.ra)
             diff += std::format(" the log's call returns to 0x{:x}, not its ra 0x{:x};", it->second, c.ra);
         diff += compareMemory(c.runs);
-        if (c.cycleAfter != r.cycle && !f.frameBoundary)
-            diff += std::format(" the log's call takes {} EE cycles (native: 0);", c.cycleAfter - r.cycle);
+        libs_.pin = libs::Pin{};
+        if (f.timed)
+        {
+            // Free mode: the library's own drive time, reported when it is not the reference's (the log's is kept).
+            if (g.cycles != logCycles)
+                ++native_.timeDiffers;
+        }
+        else if (logCycles != 0 && !f.frameBoundary)
+            diff += std::format(" the log's call takes {} EE cycles (native: 0);", logCycles);
         if (c.timerAfter != c.timerBefore)
             diff += " the log's call changes the pending timer-poll cycles;";
         if (!c.traces.empty())
             diff += std::format(" the log's call made {} traced calls;", c.traces.size());
         unsigned bit = 0;
-        while (bit < 7 && !(f.library & (1u << bit)))
+        while (bit < 15 && !(f.library & (1u << bit)))
             ++bit;
         ++native_.calls[bit];
         if (!diff.empty())
@@ -907,8 +936,68 @@ namespace bozo::run
 
     void LogHost::waitCompleted(ee::Dispatcher &, ee::Thread &t)
     {
+        if (auto run = libs_.takeContinuation(t.id))
+        {
+            nativeContinuation(t, std::move(run), ee::kOriginResume, "resume");
+            return;
+        }
         continuation(ee::kOriginResume, ee::kOriginResume, "resume");
         lenient_.insert({t.id, t.depth()});
+    }
+
+    void LogHost::nativeContinuation(ee::Thread &t, std::function<void(libs::Libraries &, libs::Guest &)> run,
+                                     uint32_t memSource, const char *what)
+    {
+        // The log's memory changes of this continuation: the MEM records of its source at this point (before the
+        // operations it makes, and after them), kept as owned copies.
+        struct Owned
+        {
+            uint32_t address;
+            std::vector<uint8_t> data;
+        };
+        std::vector<Owned> logged;
+        auto take = [&] {
+            std::string err;
+            for (;;)
+            {
+                const Record *p = log_.peek();
+                if (!p || p->inside() || p->type != kMem || p->sub != memSource)
+                    return;
+                const Record r = *p;
+                Mem m;
+                if (!parse(r, m, err))
+                    endRun(err);
+                checkPoint(r, d_->now(), what);
+                for (const Run &run : m.runs)
+                    logged.push_back({run.address, std::vector<uint8_t>(run.data, run.data + run.length)});
+                log_.advance();
+                ++matched_;
+                trace(r);
+            }
+        };
+        take();
+        journal_.clear();
+        libs::Guest g(d_->runtime(), &t.top().ctx, &journal_);
+        std::string diff;
+        try
+        {
+            run(libs_, g);
+        }
+        catch (const libs::BadAccess &b)
+        {
+            diff += std::format(" an access to 0x{:x} ({} bytes) outside guest memory;", b.address, b.bytes);
+        }
+        take();
+        std::vector<Run> runs;
+        for (const Owned &o : logged)
+            runs.push_back({o.address, static_cast<uint32_t>(o.data.size()), o.data.data()});
+        diff += compareMemory(runs);
+        if (!diff.empty())
+        {
+            ++native_.divergences;
+            diverge(std::format("a native continuation ({}) on thread {} differs from the log:{}", what, t.id, diff), nullptr, true);
+            applyRuns(runs);
+        }
     }
 
     void LogHost::handlerCompleted(ee::Dispatcher &, ee::Thread &, const ee::Frame &)

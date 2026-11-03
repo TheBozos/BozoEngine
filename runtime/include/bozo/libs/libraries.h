@@ -3,12 +3,14 @@
 // the game's ELF gives that name. Spec: docs/specs/libraries.md.
 #pragma once
 
+#include "bozo/libs/cd.h"
 #include "bozo/libs/gs.h"
 #include "bozo/libs/guest.h"
 #include "bozo/libs/mc.h"
 #include "bozo/libs/pad.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -29,10 +31,12 @@ namespace bozo::libs
         kGs = 1u << 2,   // the GS library (display and draw environments, uploads, syncs)
         kPad = 1u << 3,  // libpad
         kMc = 1u << 4,   // libmc
-        kAllLibraries = (1u << 5) - 1,
+        kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
+        kAllLibraries = (1u << 6) - 1,
     };
+    constexpr unsigned kLibraryCount = 6;
     const char *libraryName(Library l);
-    // "libc,libm,gs,pad,mc", "all" or "none" -> a mask; false on an unknown name.
+    // "libc,libm,gs,pad,mc,cd", "all" or "none" -> a mask; false on an unknown name.
     bool parseLibraries(const std::string &list, uint32_t &mask);
 
     class Libraries;
@@ -46,6 +50,22 @@ namespace bozo::libs
         // The call ends the game's frame and waits for the vblank (sceGsSyncV): its time and its frame end are the
         // runtime's frame boundary, not the library's (in a pinned run, the log's).
         bool frameBoundary = false;
+        // The call takes EE time or may make its thread wait (a disc read, a stream read): what it decides about time
+        // follows Libraries::pin when a pinned run sets it (the reference's points), else the library's own model.
+        bool timed = false;
+    };
+
+    // A pinned run's points for the timed call being made (kernel.md section 4: what the reference decided about
+    // time, taken from its log): the EE cycles the call takes and whether it makes its thread wait, until when.
+    struct Pin
+    {
+        bool active = false;
+        uint64_t cycles = 0;
+        bool waits = false;
+        uint64_t token = 0; // the wait's token (a vblank wait: the vblank count it waits past)
+        // The end (flat address + 1) of the memory the log's call wrote, 0 if it wrote none: how much of a stream read
+        // had arrived when it was made (the ring's state at that point).
+        uint32_t writtenEnd = 0;
     };
 
     // The game's heap as the reference runtime keeps it: blocks carved from guest memory from the heap's start
@@ -101,12 +121,34 @@ namespace bozo::libs
         // A call answered from a log, after its effects were applied (`g` holds its context and memory).
         bool observeAnswered(const std::string &name, Guest &g, std::string &why);
 
+        // ---- Time and waits ----
+        // The EE clock of the call being made (the dispatcher's).
+        uint64_t now(Guest &g) const;
+        // The EE cycles a timed call takes: the pinned point, else the library's own `native` answer.
+        uint64_t callCycles(uint64_t native) const { return pin.active ? pin.cycles : native; }
+        // Whether a timed call makes its thread wait, and the wait's token: the pinned point, else the library's own.
+        bool waitPoint(bool nativeWaits, uint64_t nativeToken, uint64_t &token) const
+        {
+            token = pin.active ? pin.token : nativeToken;
+            return pin.active ? pin.waits : nativeWaits;
+        }
+        // The vblank count to wait past so a thread waiting from now resumes at the first vblank at or after `cycle`.
+        uint64_t vblankTokenFor(uint64_t cycle) const;
+        // The running thread waits for a vblank (the kernel's wait: `fixedResult` its v0, -1 the vblank's parity); with
+        // `completion`, `then` runs as it resumes (a library continuation, calllog.md section 5, origin resume).
+        void waitVblank(uint64_t token, int32_t fixedResult, std::function<void(Libraries &, Guest &)> then = {});
+        // A library continuation of a thread's wait, run by the runtime as the thread resumes (null if none).
+        std::function<void(Libraries &, Guest &)> takeContinuation(int32_t thread);
+        bool hasContinuation(int32_t thread) const { return continuations_.count(thread) != 0; }
+        Pin pin;
+
         // ---- State ----
         Heap heap;
         Rand rand;
         GsState gs;
         PadState pad;
         McState mc;
+        CdState cd;
         // Game frames ended so far: the runtime's count at its frame boundary (sceGsSyncV's result and the pad
         // script follow it).
         uint32_t framesEnded = 0;
@@ -120,6 +162,7 @@ namespace bozo::libs
         ee::Dispatcher *d_ = nullptr;
         std::vector<Function> functions_;
         std::unordered_map<std::string, size_t> byName_;
+        std::map<int32_t, std::function<void(Libraries &, Guest &)>> continuations_;
     };
 
     // Each library's functions (libc.cpp, libm.cpp, gs.cpp, pad.cpp, mc.cpp).
@@ -128,6 +171,7 @@ namespace bozo::libs
     void addGs(std::vector<Function> &out);
     void addPad(std::vector<Function> &out);
     void addMc(std::vector<Function> &out);
+    void addCd(std::vector<Function> &out);
 
     // printf-style formatting as the reference's sprintf: the format at `format`, the arguments from argument slot
     // `first` on (64-bit doubles for %f/%e/%g). Returns the text without its terminator.

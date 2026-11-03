@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -27,8 +28,8 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc|all|none]\n"
-                     "                [--pad-script [port=]file] [--card-dir dir] [--quiet]\n");
+                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd|all|none]\n"
+                     "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
         return 2;
     }
 
@@ -55,7 +56,7 @@ int main(int argc, char **argv)
         return usage();
     std::string logPath = argv[1], refPath, outPath, elfPath = BOZO_RUN_ELF;
     std::vector<std::pair<int, std::string>> padScripts;
-    std::string cardDir;
+    std::string cardDir, isoPath;
     run::Options opt;
     for (int k = 2; k < argc; ++k)
     {
@@ -93,6 +94,8 @@ int main(int argc, char **argv)
         }
         else if (a == "--card-dir")
             cardDir = value();
+        else if (a == "--iso")
+            isoPath = value();
         else if (a == "--native")
         {
             if (!libs::parseLibraries(value(), opt.native))
@@ -134,6 +137,27 @@ int main(int argc, char **argv)
         }
     }
 
+    if ((opt.native & libs::kCd) && isoPath.empty())
+    {
+        // The CD library reads the game's disc image: without one its calls stay answered from the log.
+        if (const char *env = std::getenv("BOZO_ISO"); env && *env)
+            isoPath = env;
+        else
+        {
+            opt.native &= ~static_cast<uint32_t>(libs::kCd);
+            std::printf("note: no disc image (--iso or BOZO_ISO): the CD library is answered from the log\n");
+        }
+    }
+    if (!isoPath.empty())
+    {
+        libs::DiscImage probe;
+        std::string err;
+        if (!probe.open(isoPath, err))
+        {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 2;
+        }
+    }
     run::LogHost host(log, opt);
     libs::ScriptInput padScript;
     for (const auto &[port, path] : padScripts)
@@ -148,6 +172,7 @@ int main(int argc, char **argv)
     }
     host.libraries().pad.input = &padScript;
     host.libraries().mc.hostDirectory = cardDir; // empty: cards in memory, fresh and formatted
+    host.libraries().cd.imagePath = isoPath;
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
@@ -208,16 +233,19 @@ int main(int argc, char **argv)
         const run::NativeStats &n = host.nativeStats();
         std::printf("native libraries:");
         uint64_t total = 0;
-        for (unsigned bit = 0; bit < 5; ++bit)
+        for (unsigned bit = 0; bit < libs::kLibraryCount; ++bit)
             if (opt.native & (1u << bit))
             {
                 std::printf(" %s %llu", libs::libraryName(static_cast<libs::Library>(1u << bit)),
                             static_cast<unsigned long long>(n.calls[bit]));
                 total += n.calls[bit];
             }
-        std::printf("%s (%llu calls answered natively); %llu answered calls followed; %llu divergences\n",
+        std::printf("%s (%llu calls answered natively); %llu answered calls followed; %llu divergences",
                     opt.native ? "" : " none", static_cast<unsigned long long>(total),
                     static_cast<unsigned long long>(n.observed), static_cast<unsigned long long>(n.divergences));
+        if (n.timeDiffers)
+            std::printf("; %llu timed calls at another EE time than the log's (kept)", static_cast<unsigned long long>(n.timeDiffers));
+        std::printf("\n");
     }
     if (opt.pinned)
     {
