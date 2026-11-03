@@ -39,3 +39,24 @@ play was never affected (the IOP runs on real time there).
 
 Lesson for BozoEngine: the runtime's time model must give the IOP side (or its native replacement) the time a load
 takes, or replies the game expects before a load land after it.
+
+## Per-function captures (phase 1)
+
+Samples of single guest function calls, for checking BozoEngine's generated code function by function
+(`docs/specs/capture.md`, format `PS2XCAP1`; `tools/capture/capture_read.py` lists and checks them). Recorded
+2026-11-03 on TMB_Recomp `harness/reference` (c83a924) with the fork's `harness/capture` (the code generated with
+`capture_hooks`), from the same scripts and deterministic runs as the records above (each run's reference record
+stayed identical to the one here). They hold game memory, so they are kept outside the repository, in
+`D:\BozoCaptures\tmb\<run>[.<pass>]\`.
+
+| Run | Script | Passes | Samples | Functions sampled / called | Unreplayable calls | Size |
+|---|---|---|---|---|---|---|
+| `boot` | `ref_boot.env` | 8 | 763 | 371 / 401 | 66 | 34.5 MB |
+| `match1p` | `det1p.env` | 8 | 4,360 | 1,491 / 1,541 | 191 | 125.8 MB |
+| `story` | `ref_story.env` | 8 | 4,109 | 1,421 / 1,469 | 154 | 111.3 MB |
+
+Up to 4 replayable samples per function, spread over the run. Pass 1 samples every function; pass n only those the
+earlier passes called but never tried (they were only ever called inside a sampled call). Together: 1,518 of the
+1,564 guest functions these runs call have samples; the other 46 only block or are interrupted (thread entry points,
+the main loops, disc loads, movie decoding). The reference build's own replay of every sample (`selfcheck.txt` in each
+folder) matches bit for bit on all 9,232.
