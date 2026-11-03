@@ -308,6 +308,7 @@ namespace bozo
                         JumpTable t;
                         t.jrAddress = a;
                         t.tableAddress = base;
+                        t.inPlace = hi.op == Op::LUI || hi.rt() == hi.rs();
                         for (uint32_t k = 0; k < bound; ++k)
                         {
                             const uint32_t e = base + 4 * k;

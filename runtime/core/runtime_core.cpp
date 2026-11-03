@@ -68,6 +68,7 @@ void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
     {
         ctx->pc = target;
         o(rdram, ctx, rt);
+        ctx->pc = ctx->r[31].uw[0]; // it returned to its caller (what a tail call's caller returns to)
         return;
     }
     if (RecompiledFunction f = rt->functions.generated(target))
@@ -78,7 +79,18 @@ void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
     rt->services->unknownTarget(rdram, ctx, rt, target);
 }
 
+void bozo_tail_call(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target)
+{
+    rt->tailCall = true;
+    bozo_call_indirect(rdram, ctx, rt, target);
+    rt->tailCall = false;
+}
+
 void bozo_yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) { rt->services->yield(rdram, ctx, rt); }
+bool bozo_jump(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target)
+{
+    return rt->services->jump(rdram, ctx, rt, target);
+}
 void bozo_resume_failed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
 {
     rt->services->resumeFailed(rdram, ctx, rt, pc);

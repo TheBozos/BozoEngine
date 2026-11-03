@@ -94,6 +94,8 @@ namespace bozo
         // A transfer to an address with neither an override nor generated code.
         virtual void unknownTarget(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target) = 0;
         virtual void yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) = 0;
+        // A jump through a register (bozo_jump): true to take it over (and not return), false to let the code jump.
+        virtual bool jump(uint8_t *, R5900Context *, Runtime *, uint32_t) { return false; }
         // A resume entry asked for a pc that is not one of its function's labels (a resume point the analysis missed).
         virtual void resumeFailed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc) { unknownTarget(rdram, ctx, rt, pc); }
         virtual void syscall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code) = 0;
@@ -126,4 +128,5 @@ struct Runtime
     bozo::FunctionTable functions;
     bozo::RuntimeServices *services = nullptr;
     uint32_t cop0Status = 0;
+    bool tailCall = false; // the out-call being made was reached by a jump, not a call (bozo_tail_call)
 };

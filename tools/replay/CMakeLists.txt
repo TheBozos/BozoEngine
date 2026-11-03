@@ -13,7 +13,7 @@ find_package(ZLIB REQUIRED)
 
 add_library(bozo_capture STATIC capture.cpp)
 target_include_directories(bozo_capture PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(bozo_capture PUBLIC ZLIB::ZLIB)
+target_link_libraries(bozo_capture PUBLIC ZLIB::ZLIB bozo_runtime_headers)
 target_compile_options(bozo_capture PRIVATE -Wall -Wextra)
 
 add_executable(bozo-capture-tool capture_tool.cpp)
@@ -27,18 +27,45 @@ set(BOZO_TMB_ELF "" CACHE FILEPATH "TMB's executable (SCUS_971.01): enables bozo
 set(BOZO_CAPTURES "" CACHE PATH "The folder holding the capture folders (boot, match1p, story...)")
 set(BOZO_TMB_GEN_FILES 32 CACHE STRING "How many .cpp files TMB's generated code is split into")
 set(BOZO_TMB_GEN_OPT "-O1" CACHE STRING "Optimisation of TMB's generated code")
+set(BOZO_CALLLOGS "" CACHE PATH "The folder holding TMB's call logs (*.clg): enables bozo-run (tools/run)")
 
-if(BOZO_TMB_ELF AND BOZO_CAPTURES)
+if(BOZO_TMB_ELF AND (BOZO_CAPTURES OR BOZO_CALLLOGS))
   set(gen_dir ${CMAKE_BINARY_DIR}/tmb_gen)
   set(externals ${gen_dir}/externals.txt)
-  file(GLOB capture_files ${BOZO_CAPTURES}/*/capture.bin)
+  set(capture_externals ${gen_dir}/externals_captures.txt)
+  set(externals_parts)
+  set(externals_depends)
 
-  add_custom_command(
-    OUTPUT ${externals}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${gen_dir}
-    COMMAND bozo-capture-tool externals ${externals} ${BOZO_CAPTURES}
-    DEPENDS bozo-capture-tool ${capture_files}
-    COMMENT "Listing the captures' out-call addresses")
+  if(BOZO_CAPTURES)
+    file(GLOB capture_files ${BOZO_CAPTURES}/*/capture.bin)
+    add_custom_command(
+      OUTPUT ${capture_externals}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${gen_dir}
+      COMMAND bozo-capture-tool externals ${capture_externals} ${BOZO_CAPTURES}
+      DEPENDS bozo-capture-tool ${capture_files}
+      COMMENT "Listing the captures' out-call addresses")
+    list(APPEND externals_parts ${capture_externals})
+  endif()
+  if(BOZO_CALLLOGS)
+    # The call logs' names and overrides, merged with the captures' list (a stub wins over an override).
+    file(GLOB calllog_files ${BOZO_CALLLOGS}/*.clg)
+    set(merge)
+    if(BOZO_CAPTURES)
+      set(merge --merge ${capture_externals})
+    endif()
+    add_custom_command(
+      OUTPUT ${externals}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${gen_dir}
+      COMMAND bozo-calllog-tool externals ${externals} ${calllog_files} ${merge}
+      DEPENDS bozo-calllog-tool ${calllog_files} ${externals_parts}
+      COMMENT "Listing the call logs' external addresses")
+  else()
+    add_custom_command(
+      OUTPUT ${externals}
+      COMMAND ${CMAKE_COMMAND} -E copy ${capture_externals} ${externals}
+      DEPENDS ${capture_externals}
+      COMMENT "Listing the external addresses")
+  endif()
 
   set(gen_files ${gen_dir}/tmb_functions.h ${gen_dir}/tmb_table.cpp)
   math(EXPR last "${BOZO_TMB_GEN_FILES} - 1")
@@ -66,10 +93,13 @@ if(BOZO_TMB_ELF AND BOZO_CAPTURES)
   target_include_directories(bozo_tmb_generated PUBLIC ${gen_dir})
   target_compile_options(bozo_tmb_generated PRIVATE ${BOZO_TMB_GEN_OPT} -w)
 
+endif()
+
+if(BOZO_TMB_ELF AND BOZO_CAPTURES)
   add_executable(bozo-replay main.cpp replay.cpp)
   target_link_libraries(bozo-replay PRIVATE bozo_capture bozo_runtime_core bozo_recomp_lib bozo_tmb_generated)
   target_compile_options(bozo-replay PRIVATE -Wall -Wextra)
-  target_compile_definitions(bozo-replay PRIVATE BOZO_REPLAY_ELF="${BOZO_TMB_ELF}" BOZO_REPLAY_EXTERNALS="${externals}")
+  target_compile_definitions(bozo-replay PRIVATE BOZO_REPLAY_ELF="${BOZO_TMB_ELF}" BOZO_REPLAY_EXTERNALS="${capture_externals}")
   if(MINGW)
     # Deep guest call chains run on the host stack.
     target_link_options(bozo-replay PRIVATE -static -Wl,--stack,268435456)

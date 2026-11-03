@@ -1,0 +1,860 @@
+// bozo-run's log-backed host. See log_host.h and docs/specs/calllog.md section 8.
+#include "log_host.h"
+
+#include "bozo/hash.h"
+
+#include <algorithm>
+#include <cstring>
+#include <format>
+
+namespace bozo::run
+{
+    using namespace calllog;
+
+    namespace
+    {
+        std::string describe(const Record &r)
+        {
+            std::string s = std::format("#{} {} f{} c{} s{} t{}{} ckp{} pc 0x{:x}", r.index, typeName(r.type), r.frame,
+                                        r.cycle, r.seq, r.thread, r.inside() ? " (inside)" : "", r.checkpoints, r.pc);
+            std::string err;
+            switch (r.type)
+            {
+            case kCall:
+            {
+                Call c;
+                if (parse(r, c, err))
+                    s += std::format(" {} 0x{:x} ra 0x{:x} value {:x} {:x} {:x} {:x} +{} flags {:x}", kindName(c.kind), c.target,
+                                     c.ra, c.value[0], c.value[1], c.value[2], c.value[3], c.cycleAfter - r.cycle, r.flags);
+                break;
+            }
+            case kOp:
+            {
+                Op o;
+                if (parse(r, o, err))
+                {
+                    s += std::format(" {} origin {} depth {} call {}:", ee::opName(r.sub), o.origin, o.depth,
+                                     static_cast<int64_t>(o.originCall));
+                    for (uint32_t a : o.args)
+                        s += std::format(" {:x}", a);
+                    s += std::format(" wide {:x}", o.wide);
+                }
+                break;
+            }
+            case kSwitch:
+            {
+                Switch w;
+                parse(r, w, err);
+                s += std::format(" {}/{} -> {}/{} reason {} wait {} {} {:x}", w.from, w.fromDepth, w.to, w.toDepth, r.sub,
+                                 w.waitReason, w.waitObject, w.token);
+                break;
+            }
+            case kInvoke:
+            {
+                Invoke v;
+                parse(r, v, err);
+                s += std::format(" kind {} thread {} depth {} pc 0x{:x} a {:x} {:x} {:x} {:x} gp {:x} sp {:x} ra {:x} seq {} flags {}",
+                                 r.sub, v.thread, v.depth, v.pc, v.a[0], v.a[1], v.a[2], v.a[3], v.gp, v.sp, v.ra, v.sequence,
+                                 v.flags);
+                break;
+            }
+            case kInvokeEnd:
+            {
+                InvokeEnd v;
+                parse(r, v, err);
+                s += std::format(" kind {} thread {} depth {} v0 {:x} v1 {:x} seq {}", r.sub, v.thread, v.depth, v.v0, v.v1,
+                                 v.sequence);
+                break;
+            }
+            case kCtx:
+            {
+                Ctx c;
+                if (parse(r, c, err))
+                {
+                    s += std::format(" thread {} depth {}:", c.thread, c.depth);
+                    for (const auto &[w, v] : c.words)
+                        s += std::format(" w{}={:x}", w, v);
+                }
+                break;
+            }
+            case kMem: s += std::format(" source {}", r.sub); break;
+            default: break;
+            }
+            return s;
+        }
+
+        uint32_t gpr(const R5900Context *ctx, int n) { return ctx->r[n].uw[0]; }
+    }
+
+    LogHost::LogHost(Reader &log, const Options &options) : log_(log), opt_(options) {}
+
+    uint32_t LogHost::bind(ee::Dispatcher &d)
+    {
+        d_ = &d;
+        d.kernel().setObserver(this);
+        names_ = log_.names();
+        uint32_t kernel = 0;
+        for (const auto &[address, info] : names_)
+        {
+            traceIds_[address] = reference::CallList::stubId(info.name);
+            const ee::KernelCall k = info.cls == 1 ? ee::kernelCallByName(info.name) : ee::KernelCall::None;
+            if (k != ee::KernelCall::None)
+            {
+                d.bindKernelCall(address, k);
+                ++kernel;
+            }
+            else
+            {
+                if (info.cls == 1 && !opt_.quiet)
+                    std::printf("note: kernel function %s (0x%x) has no native implementation: answered from the log\n",
+                                info.name.c_str(), address);
+                d.bindLibrary(address);
+            }
+        }
+        for (uint32_t address : log_.overrides())
+            if (!d.isKernelCall(address))
+                d.bindLibrary(address);
+        return kernel;
+    }
+
+    bool LogHost::init(ee::Dispatcher &d)
+    {
+        const Record *p = log_.peek();
+        if (!p || p->type != kInit)
+            return false;
+        Mem m;
+        std::string err;
+        if (!parse(*p, m, err))
+            return false;
+        uint8_t *flat = d.runtime().memory.flat();
+        for (const Run &r : m.runs)
+            std::memcpy(flat + r.address, r.data, r.length);
+        log_.advance();
+        ++matched_;
+        return true;
+    }
+
+    // ---- Reporting -------------------------------------------------------------------------------------------------
+
+    std::string LogHost::where() const
+    {
+        if (!d_)
+            return "";
+        const ee::Thread *t = d_->currentThread();
+        const ee::Frame *f = d_->currentFrame();
+        return std::format("frame {}, cycle {}, seq {}, thread {} depth {}, pc 0x{:x}, {} checkpoints since the last out-call",
+                           frame_, d_->now(), seq_, t ? t->id : d_->kernel().running(), t ? t->depth() : 0,
+                           f ? f->ctx.pc : 0, d_->checkpointsSince());
+    }
+
+    void LogHost::endRun(const std::string &why)
+    {
+        if (!opt_.quiet && !why.empty())
+            std::printf("%s\n", why.c_str());
+        throw ee::EndRun{};
+    }
+
+    void LogHost::diverge(const std::string &what, const Record *r, bool resync)
+    {
+        ++errors_;
+        std::printf("DIVERGENCE %u: %s\n  log:  %s\n  here: %s\n", errors_, what.c_str(),
+                    r ? describe(*r).c_str() : "(no record)", where().c_str());
+        if (!resync || errors_ >= opt_.maxErrors)
+            endRun("");
+    }
+
+    const Record &LogHost::next(const char *wanted)
+    {
+        const Record *p = log_.peek();
+        if (!p)
+        {
+            if (!log_.error().empty())
+                endRun("log error: " + log_.error());
+            completed_ = true;
+            endRun(std::format("the log has no more records (wanted {})", wanted));
+        }
+        return *p;
+    }
+
+    void LogHost::trace(const Record &r, const char *note)
+    {
+        if (r.index >= opt_.traceFrom)
+        {
+            std::printf("  ok %s%s\n", describe(r).c_str(), note);
+            if (d_)
+                d_->traceCheckpoints = opt_.traceCheckpoints;
+        }
+    }
+
+    void LogHost::checkPoint(const Record &r, uint64_t cycle, const char *what)
+    {
+        if (r.cycle != cycle)
+        {
+            diverge(std::format("{}: cycle {} (log {}, {:+}); checkpoints since the last out-call: {} (log {})", what, cycle,
+                                r.cycle, static_cast<int64_t>(cycle) - static_cast<int64_t>(r.cycle), d_->checkpointsSince(),
+                                r.checkpoints),
+                    &r, true);
+            d_->setNow(nullptr, r.cycle);
+        }
+    }
+
+    // ---- Out-calls -----------------------------------------------------------------------------------------------
+
+    uint32_t LogHost::traceId(uint8_t kind, uint32_t target, const R5900Context *ctx) const
+    {
+        if (kind == kSyscall)
+            return reference::CallList::syscallId(gpr(ctx, 3));
+        if (kind != kStub && kind != kOverride)
+            return 0;
+        auto it = traceIds_.find(target);
+        return it == traceIds_.end() ? 0 : it->second;
+    }
+
+    void LogHost::addTraces(const std::vector<Trace> &t, size_t from)
+    {
+        for (size_t i = from; i < t.size(); ++i)
+            calls_.add(t[i].id, t[i].a, t[i].v0, t[i].flags & 1u);
+    }
+
+    const Record &LogHost::takeCall(uint8_t kind, uint32_t target, R5900Context *ctx, Call &c)
+    {
+        const Record &r = next("CALL");
+        if (r.type != kCall)
+            diverge(std::format("{} 0x{:x}: the log has a {} record", kindName(kind), target, typeName(r.type)), &r);
+        std::string err;
+        if (!parse(r, c, err))
+            endRun(std::format("record {}: {}", r.index, err));
+        const bool kindOk = c.kind == kind || ((kind == kStub || kind == kOverride) && (c.kind == kStub || c.kind == kOverride));
+        if (!kindOk || c.target != target)
+            diverge(std::format("{} 0x{:x}: the log has {} 0x{:x}", kindName(kind), target, kindName(c.kind), c.target), &r);
+        if (r.seq != seq_)
+            diverge(std::format("{} 0x{:x}: seq {}, the log has {}", kindName(kind), target, seq_, r.seq), &r);
+        const ee::Thread *t = d_->currentThread();
+        if (r.thread != (t ? t->id : 0))
+            diverge(std::format("{} 0x{:x}: on thread {}, the log has {}", kindName(kind), target, t ? t->id : 0, r.thread), &r);
+        if (c.depth != d_->currentDepth())
+            diverge(std::format("{} 0x{:x}: at depth {}, the log has {}", kindName(kind), target, d_->currentDepth(), c.depth), &r);
+        checkPoint(r, d_->now(ctx), std::format("{} 0x{:x}", kindName(kind), target).c_str());
+        if (c.timerBefore != d_->timerPending())
+            diverge(std::format("{} 0x{:x}: timer-poll cycles pending {}, the log has {}", kindName(kind), target,
+                                d_->timerPending(), c.timerBefore),
+                    &r);
+        return r;
+    }
+
+    void LogHost::applyWords(R5900Context *ctx, const Call &c)
+    {
+        uint32_t &status = d_->runtime().cop0Status;
+        for (const auto &[w, v] : c.words)
+            if (w != kWordPc)
+                setContextWord(*ctx, status, w, v);
+    }
+
+    void LogHost::applyRuns(const std::vector<Run> &runs)
+    {
+        uint8_t *flat = d_->runtime().memory.flat();
+        for (const Run &r : runs)
+            std::memcpy(flat + r.address, r.data, r.length);
+    }
+
+    bool LogHost::insideRecords(R5900Context *ctx, uint64_t callSeq, const Call &c, uint32_t &tracesTaken)
+    {
+        bool invoked = false;
+        std::string err;
+        for (;;)
+        {
+            const Record *p = log_.peek();
+            if (!p || !p->inside() || p->seq != callSeq)
+                break;
+            const Record r = *p;
+            d_->setNow(ctx, r.cycle); // the library's own time inside the call
+            switch (r.type)
+            {
+            case kOp:
+            {
+                Op o;
+                if (!parse(r, o, err))
+                    endRun(err);
+                if (o.depth != 0)
+                    diverge(std::format("the log has a {} of depth {} the kernel did not make", ee::opName(r.sub), o.depth), &r);
+                d_->kernel().replay(r.sub, o.args.data(), static_cast<uint32_t>(o.args.size()), o.wide);
+                const Record *q = log_.peek();
+                if (q && q->index == r.index)
+                    diverge(std::format("the kernel did not make the log's {}", ee::opName(r.sub)), &r);
+                break;
+            }
+            case kInvoke:
+            {
+                Invoke v;
+                parse(r, v, err);
+                ee::QueuedHandler h;
+                h.kind = r.sub;
+                h.pc = v.pc;
+                for (int i = 0; i < 4; ++i)
+                    h.a[i] = v.a[i];
+                h.gp = v.gp;
+                h.sp = v.sp;
+                h.ra = v.ra;
+                h.completion = (v.flags & 1u) != 0;
+                h.tag = v.tag;
+                d_->stackOnCurrent(h);
+                invoked = true;
+                break;
+            }
+            case kFrame:
+            {
+                Frame f;
+                if (!parse(r, f, err))
+                    endRun(err);
+                log_.advance();
+                ++matched_;
+                trace(r);
+                endFrame(r, f, openId_, openArgs_);
+                tracesTaken = static_cast<uint32_t>(f.traces.size());
+                (void)c;
+                break;
+            }
+            default:
+                diverge(std::format("a {} record inside a call", typeName(r.type)), &r);
+                log_.advance();
+                break;
+            }
+        }
+        return invoked;
+    }
+
+    void LogHost::answer(R5900Context *ctx, const Record &r, Call &c, bool traced)
+    {
+        const uint64_t callSeq = seq_++;
+        ++matched_;
+        trace(r);
+        const bool tail = d_->runtime().tailCall;
+        d_->runtime().tailCall = false;
+        const uint32_t id = traced && !tail ? traceId(c.kind, c.target, ctx) : 0;
+        const uint32_t args[4] = {gpr(ctx, 4), gpr(ctx, 5), gpr(ctx, 6), gpr(ctx, 7)};
+        openId_ = id;
+        std::memcpy(openArgs_, args, sizeof(args));
+        blockedInCall_ = false;
+        const bool frameInside = (r.flags & kFrameInside) != 0;
+        applyWords(ctx, c);
+        if (!frameInside)
+            applyRuns(c.runs);
+        d_->kernel().setOrigin(ee::kOriginCall, callSeq);
+        uint32_t tracesTaken = 0;
+        const uint32_t frameBefore = frame_;
+        const bool invoked = insideRecords(ctx, callSeq, c, tracesTaken);
+        applyWords(ctx, c);
+        if (frameInside)
+            applyRuns(c.runs);
+        d_->setNow(ctx, c.cycleAfter);
+        d_->setTimerPending(c.timerAfter);
+        if (id && frame_ == frameBefore)
+            calls_.add(id, args, blockedInCall_ ? 0 : gpr(ctx, 2), blockedInCall_ ? reference::CallList::kBlocked : 0);
+        addTraces(c.traces, tracesTaken);
+        openId_ = 0;
+
+        const ee::Thread *t = d_->currentThread();
+        const bool mine = invoked || !t || d_->kernel().running() != t->id;
+        const bool theirs = (r.flags & kUnwound) != 0;
+        if (mine != theirs)
+            diverge(std::format("{} 0x{:x}: the call {} here, the log's {}", kindName(c.kind), c.target,
+                                mine ? "left to the dispatcher" : "returned", theirs ? "left" : "returned"),
+                    &r);
+        uint32_t pc = gpr(ctx, 31);
+        bool hasPc = false;
+        for (const auto &[w, v] : c.words)
+            if (w == kWordPc)
+            {
+                pc = v;
+                hasPc = true;
+            }
+        if (mine)
+            d_->stop(ctx, pc);
+        if (r.flags & kTransfer)
+        {
+            if (!hasPc)
+                diverge("a transfer without a pc", &r);
+            d_->stop(ctx, pc);
+        }
+        // A call that returned with the context somewhere else than its return address (an override that ran guest
+        // code and left it elsewhere): the guest code goes back to the dispatcher, which runs it on from there.
+        if ((c.kind == kStub || c.kind == kOverride) && hasPc && pc != c.ra)
+            d_->stop(ctx, pc);
+    }
+
+    void LogHost::libraryCall(ee::Dispatcher &, R5900Context *ctx, uint32_t target)
+    {
+        Call c;
+        const Record r = takeCall(kStub, target, ctx, c);
+        for (int k = 0; k < 4; ++k)
+            if (gpr(ctx, 4 + k) != c.value[k])
+            {
+                diverge(std::format("{} 0x{:x}: a0-a3 {:x} {:x} {:x} {:x}, the log has {:x} {:x} {:x} {:x}", kindName(c.kind),
+                                    target, gpr(ctx, 4), gpr(ctx, 5), gpr(ctx, 6), gpr(ctx, 7), c.value[0], c.value[1],
+                                    c.value[2], c.value[3]),
+                        &r, true);
+                break;
+            }
+        if (gpr(ctx, 31) != c.ra || gpr(ctx, 29) != c.sp)
+            diverge(std::format("0x{:x}: ra {:x} sp {:x}, the log has ra {:x} sp {:x}", target, gpr(ctx, 31), gpr(ctx, 29),
+                                c.ra, c.sp),
+                    &r, true);
+        log_.advance();
+        answer(ctx, r, c, true);
+    }
+
+    void LogHost::vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address)
+    {
+        Call c;
+        const Record r = takeCall(kVu0, address, ctx, c);
+        log_.advance();
+        answer(ctx, r, c, false);
+    }
+
+    void LogHost::ioRead(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2])
+    {
+        Call c;
+        const Record r = takeCall(kIoLoad, address, ctx, c);
+        if (c.size != size)
+            diverge(std::format("io-load 0x{:x}: size {}, the log has {}", address, size, c.size), &r, true);
+        value[0] = c.value[0] | (static_cast<uint64_t>(c.value[1]) << 32);
+        value[1] = c.value[2] | (static_cast<uint64_t>(c.value[3]) << 32);
+        log_.advance();
+        answer(ctx, r, c, false);
+    }
+
+    void LogHost::ioWrite(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2])
+    {
+        Call c;
+        const Record r = takeCall(kIoStore, address, ctx, c);
+        uint32_t got[4] = {static_cast<uint32_t>(value[0]), static_cast<uint32_t>(value[0] >> 32),
+                           static_cast<uint32_t>(value[1]), static_cast<uint32_t>(value[1] >> 32)};
+        const uint32_t words = size >= 16 ? 4 : size == 8 ? 2 : 1;
+        if (size < 4)
+            got[0] &= (1u << (8 * size)) - 1u;
+        bool same = c.size == size;
+        for (uint32_t k = 0; k < words; ++k)
+            same = same && got[k] == c.value[k];
+        if (!same)
+            diverge(std::format("io-store 0x{:x}: size {} value {:x}, the log has size {} value {:x}", address, size, got[0],
+                                c.size, c.value[0]),
+                    &r, true);
+        trackDma(address, got[0]);
+        log_.advance();
+        answer(ctx, r, c, false);
+    }
+
+    void LogHost::trackDma(uint32_t address, uint32_t value)
+    {
+        static const uint32_t chcr[10] = {0x10008000u, 0x10009000u, 0x1000A000u, 0x1000B000u, 0x1000B400u,
+                                          0x1000C000u, 0x1000C400u, 0x1000C800u, 0x1000D000u, 0x1000D400u};
+        const uint32_t a = address & 0x1FFFFFFFu;
+        if (a == 0x1000E010u)
+            dmaDone_ &= ~(value & 0x3FFu);
+        else if (a == 0x1000E020u)
+        {
+            dmaPcr_ = value & 0x3FFu;
+            dmaPcrKnown_ = true;
+        }
+        else
+            for (uint32_t ch = 0; ch < 10; ++ch)
+                if (a == chcr[ch] && (value & 0x100u))
+                    dmaDone_ |= 1u << ch;
+    }
+
+    bool LogHost::cop0Condition(ee::Dispatcher &, R5900Context *)
+    {
+        if (dmaPcrKnown_)
+            return dmaPcr_ != 0 && (dmaDone_ & dmaPcr_) == dmaPcr_;
+        return dmaDone_ != 0;
+    }
+
+    // ---- Kernel calls ------------------------------------------------------------------------------------------
+
+    void LogHost::kernelCallBegin(ee::Dispatcher &d, R5900Context *ctx, uint32_t target, uint32_t kind)
+    {
+        Call &c = kc_.call;
+        const Record r = takeCall(static_cast<uint8_t>(kind), target, ctx, c);
+        uint32_t want[4];
+        if (kind == kSyscall)
+        {
+            want[0] = gpr(ctx, 3);
+            want[1] = gpr(ctx, 4);
+            want[2] = gpr(ctx, 5);
+            want[3] = gpr(ctx, 6);
+        }
+        else
+            for (int k = 0; k < 4; ++k)
+                want[k] = gpr(ctx, 4 + k);
+        for (int k = 0; k < 4; ++k)
+            if (want[k] != c.value[k])
+            {
+                diverge(std::format("{} 0x{:x}: values {:x} {:x} {:x} {:x}, the log has {:x} {:x} {:x} {:x}", kindName(kind),
+                                    target, want[0], want[1], want[2], want[3], c.value[0], c.value[1], c.value[2], c.value[3]),
+                        &r, true);
+                break;
+            }
+        log_.advance();
+        ++matched_;
+        trace(r);
+        kc_.active = true;
+        kc_.tail = d.runtime().tailCall;
+        d.runtime().tailCall = false;
+        kc_.seq = seq_++;
+        kc_.target = target;
+        kc_.kind = kind;
+        kc_.flags = r.flags;
+        kc_.recordIndex = r.index;
+        std::memcpy(kc_.args, want, sizeof(want));
+        toWords(*ctx, d.runtime().cop0Status, kc_.entry);
+        blockedInCall_ = false;
+        ++kernelCalls_;
+        d.kernel().setOrigin(ee::kOriginCall, kc_.seq);
+    }
+
+    void LogHost::kernelCallEnd(ee::Dispatcher &d, R5900Context *ctx, uint32_t target, bool stopping)
+    {
+        const Call &c = kc_.call;
+        if (const Record *p = log_.peek(); p && p->inside() && p->seq == kc_.seq)
+            diverge(std::format("kernel call 0x{:x}: the log has more inside it", target), p);
+        ContextWords now;
+        toWords(*ctx, d.runtime().cop0Status, now);
+        std::map<uint32_t, uint32_t> logged(c.words.begin(), c.words.end());
+        std::string diff;
+        for (uint32_t w = 0; w < kContextWords; ++w)
+        {
+            if (w == kWordPc)
+                continue;
+            auto it = logged.find(w);
+            const uint32_t want = it != logged.end() ? it->second : kc_.entry[w];
+            if (now[w] != want)
+                diff += std::format(" w{} {:x} (log {:x})", w, now[w], want);
+        }
+        Record fake;
+        fake.index = kc_.recordIndex;
+        if (!diff.empty())
+        {
+            diverge(std::format("kernel call 0x{:x} ({}): context differs:{}", target, names_.count(target) ? names_[target].name : "syscall",
+                                diff),
+                    nullptr, true);
+            for (const auto &[w, v] : c.words)
+                if (w != kWordPc)
+                    setContextWord(*ctx, d.runtime().cop0Status, w, v);
+        }
+        if (!c.runs.empty())
+            diverge(std::format("kernel call 0x{:x}: the log's call wrote memory ({} runs)", target, c.runs.size()), nullptr, true);
+        if (c.cycleAfter != d.now(ctx))
+            diverge(std::format("kernel call 0x{:x}: ends at cycle {}, the log's at {}", target, d.now(ctx), c.cycleAfter),
+                    nullptr, true);
+        const bool unwound = (kc_.flags & kUnwound) != 0;
+        if (unwound != stopping)
+            diverge(std::format("kernel call 0x{:x}: {} here, the log's {}", target, stopping ? "left to the dispatcher" : "returned",
+                                unwound ? "left" : "returned"),
+                    nullptr);
+        const uint32_t id = kc_.tail ? 0 : traceId(static_cast<uint8_t>(kc_.kind == kSyscall ? kSyscall : kStub), target, ctx);
+        if (id)
+        {
+            uint32_t args4[4];
+            for (int k = 0; k < 4; ++k)
+                args4[k] = kc_.entry[gprWord(4 + k)];
+            calls_.add(id, args4, blockedInCall_ ? 0 : gpr(ctx, 2), blockedInCall_ ? reference::CallList::kBlocked : 0);
+        }
+        kc_.active = false;
+    }
+
+    // ---- The dispatcher's records ------------------------------------------------------------------------------
+
+    void LogHost::invoked(ee::Dispatcher &d, const ee::Thread &t, const ee::Frame &f, bool insideCall)
+    {
+        const Record &r = next("INVOKE");
+        std::string err;
+        if (r.type != kInvoke)
+            diverge(std::format("a handler 0x{:x} (kind {}) starts on thread {}; the log has a {} record", f.pc, f.kind, t.id,
+                                typeName(r.type)),
+                    &r);
+        Invoke v;
+        parse(r, v, err);
+        std::string diff;
+        if (r.sub != f.kind) diff += std::format(" kind {} (log {})", f.kind, r.sub);
+        if (v.thread != t.id) diff += std::format(" thread {} (log {})", t.id, v.thread);
+        if (v.depth != t.depth()) diff += std::format(" depth {} (log {})", t.depth(), v.depth);
+        if (v.pc != f.pc) diff += std::format(" pc {:x} (log {:x})", f.pc, v.pc);
+        if ((v.flags & 1u) != (f.completion ? 1u : 0u)) diff += " completion";
+        if (v.tag != f.tag) diff += std::format(" tag {:x} (log {:x})", f.tag, v.tag);
+        if (v.sequence != f.sequence) diff += std::format(" sequence {} (log {})", f.sequence, v.sequence);
+        for (int i = 0; i < 4; ++i)
+            if (v.a[i] != f.a[i]) diff += std::format(" a{} {:x} (log {:x})", i, f.a[i], v.a[i]);
+        if (v.gp != f.gp) diff += std::format(" gp {:x} (log {:x})", f.gp, v.gp);
+        if (v.sp != f.sp) diff += std::format(" sp {:x} (log {:x})", f.sp, v.sp);
+        if (v.ra != f.ra) diff += std::format(" ra {:x} (log {:x})", f.ra, v.ra);
+        if (r.inside() != insideCall) diff += insideCall ? " (inside a call here)" : " (outside a call here)";
+        if (!diff.empty())
+            diverge("INVOKE differs:" + diff, &r);
+        checkPoint(r, d.now(), "INVOKE");
+        log_.advance();
+        ++matched_;
+        trace(r);
+        if (f.kind != ee::kInvokeInterrupt)
+            lenient_.insert({t.id, t.depth()});
+    }
+
+    void LogHost::invokeEnded(ee::Dispatcher &d, const ee::Thread &t, const ee::Frame &f)
+    {
+        const Record &r = next("INVOKE_END");
+        if (r.type != kInvokeEnd)
+            diverge(std::format("the handler 0x{:x} on thread {} returned; the log has a {} record", f.pc, t.id, typeName(r.type)),
+                    &r);
+        InvokeEnd v;
+        std::string err;
+        parse(r, v, err);
+        const uint32_t v0 = f.ctx.r[2].uw[0], v1 = f.ctx.r[3].uw[0];
+        if (r.sub != f.kind || v.thread != t.id || v.depth != t.depth() || v.v0 != v0 || v.v1 != v1 || v.sequence != f.sequence)
+            diverge(std::format("INVOKE_END differs: kind {} thread {} depth {} v0 {:x} v1 {:x} sequence {}", f.kind, t.id,
+                                t.depth(), v0, v1, f.sequence),
+                    &r, true);
+        checkPoint(r, d.now(), "INVOKE_END");
+        log_.advance();
+        ++matched_;
+        trace(r);
+    }
+
+    void LogHost::switched(ee::Dispatcher &d, int32_t from, uint32_t fromDepth, int32_t to, uint32_t toDepth, uint16_t reason,
+                           uint32_t waitReason, uint32_t waitObject, uint64_t token)
+    {
+        const Record &r = next("SWITCH");
+        if (r.type != kSwitch)
+            diverge(std::format("switch {}/{} -> {}/{} (reason {}); the log has a {} record", from, fromDepth, to, toDepth,
+                                reason, typeName(r.type)),
+                    &r);
+        Switch s;
+        std::string err;
+        parse(r, s, err);
+        bool same = s.to == to && s.toDepth == toDepth && r.sub == reason;
+        if (reason != ee::kSwitchStart)
+            same = same && s.from == from && s.fromDepth == fromDepth;
+        if (reason == ee::kSwitchBlocked)
+            same = same && s.waitReason == waitReason && s.waitObject == waitObject && s.token == token;
+        if (!same)
+            diverge(std::format("SWITCH differs: {}/{} -> {}/{} reason {} wait {} {} {:x}", from, fromDepth, to, toDepth, reason,
+                                waitReason, waitObject, token),
+                    &r);
+        checkPoint(r, d.now(), "SWITCH");
+        log_.advance();
+        ++matched_;
+        trace(r);
+    }
+
+    void LogHost::resuming(ee::Dispatcher &d, ee::Thread &t, ee::Frame &f, uint32_t depth)
+    {
+        ContextWords cur;
+        toWords(f.ctx, f.status, cur);
+        const Record *p = log_.peek();
+        Ctx c;
+        std::string err;
+        bool have = false;
+        Record r;
+        if (p && p->type == kCtx && !p->inside())
+        {
+            r = *p;
+            if (!parse(r, c, err))
+                endRun(err);
+            if (c.thread != t.id || c.depth != depth)
+                diverge(std::format("guest code runs on {}/{}; the log's CTX is for {}/{}", t.id, depth, c.thread, c.depth), &r);
+            have = true;
+        }
+        const bool lenient = lenient_.erase({t.id, depth}) != 0;
+        std::map<uint32_t, uint32_t> logged(c.words.begin(), c.words.end());
+        std::string diff;
+        for (uint32_t w = 0; w < kContextWords; ++w)
+        {
+            const bool mine = cur[w] != f.last[w];
+            auto it = logged.find(w);
+            if (it != logged.end())
+            {
+                if (cur[w] != it->second && !lenient)
+                    diff += std::format(" w{} {:x} (log {:x})", w, cur[w], it->second);
+            }
+            else if (mine)
+                diff += std::format(" w{} {:x} (log unchanged {:x})", w, cur[w], f.last[w]);
+        }
+        if (!diff.empty())
+            diverge(std::format("context of {}/{} as it resumes differs:{}", t.id, depth, diff), have ? &r : nullptr, true);
+        if (have)
+        {
+            for (const auto &[w, v] : c.words)
+                setContextWord(f.ctx, f.status, w, v);
+            checkPoint(r, d.now(), "CTX");
+            log_.advance();
+            ++matched_;
+            trace(r);
+        }
+    }
+
+    void LogHost::continuation(uint32_t origin, uint32_t memSource, const char *what)
+    {
+        std::string err;
+        for (;;)
+        {
+            const Record *p = log_.peek();
+            if (!p || p->inside())
+                return;
+            const Record r = *p;
+            if (r.type == kMem && r.sub == memSource)
+            {
+                Mem m;
+                if (!parse(r, m, err))
+                    endRun(err);
+                checkPoint(r, d_->now(), what);
+                applyRuns(m.runs);
+                log_.advance();
+                ++matched_;
+                trace(r);
+                continue;
+            }
+            if (r.type == kOp)
+            {
+                Op o;
+                if (!parse(r, o, err))
+                    endRun(err);
+                if (o.origin != origin || o.depth != 0)
+                    return;
+                d_->kernel().replay(r.sub, o.args.data(), static_cast<uint32_t>(o.args.size()), o.wide);
+                const Record *q = log_.peek();
+                if (q && q->index == r.index)
+                    diverge(std::format("the kernel did not make the log's {}", ee::opName(r.sub)), &r);
+                continue;
+            }
+            return;
+        }
+    }
+
+    void LogHost::waitCompleted(ee::Dispatcher &, ee::Thread &t)
+    {
+        continuation(ee::kOriginResume, ee::kOriginResume, "resume");
+        lenient_.insert({t.id, t.depth()});
+    }
+
+    void LogHost::handlerCompleted(ee::Dispatcher &, ee::Thread &, const ee::Frame &)
+    {
+        continuation(ee::kOriginHandlerEnd, ee::kOriginHandlerEnd, "handler-end");
+    }
+
+    void LogHost::threadEnded(ee::Dispatcher &, ee::Thread &)
+    {
+        continuation(ee::kOriginThreadEnd, ee::kOriginThreadEnd, "thread-end");
+    }
+
+    void LogHost::fault(ee::Dispatcher &, R5900Context *, const std::string &what)
+    {
+        ++errors_;
+        endRun("FAULT: " + what + "\n  here: " + where());
+    }
+
+    // ---- Kernel operations -------------------------------------------------------------------------------------
+
+    void LogHost::op(const ee::OpEvent &e)
+    {
+        const Record &r = next("OP");
+        auto mine = [&] {
+            std::string s = std::format("{} origin {} depth {} call {}:", ee::opName(e.op), e.origin, e.depth,
+                                        static_cast<int64_t>(e.originCall));
+            for (uint32_t i = 0; i < e.argc; ++i)
+                s += std::format(" {:x}", e.args[i]);
+            return s + std::format(" wide {:x} thread {}", e.wide, e.thread);
+        };
+        if (r.type != kOp)
+            diverge(std::format("the kernel made {}; the log has a {} record", mine(), typeName(r.type)), &r);
+        Op o;
+        std::string err;
+        if (!parse(r, o, err))
+            endRun(err);
+        bool same = r.sub == e.op && o.origin == e.origin && o.depth == e.depth && o.wide == e.wide &&
+                    o.args.size() == e.argc && r.thread == e.thread;
+        if (e.origin == ee::kOriginCall)
+            same = same && o.originCall == e.originCall;
+        for (uint32_t i = 0; same && i < e.argc; ++i)
+            same = o.args[i] == e.args[i];
+        if (!same)
+            diverge("OP differs: the kernel made " + mine(), &r);
+        checkPoint(r, d_->now(), "OP");
+        if (e.op == ee::kOpBlock && d_->currentThread() && static_cast<int32_t>(e.args[0]) == d_->currentThread()->id)
+            blockedInCall_ = true;
+        log_.advance();
+        ++matched_;
+        trace(r);
+    }
+
+    bool LogHost::dmacStatusSet(uint32_t cause)
+    {
+        const Record *p = log_.peek();
+        if (!p || p->type != kOp || p->sub != ee::kOpIrq)
+            return false;
+        Op o;
+        std::string err;
+        if (!parse(*p, o, err))
+            return false;
+        return o.depth == 1 && o.args.size() >= 2 && o.args[0] == 1 && o.args[1] == cause;
+    }
+
+    // ---- Frames ------------------------------------------------------------------------------------------------
+
+    void LogHost::endFrame(const Record &r, const Frame &f, uint32_t openId, const uint32_t *openArgs)
+    {
+        if (f.ended != frame_)
+            diverge(std::format("frame {} ends here; the log's FRAME is {}", frame_, f.ended), &r);
+        d_->setNow(nullptr, r.cycle);
+        applyRuns(f.runs);
+        if (openId)
+            calls_.add(openId, openArgs, 0, reference::CallList::kOpenAtEnd);
+        addTraces(f.traces, 0);
+
+        uint8_t *flat = d_->runtime().memory.flat();
+        reference::FrameRecord fr;
+        fr.frame = frame_;
+        fr.thread = d_->kernel().running();
+        fr.ram = hash::xxh64(flat, 0x2000000, 0);
+        fr.scratchpad = hash::xxh64(flat + 0x2000000, 0x4000, 0);
+        fr.calls = calls_.hash();
+        fr.callCount = calls_.count();
+        std::vector<int32_t> order;
+        d_->kernel().runOrder(order);
+        fr.threads = reference::threadsHash(order);
+        fr.eeCycle = r.cycle;
+        if (writer_)
+            writer_->write(fr);
+        ++stats_.frames;
+        if (ref_ && frame_ < ref_->size())
+        {
+            const reference::FrameRecord &x = (*ref_)[frame_];
+            auto field = [&](bool same, uint32_t &count, int64_t &first, const char *name, uint64_t mine, uint64_t theirs) {
+                if (same)
+                    ++count;
+                else if (first < 0)
+                {
+                    first = frame_;
+                    if (!opt_.quiet)
+                        std::printf("frame %u: %s differs (%016llx, the reference's %016llx)\n", frame_, name,
+                                    static_cast<unsigned long long>(mine), static_cast<unsigned long long>(theirs));
+                }
+            };
+            field(fr.ram == x.ram, stats_.ram, stats_.firstRam, "ram", fr.ram, x.ram);
+            field(fr.scratchpad == x.scratchpad, stats_.scratchpad, stats_.firstScratchpad, "scratchpad", fr.scratchpad,
+                  x.scratchpad);
+            field(fr.calls == x.calls, stats_.calls, stats_.firstCalls, "calls", fr.calls, x.calls);
+            if (fr.calls != x.calls && stats_.firstCalls == frame_ && !opt_.quiet)
+                std::printf("  calls: %u here, %u in the reference\n", fr.callCount, x.callCount);
+            field(fr.threads == x.threads, stats_.threads, stats_.firstThreads, "threads", fr.threads, x.threads);
+            field(fr.eeCycle == x.eeCycle, stats_.eeCycle, stats_.firstEeCycle, "eeCycle", fr.eeCycle, x.eeCycle);
+            if (fr.callCount == x.callCount)
+                ++stats_.callCount;
+        }
+        calls_.clear();
+        ++frame_;
+        const uint32_t limit = opt_.frames ? opt_.frames : log_.header().frameLimit;
+        if (limit && frame_ >= limit)
+        {
+            completed_ = true;
+            endRun("");
+        }
+    }
+}

@@ -1,0 +1,143 @@
+// bozo-run's host: everything BozoEngine does not implement natively yet answered from a call log (docs/specs/
+// calllog.md section 8), and every decision of the native kernel and dispatcher checked against the log's records in
+// lockstep. The first record that differs ends the run with a report.
+#pragma once
+
+#include "calllog.h"
+
+#include "bozo/ee/dispatcher.h"
+#include "bozo/reference.h"
+
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace bozo::run
+{
+    struct Options
+    {
+        uint32_t frames = 0;           // stop after this many frames (0: the log's frame limit)
+        uint64_t traceFrom = ~0ull;    // print every record matched from this record index
+        bool traceCheckpoints = false; // and every checkpoint passed from there
+        uint32_t maxErrors = 1;        // stop at the n-th divergence (cycle mismatches are resynced to go on)
+        bool quiet = false;
+    };
+
+    struct FieldStats
+    {
+        uint32_t frames = 0;
+        uint32_t ram = 0, scratchpad = 0, calls = 0, threads = 0, eeCycle = 0, callCount = 0; // frames matching
+        int64_t firstRam = -1, firstScratchpad = -1, firstCalls = -1, firstThreads = -1, firstEeCycle = -1;
+    };
+
+    class LogHost final : public ee::Host, public ee::KernelObserver
+    {
+    public:
+        LogHost(calllog::Reader &log, const Options &options);
+
+        // Binds every external address of the log (NAME, OVRD) on the dispatcher: the kernel calls natively, the rest
+        // to this host. Returns the number of kernel calls bound.
+        uint32_t bind(ee::Dispatcher &d);
+        // Applies the INIT record to guest memory. False if the log does not start with one.
+        bool init(ee::Dispatcher &d);
+
+        void setReference(std::vector<reference::FrameRecord> *ref) { ref_ = ref; }
+        void setWriter(reference::Writer *w) { writer_ = w; }
+
+        const FieldStats &stats() const { return stats_; }
+        uint32_t errors() const { return errors_; }
+        uint64_t recordsMatched() const { return matched_; }
+        uint64_t calls() const { return seq_; }
+        uint64_t kernelCalls() const { return kernelCalls_; }
+        bool completed() const { return completed_; }
+        uint32_t frame() const { return frame_; }
+
+        // ee::Host
+        void libraryCall(ee::Dispatcher &, R5900Context *ctx, uint32_t target) override;
+        void vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address) override;
+        void ioRead(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2]) override;
+        void ioWrite(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2]) override;
+        bool cop0Condition(ee::Dispatcher &, R5900Context *) override;
+        void kernelCallBegin(ee::Dispatcher &, R5900Context *, uint32_t target, uint32_t kind) override;
+        void kernelCallEnd(ee::Dispatcher &, R5900Context *, uint32_t target, bool stopping) override;
+        void invoked(ee::Dispatcher &, const ee::Thread &, const ee::Frame &, bool insideCall) override;
+        void invokeEnded(ee::Dispatcher &, const ee::Thread &, const ee::Frame &) override;
+        void switched(ee::Dispatcher &, int32_t from, uint32_t fromDepth, int32_t to, uint32_t toDepth, uint16_t reason,
+                      uint32_t waitReason, uint32_t waitObject, uint64_t token) override;
+        void resuming(ee::Dispatcher &, ee::Thread &, ee::Frame &, uint32_t depth) override;
+        void waitCompleted(ee::Dispatcher &, ee::Thread &) override;
+        void handlerCompleted(ee::Dispatcher &, ee::Thread &, const ee::Frame &) override;
+        void threadEnded(ee::Dispatcher &, ee::Thread &) override;
+        void fault(ee::Dispatcher &, R5900Context *, const std::string &what) override;
+
+        // ee::KernelObserver
+        void op(const ee::OpEvent &e) override;
+        bool dmacStatusSet(uint32_t cause) override;
+
+    private:
+        // The next record; ends the run (with a report) when the log has none.
+        const calllog::Record &next(const char *wanted);
+        // A divergence: reported; the run ends unless `resync` and errors remain.
+        void diverge(const std::string &what, const calllog::Record *r, bool resync = false);
+        [[noreturn]] void endRun(const std::string &why);
+        std::string where() const;
+        void checkPoint(const calllog::Record &r, uint64_t cycle, const char *what);
+        // An out-call answered from the log: the CALL is checked, applied, and the records inside it made again.
+        const calllog::Record &takeCall(uint8_t kind, uint32_t target, R5900Context *ctx, calllog::Call &c);
+        void answer(R5900Context *ctx, const calllog::Record &r, calllog::Call &c, bool traced);
+        void applyWords(R5900Context *ctx, const calllog::Call &c);
+        void applyRuns(const std::vector<calllog::Run> &runs);
+        // The records made inside a call (OPs of depth 0, INVOKE, FRAME), made again in order.
+        bool insideRecords(R5900Context *ctx, uint64_t callSeq, const calllog::Call &c, uint32_t &tracesTaken);
+        void endFrame(const calllog::Record &r, const calllog::Frame &f, uint32_t openId, const uint32_t *openArgs);
+        void continuation(uint32_t origin, uint32_t memSource, const char *what);
+        void trace(const calllog::Record &r, const char *note = "");
+        uint32_t traceId(uint8_t kind, uint32_t target, const R5900Context *ctx) const; // 0: not traced
+        void addTraces(const std::vector<calllog::Trace> &t, size_t from);
+        void trackDma(uint32_t address, uint32_t value);
+
+        calllog::Reader &log_;
+        Options opt_;
+        ee::Dispatcher *d_ = nullptr;
+        std::vector<reference::FrameRecord> *ref_ = nullptr;
+        reference::Writer *writer_ = nullptr;
+        std::map<uint32_t, calllog::NameInfo> names_;
+        std::map<uint32_t, uint32_t> traceIds_; // address -> FNV id of its name
+
+        uint64_t seq_ = 0;    // out-calls made so far
+        uint32_t frame_ = 0;  // frames ended so far
+        uint64_t matched_ = 0;
+        uint64_t kernelCalls_ = 0;
+        uint32_t errors_ = 0;
+        bool completed_ = false;
+        FieldStats stats_;
+        reference::CallList calls_;
+
+        // The kernel call in progress.
+        struct KernelCallState
+        {
+            bool active = false;
+            bool tail = false;
+            uint64_t seq = 0;
+            uint32_t target = 0;
+            uint32_t kind = 0;
+            uint64_t recordIndex = 0;
+            calllog::Call call;
+            uint8_t flags = 0;
+            ContextWords entry{};
+            uint32_t args[4] = {};
+        } kc_;
+        // The traced call in progress (its entry is "open" if the frame ends inside it), and whether it blocked.
+        uint32_t openId_ = 0;
+        uint32_t openArgs_[4] = {};
+        bool blockedInCall_ = false;
+        // Contexts the log alone knows: a library handler's first context, a library continuation's changes.
+        std::set<std::pair<int32_t, uint32_t>> lenient_;
+        // CPCOND0 from the game's DMA register stores (replay.md section 3).
+        uint32_t dmaDone_ = 0, dmaPcr_ = 0;
+        bool dmaPcrKnown_ = false;
+    };
+}

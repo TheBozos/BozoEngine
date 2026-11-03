@@ -1,0 +1,173 @@
+// bozo-run: TMB on BozoEngine's own EE kernel, dispatcher and cycle model, every library it does not implement yet
+// answered from a call log (docs/specs/calllog.md), every decision checked against the log, and the per-frame
+// reference record (PS2XREF1) written and compared with the reference build's. See tools/run/README.md.
+#include "calllog.h"
+#include "log_host.h"
+
+#include "bozo/hash.h"
+
+#include "tmb_functions.h"
+
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+#ifndef BOZO_RUN_ELF
+#define BOZO_RUN_ELF ""
+#endif
+
+namespace
+{
+    int usage()
+    {
+        std::fprintf(stderr,
+                     "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
+                     "                [--max-errors n] [--trace-from record] [--quiet]\n");
+        return 2;
+    }
+
+    bool readFile(const std::string &path, std::vector<uint8_t> &out)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return false;
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return true;
+    }
+
+    const char *pct(uint32_t n, uint32_t d, char *buf)
+    {
+        std::snprintf(buf, 32, "%u/%u", n, d);
+        return buf;
+    }
+}
+
+int main(int argc, char **argv)
+{
+    using namespace bozo;
+    if (argc < 2)
+        return usage();
+    std::string logPath = argv[1], refPath, outPath, elfPath = BOZO_RUN_ELF;
+    run::Options opt;
+    for (int k = 2; k < argc; ++k)
+    {
+        const std::string a = argv[k];
+        auto value = [&]() -> std::string { return k + 1 < argc ? argv[++k] : ""; };
+        if (a == "--ref")
+            refPath = value();
+        else if (a == "--out")
+            outPath = value();
+        else if (a == "--frames")
+            opt.frames = static_cast<uint32_t>(std::stoul(value()));
+        else if (a == "--elf")
+            elfPath = value();
+        else if (a == "--max-errors")
+            opt.maxErrors = static_cast<uint32_t>(std::stoul(value()));
+        else if (a == "--trace-from")
+            opt.traceFrom = std::stoull(value());
+        else if (a == "--trace-checkpoints")
+            opt.traceCheckpoints = true;
+        else if (a == "--quiet")
+            opt.quiet = true;
+        else
+            return usage();
+    }
+
+    calllog::Reader log;
+    if (!log.open(logPath))
+    {
+        std::fprintf(stderr, "%s\n", log.error().c_str());
+        return 2;
+    }
+    log.peek(); // reads NAME and OVRD
+    std::vector<uint8_t> elf;
+    if (!readFile(elfPath, elf) || elf.size() < 0x40 || std::memcmp(elf.data(), "\x7f" "ELF", 4) != 0)
+    {
+        std::fprintf(stderr, "cannot read the game's ELF (%s): --elf <path>\n", elfPath.c_str());
+        return 2;
+    }
+    const uint64_t elfHash = hash::xxh64(elf.data(), elf.size(), 0);
+    if (elfHash != log.header().elfHash)
+        std::printf("warning: the ELF's XXH64 %016llx is not the log's %016llx\n", static_cast<unsigned long long>(elfHash),
+                    static_cast<unsigned long long>(log.header().elfHash));
+    uint32_t entry;
+    std::memcpy(&entry, elf.data() + 24, 4);
+
+    std::vector<reference::FrameRecord> refFrames;
+    reference::Header refHeader;
+    if (!refPath.empty())
+    {
+        std::string err;
+        if (!reference::read(refPath, refHeader, refFrames, err))
+        {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 2;
+        }
+    }
+
+    run::LogHost host(log, opt);
+    ee::Dispatcher d(host);
+    d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
+    const uint32_t kernel = host.bind(d);
+    if (!host.init(d))
+    {
+        std::fprintf(stderr, "%s: the log does not start with its INIT record\n", logPath.c_str());
+        return 2;
+    }
+    // The reference's boot: the main thread at the ELF's entry, its stack at the top of RAM (calllog: the first CTX).
+    d.boot(entry, 0x1FFFFF0u);
+
+    reference::Writer writer;
+    if (!outPath.empty())
+    {
+        reference::Header h;
+        h.elfHash = elfHash;
+        h.run = log.header().run;
+        h.build = "BozoEngine bozo-run";
+        h.elfName = "SCUS_971.01";
+        if (!writer.open(outPath, h))
+        {
+            std::fprintf(stderr, "cannot write %s\n", outPath.c_str());
+            return 2;
+        }
+        host.setWriter(&writer);
+    }
+    if (!refFrames.empty())
+        host.setReference(&refFrames);
+
+    if (!opt.quiet)
+        std::printf("bozo-run: %s (run %s, %u frames), %zu names (%u native kernel calls), %zu overrides\n", logPath.c_str(),
+                    log.header().run.c_str(), log.header().frameLimit, log.names().size(), kernel, log.overrides().size());
+    const auto t0 = std::chrono::steady_clock::now();
+    try
+    {
+        d.run();
+    }
+    catch (const ee::EndRun &)
+    {
+    }
+    writer.close();
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+    const run::FieldStats &s = host.stats();
+    char b1[32], b2[32], b3[32], b4[32], b5[32];
+    std::printf("frames %u; records matched %llu; calls %llu (%llu by the native kernel); dispatches %llu, stops %llu, "
+                "handlers %llu; %.1f s\n",
+                s.frames, static_cast<unsigned long long>(host.recordsMatched()),
+                static_cast<unsigned long long>(host.calls()), static_cast<unsigned long long>(host.kernelCalls()),
+                static_cast<unsigned long long>(d.dispatches), static_cast<unsigned long long>(d.stops),
+                static_cast<unsigned long long>(d.handlersRun), secs);
+    if (!refFrames.empty())
+        std::printf("frames matching the reference: ram %s, scratchpad %s, calls %s, threads %s, eeCycle %s\n",
+                    pct(s.ram, s.frames, b1), pct(s.scratchpad, s.frames, b2), pct(s.calls, s.frames, b3),
+                    pct(s.threads, s.frames, b4), pct(s.eeCycle, s.frames, b5));
+    const bool ok = host.errors() == 0 && host.completed() &&
+                    (refFrames.empty() || (s.ram == s.frames && s.scratchpad == s.frames && s.calls == s.frames &&
+                                           s.threads == s.frames && s.eeCycle == s.frames));
+    std::printf("%s\n", ok ? "MATCH" : "DIFFERS");
+    return ok ? 0 : 1;
+}

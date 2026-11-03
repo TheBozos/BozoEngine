@@ -16,6 +16,7 @@ target_include_directories(bozo_runtime_headers INTERFACE ${CMAKE_CURRENT_SOURCE
 add_subdirectory(recompiler)
 add_subdirectory(runtime)
 add_subdirectory(tools/replay)
+add_subdirectory(tools/run)
 
 include(CTest)
 if(BUILD_TESTING)

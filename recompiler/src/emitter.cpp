@@ -102,7 +102,7 @@ namespace bozo
         if (isExternal(target, call))
         {
             ++stats_.externalCalls;
-            return std::format("bozo_call_indirect(rdram, ctx, rt, {});", hex(target));
+            return std::format("{}(rdram, ctx, rt, {});", call ? "bozo_call_indirect" : "bozo_tail_call", hex(target));
         }
         if (const Function *g = a_.functionContaining(target))
             if (g->start == target || g->extraEntries.count(target))
@@ -578,9 +578,10 @@ namespace bozo
         labels.insert(extra.begin(), extra.end());
 
         auto label = [](uint32_t a) { return std::format("L_{:x}", a); };
-        // The EE time model (calllog.md section 2): a taken backward branch or jump to a label of the same function is
-        // a checkpoint charged kBackwardCycles; a call or jump leaving the function is one charged kLeaveCycles, made
-        // before the transfer (if it fires, the thread resumes at the target). A return is not charged.
+        // The EE time model (calllog.md section 2, kernel.md section 3): a taken backward branch or jump to a label of
+        // the same function is a checkpoint charged kBackwardCycles; a call (jal, jalr, bal) and a jump through a
+        // register are checkpoints charged kLeaveCycles, made before the transfer (if one fires, the thread resumes at
+        // the target). A direct jump or branch to another function (a tail call) and a return are not charged.
         auto leave = [&](const std::string &target) {
             return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {});", kLeaveCycles, target);
         };
@@ -592,7 +593,12 @@ namespace bozo
                     return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {}); goto {};", kBackwardCycles, hex(target), label(target));
                 return std::format("goto {};", label(target));
             }
-            return leave(hex(target)) + " " + callTo(target, false) + " return;";
+            return callTo(target, false) + " return;";
+        };
+        // A jump through a register (jr that is not a return): charged, then offered to the runtime (bozo_jump), which
+        // runs on from the target itself (the dispatcher does, as the reference: its frames are gone) or declines.
+        auto jumpThrough = [&]() {
+            return leave("target") + " if (bozo_jump(rdram, ctx, rt, target)) return;";
         };
         // A call (jal, bal...): charged, then the callee; execution continues at the return address's label.
         auto callAt = [&](uint32_t target) { return leave(hex(target)) + " " + callTo(target, true); };
@@ -691,21 +697,29 @@ namespace bozo
                 code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callAt(i.jumpTarget()));
             else if (i.op == Op::JR)
             {
-                if (s == 31 || f.returnJr.count(a))
+                if (s == 31)
                     code = ret(s, delay);
+                else if (f.returnJr.count(a))
+                    // A return through a copy of ra: still a jump through a register for the reference's dispatch.
+                    code = std::format("{{ const uint32_t target = BZ_W({}); {} {} ctx->pc = target; return; }}", s, delay,
+                                       jumpThrough());
                 else if (auto jt = f.jumpTables.find(a); jt != f.jumpTables.end())
                 {
-                    code = std::format("{{ const uint32_t target = BZ_W({}); {} switch (target) {{ ", s, delay);
+                    // A table the reference resolves (built in place) is a switch, not charged. Any other goes
+                    // through the runtime even when its target is a label of this function (the reference's
+                    // dispatch); a runtime that declines gets the switch.
+                    code = std::format("{{ const uint32_t target = BZ_W({}); {} {} switch (target) {{ ", s, delay,
+                                       jt->second.inPlace ? std::string() : jumpThrough());
                     std::set<uint32_t> seen;
                     for (uint32_t tg : jt->second.targets)
                         if (seen.insert(tg).second)
-                            code += std::format("case {}: {} ", hex(tg), jumpTo(tg, a));
-                    code += "default: break; } " + leave("target") + " bozo_call_indirect(rdram, ctx, rt, target); return; }";
+                            code += std::format("case {}: goto {}; ", hex(tg), label(tg));
+                    code += "default: break; } bozo_call_indirect(rdram, ctx, rt, target); return; }";
                 }
                 else
                     code = std::format("{{ const uint32_t target = BZ_W({}); {} if (target == entryRa) {{ ctx->pc = target; return; }} "
                                        "{} bozo_call_indirect(rdram, ctx, rt, target); return; }}",
-                                       s, delay, leave("target"));
+                                       s, delay, jumpThrough());
             }
             else if (i.op == Op::JALR)
             {

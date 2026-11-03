@@ -1,6 +1,8 @@
 // PS2XCAP1 reader (docs/specs/capture.md). See capture.h.
 #include "capture.h"
 
+#include "bozo/hash.h"
+
 #include <zlib.h>
 
 #include <cstring>
@@ -53,11 +55,6 @@ namespace bozo::capture
             return true;
         }
 
-        constexpr uint64_t kP1 = 0x9E3779B185EBCA87ull, kP2 = 0xC2B2AE3D27D4EB4Full, kP3 = 0x165667B19E3779F9ull,
-                           kP4 = 0x85EBCA77C2B2AE63ull, kP5 = 0x27D4EB2F165667C5ull;
-        uint64_t rotl(uint64_t x, int r) { return (x << r) | (x >> (64 - r)); }
-        uint64_t xround(uint64_t acc, uint64_t lane) { return rotl(acc + lane * kP2, 31) * kP1; }
-        uint64_t xmerge(uint64_t acc, uint64_t v) { return (acc ^ xround(0, v)) * kP1 + kP4; }
     }
 
     const char *kindName(uint32_t kind)
@@ -280,56 +277,7 @@ namespace bozo::capture
         return true;
     }
 
-    uint64_t xxh64(const uint8_t *p, size_t len, uint64_t seed)
-    {
-        const uint8_t *const end = p + len;
-        uint64_t acc;
-        if (len >= 32)
-        {
-            uint64_t v1 = seed + kP1 + kP2, v2 = seed + kP2, v3 = seed, v4 = seed - kP1;
-            const uint8_t *const limit = end - 32;
-            do
-            {
-                v1 = xround(v1, rd64(p));
-                v2 = xround(v2, rd64(p + 8));
-                v3 = xround(v3, rd64(p + 16));
-                v4 = xround(v4, rd64(p + 24));
-                p += 32;
-            } while (p <= limit);
-            acc = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18);
-            acc = xmerge(acc, v1);
-            acc = xmerge(acc, v2);
-            acc = xmerge(acc, v3);
-            acc = xmerge(acc, v4);
-        }
-        else
-            acc = seed + kP5;
-        acc += len;
-        while (p + 8 <= end)
-        {
-            acc ^= xround(0, rd64(p));
-            acc = rotl(acc, 27) * kP1 + kP4;
-            p += 8;
-        }
-        if (p + 4 <= end)
-        {
-            acc ^= uint64_t(rd32(p)) * kP1;
-            acc = rotl(acc, 23) * kP2 + kP3;
-            p += 4;
-        }
-        while (p < end)
-        {
-            acc ^= uint64_t(*p) * kP5;
-            acc = rotl(acc, 11) * kP1;
-            ++p;
-        }
-        acc ^= acc >> 33;
-        acc *= kP2;
-        acc ^= acc >> 29;
-        acc *= kP3;
-        acc ^= acc >> 32;
-        return acc;
-    }
+    uint64_t xxh64(const uint8_t *p, size_t len, uint64_t seed) { return bozo::hash::xxh64(p, len, seed); }
 
     bool hashFile(const std::string &path, uint64_t &hash)
     {

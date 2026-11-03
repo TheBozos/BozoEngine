@@ -81,6 +81,7 @@ struct R5900Context
     // ---- Scheduling (abi.md section 3): cycles counted at checkpoints; past the limit the runtime is called ----
     uint64_t cycles = 0;
     uint64_t cycleLimit = ~0ull;
+    uint64_t checkpoints = 0; // checkpoints passed (the call log's points count them)
 
     R5900Context()
     {

@@ -29,6 +29,15 @@ void bozo_resume_failed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
 // `target` in its table (overrides first) and calls it. Unknown targets are the runtime's to report.
 void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target);
 
+// A jump (j, a branch, a fall-through: no return address written) to an external address: as bozo_call_indirect,
+// the runtime knowing it was not a call (the reference's record of calls only has calls made by jal and jalr).
+void bozo_tail_call(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target);
+
+// A jump through a register (a jr that is not a return), after its checkpoint: true when the runtime took it over
+// (the dispatcher runs on from `target` itself, as the reference does: the jumping function's frame is gone); false
+// to let the generated code make the jump (a switch to its own label, or a tail call).
+bool bozo_jump(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target);
+
 // ---- Scheduling ----------------------------------------------------------------------------------------------------
 // Called by the generated checkpoint when ctx->cycles reaches ctx->cycleLimit (backward branches, calls and jumps
 // leaving a function), with ctx->pc set to where the guest code goes on. The runtime may stop the thread here (switch

@@ -31,6 +31,7 @@ namespace bozo
     BOZO_INLINE void checkpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
     {
         ctx->cycles += cycles;
+        ++ctx->checkpoints;
         if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
         {
             ctx->pc = pc;
