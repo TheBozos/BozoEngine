@@ -175,8 +175,20 @@ The point is that the code is ours. Rules:
   someone who knows PS2Recomp; the specs must describe behaviour, not its code.
 - Code we wrote on the fork (the native renderer, the mixer, the packs, the IOP-free pieces, tools) moves over after
   the per-file check in section 7.
-- Third-party libraries (raylib or SDL3, Dear ImGui, FFmpeg, miniaudio) are used as dependencies under their own
+- Third-party libraries (SDL3, Dear ImGui, FFmpeg, miniaudio) are used as dependencies under their own
   licences, never copied in.
+
+## 6b. Platform layer: SDL3 (decided 2026-11-03)
+
+Window, input, timing and the audio device go through **SDL3** (zlib licence), not raylib:
+- Gamepads: hot-plug, the controller mapping database, rumble and the PS4/PS5 pads' extras, for up to 4 players.
+- A library, not a framework: no drawing, audio mixing or global state of its own (raylib's names also clash with
+  `windows.h`), so the renderer and mixer stay ours.
+- Rendering left open: an OpenGL context, a Vulkan surface or SDL's GPU API (Vulkan, D3D12, Metal); chosen when
+  the renderer work starts.
+- Linux (native Wayland), high-DPI and fullscreen modes, handhelds.
+
+TMB_Recomp keeps raylib until phase 4 moves it onto BozoEngine; its window and input code is ported then.
 
 ## 7. Moving our own fork code
 
@@ -197,5 +209,4 @@ instead. To confirm: whose is `gitea@barrut.me` (5,000+ runtime lines)?
 ## 9. Open questions
 
 - Public or private until it runs (created private).
-- raylib (as today) or SDL3 for window and input: the plan works with either; SDL3 is a separate decision.
 - The authorship check of section 7 for Arzaroth's commits.
