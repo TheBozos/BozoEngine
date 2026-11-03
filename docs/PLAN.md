@@ -148,8 +148,11 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   stream; in a pinned run its waits follow the reference's points, in free mode a PS2 drive's pace), TMB's eight VU0
   microprograms are native C++ bit-exact to the reference, and the hardware registers the game still touches are
   answered by a model of what it observes (`specs/libraries.md` sections 8, 10, 11). Boot and match1p still match
-  every frame and record, 0 divergences. libmpeg's protocol and picture format are settled but it stays answered from
-  the log (section 9), with SIF/989SND, for batch B2.
+  every frame and record, 0 divergences.
+- **Batch B2 (2026-11-03): libmpeg native.** The PSS demux, the decoder-feeding protocol the game observes (nodata
+  callbacks, the pictures' pace, the end), the pictures decoded by FFmpeg (optional dependency) and converted bit-exact
+  into the game's memory, the movie's sound to a native sink (`specs/libraries.md` section 9). Boot and match1p still
+  match every frame and record, 0 divergences. SIF/989SND remains answered from the log.
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at

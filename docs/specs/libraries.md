@@ -76,12 +76,13 @@ policy, settled on every `malloc` of boot (1,936) and match1p (7,924):
 - the block is the first free block large enough, by address, split at its start;
 - `free` gives the block back and merges it with free neighbours.
 
-**The reference's libmpeg allocates from the same heap.** Each `sceMpegCreate` (still answered from the log: section 9)
+**The reference's libmpeg allocates from the same heap.** Each `sceMpegCreate` (native since batch B2: section 9)
 takes 0x600 bytes and never gives them back; the reference keeps the block's address at the work area + 0x44
 (`sceMpegCreate`'s second argument), which the record's memory runs show (match1p: 11 creates, the blocks at
 `0x752720`, `0x752d20`, ... `0x756320`; the 12th `malloc` after them, record #16897922, returns `0x756920`, 0x4200 past
 where a heap without them would). The native heap follows each `sceMpegCreate` answered from the log and checks the
-address. A native libmpeg (batch B2) must take its 0x600 bytes from this heap in the same order.
+address. The native libmpeg takes its 0x600 bytes from this heap in the same order, and its callbacks' 32-byte data too
+(section 9.3); while libmpeg is answered from a log, the heap follows each `sceMpegCreate` as above.
 
 ### 2.3 rand
 
@@ -320,56 +321,128 @@ Results: boot 378 calls native (`sceCdStRead` 281, `sceCdSync` 40, `sceCdRead` 3
 match1p 587 (`sceCdStRead` 338, `sceCdSync` 87, `sceCdRead` 65, `sceCdGetError` 52, ...) and 33 continuations; 0
 divergences.
 
-## 9. libmpeg (movies): still answered from the log
+## 9. libmpeg (`mpeg`)
 
-The calls TMB makes: `sceMpegInit`, `sceMpegCreate`, `sceMpegAddCallback`, `sceMpegAddStrCallback`,
-`sceMpegDemuxPssRing`, `sceMpegGetPicture`, `sceMpegIsEnd`, `sceMpegReset`, `sceMpegDelete`, and the reference's stub of
-the game's own `videoCallback` (0x1ec2c8). Batch B1 leaves them answered from the log; what was settled for the native
-library:
+Native: `sceMpegInit`, `sceMpegCreate`, `sceMpegDelete`, `sceMpegReset`, `sceMpegAddCallback`, `sceMpegAddStrCallback`,
+`sceMpegDemuxPssRing`, `sceMpegGetPicture`, `sceMpegIsEnd`, and the reference's stub of TMB's own `videoCallback`
+(`videoCallback__FP7sceMpegP16sceMpegCbDataStrPv`, 0x1ec2c8) (`bozo/libs/mpeg.h`, `libs/mpeg.cpp`,
+`libs/mpeg_ffmpeg.cpp`). The pictures are decoded by FFmpeg (9.1 below); a build without FFmpeg leaves libmpeg answered
+from the log (`bozo-run` says so). Every rule below was settled on every libmpeg call of boot (3 movies) and match1p
+(11 movies, the same 3 first); the records named are those that show each rule first or best.
 
-**What the guest observes (the reference's libmpeg, read from the logs).**
-- `sceMpegCreate(mp, work, size, ...)` writes the sceMpeg structure (`mp` + 0x10.. all ones, + 0x40 the work area), the
-  work area's own fields, two words of libmpeg's static data in the ELF (0x1717bc, 0x171800...) and takes 0x600 bytes
-  from the game's heap (section 2.2; returns `work` + 0x118).
-- `sceMpegDemuxPssRing(mp, data, bytes, ring)` demuxes PSS packs, a sector at a time, up to a limit of pictures ahead:
-  for each packet of a registered stream it writes a `sceMpegCbDataStr` (32 bytes, in the 0x600 block: the packet's
-  data pointer in the ring, its length, PTS and DTS) and queues the stream's callback as a handler of kind 4 (RPC
-  callback) on the calling thread; it returns the bytes consumed (0x9800, 0x2000, 0x1800, 0x800..., 0 at the limit). The
-  reference stubs the game's `videoCallback` (it returns 1 and copies nothing): the video data stays in the ring for
-  the decoder.
-- `sceMpegGetPicture(mp, rgb32, mbcount)` either returns at once with the picture written, or makes its thread wait:
-  for the next vblank (reason 4, its result the parity, with a completion), or for data (reason 6 "libmpeg's picture
-  wait", object 1, token `mp`) after queueing the game's nodata callback (`sceMpegAddCallback` type 1, 0x1feb98) as a
-  library handler (kind 7, with a completion) on another thread: the handler's end wakes the waiting thread (origin
-  handler-end), and its resume either queues the callback again or delivers the picture (origin resume: `MEM` with the
-  picture and `mp`'s width, height and frame count).
-- A picture is 640 x 368 RGBA32, alpha 0x80, in 16 x 16 macroblocks in **column-major** order (macroblock (x, y) at
-  index x * 23 + y), as TMB uploads it. Each pixel is a function of its decoded Y and its 2 x 2 block's Cb and Cr
-  (nearest chroma): the pictures FFmpeg 9.0.2's `mpeg2video` decoder gives for the same stream have 0 inconsistencies
-  over every (Y, Cb, Cr) the checked pictures hold. The luma term is (Y - 16) x 255 / 219 truncated (Y = 12-51 checked);
-  the chroma terms are not settled yet (boot's movies are nearly grey where checked).
+### 9.1 FFmpeg
 
-**Why it is not native yet.** Whether a call delivers a picture, waits for a vblank or asks for data depends on the
-decoder's state as the reference fed it (how much video it had demuxed, the pictures decoded ahead, the display
-pace), and the logs fix every one of those points (59k library handlers in boot). A native libmpeg must reproduce that
-protocol exactly: its demux limit, when the decoder has a picture (MPEG-2 reordering: a picture is out when the next
-reference picture's start is in), and the vblank waits. That is batch B2's first item, with the colour conversion's
-chroma terms (from a colourful movie: the intro, LBN 0xf53, or the story movies).
+`libavcodec` (the `mpeg2video` decoder only, one thread) and `libavutil`; no `libswscale` (the conversion to the game's
+pictures is ours, 9.4) and no `libavformat` or parser (the PSS demux and the cutting of the video stream into coded
+pictures are ours, 9.3). The build looks in `BOZO_FFMPEG_ROOT` (a folder with `include/` and `lib/`: the TMB build
+kit's static FFmpeg 9.0.2, LGPL, `--disable-everything` plus `mpeg2video`), else asks `pkg-config` for `libavcodec` and
+`libavutil` (MSYS2's 9.0.2 package); without either, `mpeg_ffmpeg.cpp` builds without `BOZO_HAVE_FFMPEG` and
+`addMpeg` registers nothing. LGPL: linked as the kit links it (its object files are shipped for relinking).
 
-**FFmpeg.** The native libmpeg decodes with FFmpeg's `libavcodec` (`mpeg2video` decoder only) and `libavutil`; no
-`libswscale` (the conversion to the game's RGBA32 macroblocks is ours, bit-exact to the reference) and no
-`libavformat` (the PSS demux is ours: the game drives it). Linked as an optional dependency, as TMB_Recomp's kit does
-it: the kit's static FFmpeg 9.0.2 (LGPL, `--disable-everything` plus the `mpeg2video` decoder and parser), found
-through a `BOZO_FFMPEG_ROOT` folder, else `pkg-config` (MSYS2's `mingw-w64-ucrt-x86_64-ffmpeg` is the same 9.0.2);
-without it the library stays answered from a log and the real runtime shows no movie. LGPL: dynamic or with the
-object files for relinking, as the kit already ships.
+The decoder gets each coded picture with the headers before it: the video stream is cut at the first sequence or GOP
+header after a picture's slices, else at the next picture header; a picture goes to the decoder once the next one's
+cut is in the stream, the last at the end with a flush. FFmpeg holds one picture back (`has_b_frames`), so display
+picture k comes out once picture k + 1 was sent. Its pictures equal the reference's on every byte of every picture of
+both logs.
 
-**What the renderer and the mixer take later.** The renderer: each picture as the game receives it (640 x 368 RGBA32,
-alpha 0x80, column-major macroblocks), or better straight from the decoder before conversion, with `mp`'s width and
-height, shown as the backdrop while the game's vblank handler would upload it (TMB's native renderer does this today).
-The mixer: the PSS's audio stream (the PCM stream TMB registers with `sceMpegAddStrCallback` type 2, its callback at
-0x1ec3e8, a port override in the reference) at its rate, through the native mixer, never through guest memory; the
-reference sent the movie sound to the IOP's sound input.
+### 9.2 Create, callbacks, reset, delete
+
+| Function | Native answer (records) |
+|---|---|
+| `sceMpegInit()` | 0 |
+| `sceMpegCreate(mp, work, size)` | returns `work + 0x118`; 0x600 bytes from the game's heap (section 2.2), kept at `work + 0x44`; writes the sceMpeg (`mp + 0` .. `+ 7` zero: width and height, filled at the first picture; `+ 0x10` and `+ 0x28`, 16 bytes each, all ones; `+ 0x40` = work), the work area (`+ 0x1c` 0x1209f8, `+ 0x24` 0x120a08, `+ 0x80` all ones, `+ 0x94` 12 bytes all ones, `+ 0xb0` byte 1, `+ 0xd8` and `+ 0xe4` zero, `+ 0xf0` 8 bytes all ones, `+ 0x108`, `+ 0x110`, `+ 0x114` = work + 0x118, `+ 0x10c` = size - 0x118), libmpeg's static words in the ELF (0x1717bc = mp; 0x171800: nine pointers 0x171a50 ... 0x171bf0) (boot #228374 on fresh memory, #1394903 the second movie) |
+| `sceMpegAddCallback(mp, type, function, data)` | the count of callbacks set since the create (1, 2, 3, 4, 5 for TMB's types 0, 1, 2, 3, 5) |
+| `sceMpegAddStrCallback(mp, type, channel, function, data)` | 0 (types 0 video, 2 PCM; `data` is the fifth argument, in `t0`) |
+| `sceMpegReset(mp)` | the picture count `mp + 8` and the static word 0x171904 cleared; `v0` left (#1393605) |
+| `sceMpegDelete(mp)` | 0, nothing written |
+
+A callback's handler gets the gp the game had when it registered it.
+
+### 9.3 The demux: `sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize)`
+
+- The ring's size is the fifth argument (`t0`: 0x50000 in TMB); `data` is the ring address of the stream byte the call
+  starts at (stream offsets map to the ring modulo its size).
+- It takes the stream a sector (0x800 bytes) at a time while fewer than **8** starts are ahead of the game: the picture
+  starts, the sequence end (`00 00 01 b7`) and the program end (`00 00 01 b9`) whole in the video packets demuxed so far,
+  less the pictures delivered. Returns the bytes taken (boot #729735: 0x9800, nineteen sectors, the ninth packet's
+  picture start making 8; #1009679: 0x2000; 0 when already 8 ahead). Nothing after the program end is read, but the
+  sectors after it are still taken while the limit allows (boot #1391772 stops on the program end's sector, the eighth
+  start; match1p #14756730 takes all 0x10000 of a short movie).
+- A pack (`ba`), system header (`bb`), padding (`be`) are skipped; a PES packet is handled once its last byte is in. For
+  a packet of a registered stream (`e0` video: type 0; `bd` private stream 1: type 2, PCM), its callback data (32
+  bytes) is taken **from the game's heap** (section 2.2: first fit) and holds the type, 0, the payload's ring address,
+  its length, its PTS and DTS (64-bit, -1 when the packet has none) (#2157551: video and PCM entries). The callback is
+  queued as a handler of kind 4 (RPC callback) with `a0` = mp, `a1` = its data, `a2` = the callback's data, a
+  completion; that completion gives the 32 bytes back to the heap (match1p #7651932: a movie whose data starts 0x20
+  further on because a nodata callback's 32 bytes were still held).
+- When the call ends: a thread waiting in `sceMpegGetPicture` for data whose picture is now decodable is woken (a `wake`
+  inside the call, result 0, completion: match1p #14450352), then the callbacks are queued in packet order.
+- The reference's stub of TMB's `videoCallback` returns 1 and copies nothing (#729748): the decoder takes the video
+  from the demux. The PCM callback (0x1ec3e8) is a port override, still answered from the log.
+
+### 9.4 `sceMpegGetPicture(mp, rgb32, mbcount)`
+
+Picture k (k pictures delivered before it) is **decodable** when the stream holds its data and the next picture's whole
+(two more starts after its own: the decoder holds one back), or once the stream has ended (the sequence or program end
+seen). Then:
+
+1. **Not decodable**: the game's nodata callback (`sceMpegAddCallback` type 1) is queued as a library handler (kind 7,
+   `a0` mp, `a1` its 32-byte data {1, 0...} from the game's heap, completion) and the thread waits (reason 6 "libmpeg's
+   picture", object 1, token `mp`, completion) (boot #228435-#228437). The handler's end gives the data back and wakes
+   the thread (`wake` origin handler-end, result 0, #228462) unless a demux woke it already; as the thread resumes the
+   call is decided again (origin resume: the next nodata loop, #228467, or the picture). The IPU's transfer (section 11)
+   completes once this callback was queued.
+2. **Not due**: picture k is due at the vblank count `base + 2k`, where `base` is the count when picture 0 was delivered,
+   less one (two fields a picture: TMB's movies are 29.97 pictures a second). While the count is not past it, the
+   thread waits for that vblank (reason 4, token `base + 2k`, the parity as result, completion) and the picture is
+   delivered as it resumes (boot #729828 token 0x50, #1316108 0x52, #1316768 0x54; match1p #6578726 0xd70).
+3. **Delivered**: the picture is written to `rgb32`, `mp + 0` and `+ 4` get its width and height, `mp + 8` its index k,
+   the work area `+ 0xd8` the buffer and `+ 0xe4` mbcount; `v0` = 0 (boot #1317337).
+
+**Past the last picture** (stream ended, every picture delivered): an empty delivery, at once (not paced): only `mp + 8`
+and the work area are written (boot #1393483, match1p #6587612, #12948419).
+
+**The picture as the game receives it**: 640 x 368 RGBA32, alpha 0x80, in 16 x 16 macroblocks in **column-major**
+order (macroblock (x, y) at index x * 23 + y), pixels row by row inside one. Each pixel from its Y and its 2 x 2
+block's Cb and Cr (nearest), in 13-bit fixed point with each product shifted on its own (arithmetic shift, so floor),
+then clamped to 0-255:
+
+    l = (9539 * (Y - 16)) >> 13
+    R = l + ((13074 * (Cr - 128)) >> 13)
+    G = l + ((-3210 * (Cb - 128)) >> 13) + ((-6660 * (Cr - 128)) >> 13)
+    B = l + ((16524 * (Cb - 128)) >> 13)
+
+Settled on 84,868 distinct (Y, Cb, Cr) of five pictures of boot's third movie and match1p's in-game movies (Cb 51-138,
+Cr 119-219): R exact for 13073-13075, G for -6661 to -6657 with -3210, B for 16523-16525; the middle values are kept.
+Every picture of both logs then equals the reference's on every byte.
+
+### 9.5 `sceMpegIsEnd(mp)`
+
+1 once the stream has ended, every picture was delivered and the last one's display time is over: the vblank count past
+`base + 2 x pictures`; else 0 (match1p #6587505: 0 at the count `base + 2 x 37`, the game then gets an empty delivery;
+#6587721: 1). That is why some movies end with one empty delivery and others not (boot's first movie: one; its second
+and third: none).
+
+### 9.6 The movie's sound
+
+The PCM stream's packets go to a `MovieSoundSink` (`Libraries::movieSound`; none: dropped), for the future mixer. TMB's
+movies carry Sony's PCM in private stream 1: a 4-byte sub-stream header (`ff a0 00 00`), then in the first packet an
+`SShd` header (size 0x18: format 1, rate 48000, 2 channels, interleave 0x200) and an `SSbd` data header (its size); the
+samples are 16-bit **little-endian**, 512 bytes of the left channel then 512 of the right. The sink gets the format
+once, then interleaved frames with the packet's PTS. `bozo-run` counts them: boot 783,872 frames (16.3 s, the two
+movies with sound).
+
+### 9.7 What the renderer takes later
+
+Each picture as decoded (`YuvPicture`, before the conversion) or as the game receives it, with the sceMpeg's width and
+height, shown as the backdrop while TMB's vblank handler would upload it (TMB's native renderer does that today).
+
+### 9.8 Open
+
+- A library handler's first context: the reference's copies the calling thread's registers (its `CTX` records: `v0`,
+  `t0`, `s0`, `s1`... of the caller), which `bozo-run` takes from the log as it did before (lenient, `calllog.md` 4.4);
+  the native runtime gives a handler a fresh context. TMB's nodata callback does not read them.
+- The pace assumes two fields a picture; a movie at another rate (none in TMB) needs it from the sequence header.
 
 ## 10. VU0 microprograms (`vu0`)
 
@@ -416,7 +489,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
 | 0x10009000-30 | VIF1 | as VIF0 (D_STAT bit 1): TMB's 3D packets, 2.5M kicks in match1p |
 | 0x1000a000-30 | GIF | as VIF0 (bit 2), except a chain whose first packet draws (its GIF tag sets PRIM: the sprite TMB sends from 0x4fe180 before `sceGsSyncV` on its loading screens, 2,269 kicks in match1p): the reference drops it, no completion and no interrupt |
-| 0x1000b400-30 | IPU_TO (channel 4) | the transfer completes (bit 4, the interrupt) at the game's first store after libmpeg's decoder took it, i.e. after the decoder asked for more data (it queued the game's nodata callback); a CHCR store without STR stops the channel (TMB's movie end: the last transfer never completes) |
+| 0x1000b400-30 | IPU_TO (channel 4) | the transfer completes (bit 4, the interrupt) at the game's first store after libmpeg's decoder took it, i.e. after the decoder asked for more data (it queued the game's nodata callback: the native libmpeg says so, section 9.4); a CHCR store without STR stops the channel (TMB's movie end: the last transfer never completes) |
 | any channel | CHCR load | the value written, STR cleared once complete |
 | any channel | MADR, QWC, TADR loads | 0 (the reference's answer: TMB reads channel 4's MADR, 0 in every record, also before any transfer) |
 | 0x1000e000 | D_CTRL | kept (TMB writes 3; reads 0 before) |
@@ -436,17 +509,18 @@ follows them (counted as followed calls):
   inside, the next load of T0_COUNT re-bases the count on the log's value (and whether the override's last read was
   that same value, from the log's pending poll cycles). The native frame boundary of the real runtime restarts it
   itself.
-- IPU_TO's completion follows libmpeg's nodata callbacks while libmpeg is answered from the log (its queue operations).
+- IPU_TO's completion follows libmpeg's nodata callbacks: from the native libmpeg, or from the log's queue operations
+  when libmpeg is answered from the log (a build without FFmpeg).
 
 Results: boot 855,098 accesses native (`D_ENABLEW`/`D_ENABLER` 472,180, IPU_TO 236,108, VIF1 62,997, ...), match1p
 17,605,351 (VIF1 7,544,895, `D_STAT`/`D_PCR` 5,020,295, `D_ENABLEW`/`D_ENABLER` 2,631,172, T0_COUNT 927,111 loads, ...);
 0 divergences.
 
-## 12. Still answered from the log (batch B2)
+## 12. Still answered from the log
 
-SIF and 989SND (`sceSif*`, the RPC to service 0x123456, the IOP heap and modules), libmpeg (section 9), the 2D image's
-VU0 programs (never called), and every port override (TMB's own native renderer, sound and the frame boundary, the
-Logitech wheel functions).
+SIF and 989SND (`sceSif*`, the RPC to service 0x123456, the IOP heap and modules), the 2D image's VU0 programs (never
+called), and every port override (TMB's own native renderer, sound and the frame boundary, the Logitech wheel functions,
+the movie's PCM callback).
 
 ## 13. Results
 
@@ -459,12 +533,14 @@ with `--pad-script reference/tmb/scripts/ch1p_frames.txt`:
 | match1p, batch A | 11,119,646 (libc 2,060,202, libm 8,780,783, gs 117,534, pad 161,084, mc 43) | 4,843 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 165 s |
 | boot, batch B1 | 1,523,645 (batch A's, cd 378, vu0 374,583, io 855,098) and 9 CD continuations | 3 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 17 s |
 | match1p, batch B1 | 52,773,508 (batch A's, cd 587, vu0 24,047,924, io 17,605,351) and 33 CD continuations | 12,979 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 267 s |
+| boot, batch B2 | 1,530,467 (batch B1's, mpeg 6,822: `videoCallback` 3,685, `sceMpegDemuxPssRing` 1,532, `sceMpegIsEnd` 788, `sceMpegGetPicture` 785, ...) and every libmpeg handler end and resume (the 59k nodata callbacks') | 0 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 20 s |
+| match1p, batch B2 | 52,781,732 (batch B1's, mpeg 8,224) | 12,968 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 286 s |
 
 Frames match on ram, scratchpad, calls and threads (eeCycle too). Phase 2's runs with everything from the log took 17 s
 (boot) and 164 s (match1p). match1p's extra time is the check, not the libraries: each of its 42 million VU0 and I/O
 calls has its 332 context words compared before and after, and its writes journaled.
 
 Open points: L1 (section 3: the Universal CRT's float sine and cosine off Windows), the `save` run's call log
-(section 7), L2/R2's pressure places (section 6), PAL's display constants (not in TMB's runs: US only), libmpeg (section
-9), the CD's free-mode timing against a real drive (section 8.2: a model, not the reference's IOP), and the two points
+(section 7), L2/R2's pressure places (section 6), PAL's display constants (not in TMB's runs: US only), libmpeg's open points
+(section 9.8), the CD's free-mode timing against a real drive (section 8.2: a model, not the reference's IOP), and the two points
 the I/O model follows from the log (section 11).

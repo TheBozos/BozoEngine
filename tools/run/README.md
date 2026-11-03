@@ -12,7 +12,8 @@ build's.
 ```sh
 export PATH=/c/msys64/ucrt64/bin:$PATH
 cmake -S . -B build -G Ninja -DBOZO_TMB_ELF=D:/TMB_Recomp/build/us_probe/SCUS_971.01 \
-      -DBOZO_CALLLOGS=D:/BozoCaptures/tmb/calllog [-DBOZO_CAPTURES=D:/BozoCaptures/tmb]
+      -DBOZO_CALLLOGS=D:/BozoCaptures/tmb/calllog [-DBOZO_CAPTURES=D:/BozoCaptures/tmb] \
+      [-DBOZO_FFMPEG_ROOT=D:/tmb_kit/kit/ffmpeg]   # libmpeg's decoder (else pkg-config; none: movies from the log)
 cmake --build build
 ```
 
@@ -38,7 +39,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--trace-from <record>` | print every record matched from that record index on |
 | `--trace-checkpoints` | with `--trace-from`: also every checkpoint passed (where it goes on, the cycle, the charge) and every dispatcher start |
 | `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
-| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, `cd`, `vu0` (the VU0 microprograms), `io` (the hardware registers), comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
+| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, `cd`, `vu0` (the VU0 microprograms), `io` (the hardware registers), `mpeg` (libmpeg: needs a build with FFmpeg), comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
 | `--iso <image>` | the game's disc image for the native CD library (`libraries.md` section 8; also `BOZO_ISO`); without one the CD stays answered from the log |
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
@@ -97,5 +98,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 | match1p, `--native all --pad-script reference/tmb/scripts/ch1p_frames.txt` | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (11,119,646 calls native, 0 divergences) | 165 s |
 | boot, batch B1 (`--native all --iso <image>`: CD, VU0, I/O too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,523,645 calls native, 0 divergences) | 17 s |
 | match1p, batch B1 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (52,773,508 calls native, 0 divergences) | 267 s |
+| boot, batch B2 (libmpeg native too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,530,467 calls native, 0 divergences) | 20 s |
+| match1p, batch B2 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (52,781,732 calls native, 0 divergences) | 286 s |
 
 What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.
