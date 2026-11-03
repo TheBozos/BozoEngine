@@ -40,6 +40,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
 | `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
+| `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
 | `--quiet` | only the summary |
 
 The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference: on
@@ -85,5 +86,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 | match1p (`match1p.clg`, 3.46 GB, streamed) | `--pinned` | 16000 of 16000 (ram, scratchpad, calls, threads; eeCycle too) | 74,615,923 of 74,615,923 | 164 s |
 | boot | free | 3000 of 3000 on every field | 4,650,558 of 4,650,558 | 14 s |
 | match1p | free | 5,786 of 16000 | 18,359,663 of 74,615,923 | 41 s |
+| boot, every batch A library native (`--native all`) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (293,586 calls native, 0 divergences) | 14 s |
+| match1p, `--native all --pad-script reference/tmb/scripts/ch1p_frames.txt` | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (11,119,646 calls native, 0 divergences) | 165 s |
 
 What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.

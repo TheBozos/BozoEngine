@@ -28,7 +28,7 @@ namespace
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
                      "                [--pinned] [--native libc,libm,gs,pad,mc|all|none]\n"
-                     "                [--pad-script [port=]file] [--quiet]\n");
+                     "                [--pad-script [port=]file] [--card-dir dir] [--quiet]\n");
         return 2;
     }
 
@@ -55,6 +55,7 @@ int main(int argc, char **argv)
         return usage();
     std::string logPath = argv[1], refPath, outPath, elfPath = BOZO_RUN_ELF;
     std::vector<std::pair<int, std::string>> padScripts;
+    std::string cardDir;
     run::Options opt;
     for (int k = 2; k < argc; ++k)
     {
@@ -90,6 +91,8 @@ int main(int argc, char **argv)
             }
             padScripts.emplace_back(port, v);
         }
+        else if (a == "--card-dir")
+            cardDir = value();
         else if (a == "--native")
         {
             if (!libs::parseLibraries(value(), opt.native))
@@ -144,6 +147,7 @@ int main(int argc, char **argv)
         }
     }
     host.libraries().pad.input = &padScript;
+    host.libraries().mc.hostDirectory = cardDir; // empty: cards in memory, fresh and formatted
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
