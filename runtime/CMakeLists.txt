@@ -17,6 +17,10 @@ add_library(bozo_libs STATIC
   libs/gs.cpp
   libs/pad.cpp
   libs/mc.cpp
-  libs/cd.cpp)
+  libs/cd.cpp
+  libs/vu0.cpp)
 target_link_libraries(bozo_libs PUBLIC bozo_runtime_core)
 target_compile_options(bozo_libs PRIVATE -Wall -Wextra)
+# The VU0 programs compute in single precision rounded toward zero, as the reference does: the host's float operations
+# under that rounding mode, never folded or fused (libs/vu0.cpp).
+set_source_files_properties(libs/vu0.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math;-ffp-contract=off")

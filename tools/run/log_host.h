@@ -40,6 +40,7 @@ namespace bozo::run
         uint64_t calls[16] = {};
         uint64_t timeDiffers = 0; // timed calls whose EE time is not the log's (free mode: reported, the log's kept)
         uint64_t observed = 0; // traced or answered calls the native state followed
+        uint64_t notNative = 0; // calls of a native library it has no answer for (left to the log)
         uint64_t divergences = 0;
     };
 
@@ -197,5 +198,6 @@ namespace bozo::run
         // CPCOND0 from the game's DMA register stores (replay.md section 3).
         uint32_t dmaDone_ = 0, dmaPcr_ = 0;
         bool dmaPcrKnown_ = false;
+        uint32_t vif0Tadr_ = 0;
     };
 }

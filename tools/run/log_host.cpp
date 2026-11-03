@@ -450,7 +450,10 @@ namespace bozo::run
         Call c;
         const Record r = takeCall(kVu0, address, ctx, c);
         log_.advance();
-        answer(ctx, r, c, false);
+        const libs::Function *native = (opt_.native & libs::kVu0) ? libs_.vu0Program(address) : nullptr;
+        if ((opt_.native & libs::kVu0) && !native)
+            ++native_.notNative;
+        answer(ctx, r, c, false, native);
     }
 
     void LogHost::ioRead(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2])
@@ -482,7 +485,12 @@ namespace bozo::run
                                 c.size, c.value[0]),
                     &r, true);
         log_.advance();
+        // CPCOND0 and the VU0 image follow the game's DMA stores.
         trackDma(address, got[0]);
+        if ((address & 0x1FFFFFFFu) == 0x10008030u)
+            vif0Tadr_ = got[0];
+        else if ((address & 0x1FFFFFFFu) == 0x10008000u && (got[0] & 0x100u))
+            libs_.vu0.kick(got[0], vif0Tadr_);
         answer(ctx, r, c, false);
     }
 

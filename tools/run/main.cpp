@@ -28,7 +28,7 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd|all|none]\n"
+                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0|all|none]\n"
                      "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
         return 2;
     }
@@ -243,6 +243,8 @@ int main(int argc, char **argv)
         std::printf("%s (%llu calls answered natively); %llu answered calls followed; %llu divergences",
                     opt.native ? "" : " none", static_cast<unsigned long long>(total),
                     static_cast<unsigned long long>(n.observed), static_cast<unsigned long long>(n.divergences));
+        if (n.notNative)
+            std::printf("; %llu calls with no native answer (from the log)", static_cast<unsigned long long>(n.notNative));
         if (n.timeDiffers)
             std::printf("; %llu timed calls at another EE time than the log's (kept)", static_cast<unsigned long long>(n.timeDiffers));
         std::printf("\n");

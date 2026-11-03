@@ -32,11 +32,32 @@ namespace bozo::libs
         kPad = 1u << 3,  // libpad
         kMc = 1u << 4,   // libmc
         kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
-        kAllLibraries = (1u << 6) - 1,
+        kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
+        kAllLibraries = (1u << 7) - 1,
     };
-    constexpr unsigned kLibraryCount = 6;
+    constexpr unsigned kLibraryCount = 7;
+
+    // Which microcode VU0's code memory holds: the image of the VIF0 chain the game kicked last (libraries.md
+    // section 10). TMB's two chains are static data in its ELF.
+    enum class Vu0Image : uint8_t
+    {
+        None,
+        Hierarchy, // hier__Fi and main: the scene traversal's programs
+        TwoD,      // drawInit (debug draws only)
+    };
+    struct Vu0State
+    {
+        static constexpr uint32_t kHierarchyChain = 0x234060u, k2dChain = 0x2337D0u;
+        static constexpr uint32_t k2dImageEnd = 230u * 8u; // the 2D image's MPG covers code below this
+        // The hierarchy image until a kick of the 2D chain is seen: main and hier__Fi send it inside calls the logs
+        // answer whole (no VIF0 store of theirs is an out-call of its own), and the 2D image is debug draws' only.
+        Vu0Image image = Vu0Image::Hierarchy;
+        bool hierarchyHigh = true; // the hierarchy image was loaded once: its code above k2dImageEnd stays
+        // A VIF0 DMA kick (CHCR written with STR): the chain it sends, by its tag address.
+        void kick(uint32_t chcr, uint32_t tadr);
+    };
     const char *libraryName(Library l);
-    // "libc,libm,gs,pad,mc,cd", "all" or "none" -> a mask; false on an unknown name.
+    // "libc,libm,gs,pad,mc,cd,vu0", "all" or "none" -> a mask; false on an unknown name.
     bool parseLibraries(const std::string &list, uint32_t &mask);
 
     class Libraries;
@@ -142,6 +163,11 @@ namespace bozo::libs
         bool hasContinuation(int32_t thread) const { return continuations_.count(thread) != 0; }
         Pin pin;
 
+        // ---- VU0 microprograms ----
+        // The native program at `pc` of the image VU0 holds (null if none): it runs on the calling context's VU0 state
+        // and VU0's data memory.
+        const Function *vu0Program(uint32_t pc) const;
+
         // ---- State ----
         Heap heap;
         Rand rand;
@@ -149,6 +175,7 @@ namespace bozo::libs
         PadState pad;
         McState mc;
         CdState cd;
+        Vu0State vu0;
         // Game frames ended so far: the runtime's count at its frame boundary (sceGsSyncV's result and the pad
         // script follow it).
         uint32_t framesEnded = 0;
