@@ -14,7 +14,12 @@ namespace bozo::ee
 
         Dispatcher &self(Runtime *rt) { return *static_cast<Dispatcher *>(rt->services); }
         uint32_t arg(const R5900Context *ctx, int i) { return ctx->r[4 + i].uw[0]; }
-        void ret(R5900Context *ctx, int32_t v) { ctx->r[2].sd[0] = v; }
+        // A kernel call's result: v0 as a whole 128-bit register (its upper half cleared, as the reference's).
+        void ret(R5900Context *ctx, int32_t v)
+        {
+            ctx->r[2].sd[0] = v;
+            ctx->r[2].ud[1] = 0;
+        }
     }
 
     KernelCall kernelCallByName(const std::string &full)

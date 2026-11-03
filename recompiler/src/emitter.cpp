@@ -561,11 +561,11 @@ namespace bozo
             uint32_t target = 0;
             if (isBranch(i.op))
                 target = i.branchTarget();
-            else if (i.op == Op::J)
+            else if (i.op == Op::J || i.op == Op::JAL)
                 target = i.jumpTarget();
             else
                 continue;
-            if (target >= f.start && target < f.end && !(opFlags(i.op) & LNK))
+            if (target >= f.start && target < f.end)
                 labels.insert(target);
         }
         std::set<uint32_t> extra;
@@ -601,11 +601,42 @@ namespace bozo
             return leave("target") + " if (bozo_jump(rdram, ctx, rt, target)) return;";
         };
         // A call (jal, bal...): charged, then the callee; execution continues at the return address's label.
-        auto callAt = [&](uint32_t target) { return leave(hex(target)) + " " + callTo(target, true); };
+        // A call (jal, bal...) from `from`: charged, then the callee. The callee returns with ctx->pc at its return
+        // target; anywhere else than this call's return address (a thread that stopped inside, a callee that returned
+        // through another frame), this function returns too, as the reference's code does, and the dispatcher runs the
+        // thread on from ctx->pc. A call to a label of this same function is a goto (the reference's: charged, not a
+        // stopping point; the callee's return then leaves this whole function).
+        auto callAt = [&](uint32_t target, uint32_t from) {
+            if (target >= f.start && target < f.end && !isExternal(target, true))
+                return std::format("bozo::charge(ctx, {}); goto {};", kLeaveCycles, label(target));
+            return leave(hex(target)) + " " + callTo(target, true) +
+                   std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
+        };
         // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
         // which runs the caller from there when its C++ frame is gone (a thread resumed after stopping).
+        // The return addresses of this function's calls to its own labels: a return to one of them goes back there
+        // (the reference's), at a point where the thread can stop (no cycles charged).
+        std::set<uint32_t> innerReturns;
+        for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+        {
+            const Insn i = decodeAt(p.read32(a), a);
+            if (!(opFlags(i.op) & LNK) || i.op == Op::JALR)
+                continue;
+            const uint32_t target = i.op == Op::JAL ? i.jumpTarget() : i.branchTarget();
+            if (target >= f.start && target < f.end && !isExternal(target, true) && labels.count(a + 8))
+                innerReturns.insert(a + 8);
+        }
         auto ret = [&](uint32_t reg, const std::string &delay) {
-            return std::format("{{ const uint32_t target = BZ_W({}); {} ctx->pc = target; return; }}", reg, delay);
+            std::string inner;
+            if (!innerReturns.empty())
+            {
+                inner = "switch (target) { ";
+                for (uint32_t r : innerReturns)
+                    inner += std::format("case {}: bozo::checkpoint(rdram, ctx, rt, 0, {}); --ctx->checkpoints; goto {}; ", hex(r),
+                                         hex(r), label(r));
+                inner += "default: break; } ";
+            }
+            return std::format("{{ const uint32_t target = BZ_W({}); {} {}ctx->pc = target; return; }}", reg, delay, inner);
         };
 
         const std::string name = cppName(f.symbol, f.start);
@@ -681,7 +712,7 @@ namespace bozo
                 }
                 const uint32_t target = i.branchTarget();
                 const std::string link = (flags & LNK) ? std::format("BZ_D(31) = {}; ", hex64(a + 8)) : std::string();
-                const std::string go = (flags & LNK) ? callAt(target) : jumpTo(target, a);
+                const std::string go = (flags & LNK) ? callAt(target, a) : jumpTo(target, a);
                 if (cond == "true")
                     code = std::format("{}{} {}", link, delay, go);
                 else if (cond == "false")
@@ -694,7 +725,7 @@ namespace bozo
             else if (i.op == Op::J)
                 code = delay + " " + jumpTo(i.jumpTarget(), a);
             else if (i.op == Op::JAL)
-                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callAt(i.jumpTarget()));
+                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callAt(i.jumpTarget(), a));
             else if (i.op == Op::JR)
             {
                 if (s == 31)
@@ -717,14 +748,16 @@ namespace bozo
                     code += "default: break; } bozo_call_indirect(rdram, ctx, rt, target); return; }";
                 }
                 else
-                    code = std::format("{{ const uint32_t target = BZ_W({}); {} if (target == entryRa) {{ ctx->pc = target; return; }} "
-                                       "{} bozo_call_indirect(rdram, ctx, rt, target); return; }}",
+                    code = std::format("{{ const uint32_t target = BZ_W({}); {} {} if (target == entryRa) {{ ctx->pc = target; return; }} "
+                                       "bozo_call_indirect(rdram, ctx, rt, target); return; }}",
                                        s, delay, jumpThrough());
             }
             else if (i.op == Op::JALR)
             {
                 const std::string link = i.rd() == 0 ? std::string() : std::format("BZ_D({}) = {}; ", i.rd(), hex64(a + 8));
-                code = std::format("{{ const uint32_t target = BZ_W({}); {}{} {} bozo_call_indirect(rdram, ctx, rt, target); }}", s, link, delay, leave("target"));
+                const std::string check = i.rd() == 31 ? std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(a + 8)) : std::string();
+                code = std::format("{{ const uint32_t target = BZ_W({}); {}{} {} bozo_call_indirect(rdram, ctx, rt, target);{} }}", s, link,
+                                   delay, leave("target"), check);
             }
             line(i, code);
             if (labels.count(a + 4))

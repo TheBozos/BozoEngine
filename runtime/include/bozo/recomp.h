@@ -39,6 +39,13 @@ namespace bozo
         }
     }
 
+    // EE time charged where guest code cannot stop (the reference's call to a label of the same function).
+    BOZO_INLINE void charge(R5900Context *ctx, uint32_t cycles)
+    {
+        ctx->cycles += cycles;
+        ++ctx->checkpoints;
+    }
+
     // ---- Multiply and divide (r5900.md "Multiply and divide") ----
     // HI/LO (or HI1/LO1) receive the two 32-bit halves of the result, each sign-extended to 64 bits.
     BOZO_INLINE void setHiLo(uint64_t &hi, uint64_t &lo, uint64_t product)
