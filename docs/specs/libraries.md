@@ -852,6 +852,23 @@ silent first tick) gives 15 of the 26 play handles to frame 5770; the first diff
 native driver then takes them (handler and voice pools, the tick, the counter, stealing in 989SND's order). The
 mixer's behaviour is now 15.14 (the mixer itself moved here), the IOP clock under it `iop-timing.md`.
 
+### 15.13a The replay with the moved mixer and the reference's IOP time (2026-11-04)
+
+The analysis replay of 989SND.IRX (kept out of the repository: it runs IOP code) now runs over `bozo_audio`'s own Mixer
+and Libsd (clocked) and an IOP clock per `iop-timing.md`: P = (EE cycle - 4,927,984) / 8 + G, ticks due every 153,600
+IOP cycles and served at max(due, the IOP clock), the clock advancing by the replayed driver's instruction count inside
+each RPC call and tick (so a tick due during a call fires after it, its lateness carried forward). With G = 0 and one
+pinned point, the tick phase at the level start (`snd_InitVAGStreamingEx`, match1p #17536113: any due tick 0.5 ms or
+more after it), it gives every 989SND reply of boot but the movie positions, and every reply of match1p through frame
+8662, and 791 of the 932 movie positions (0x40) with no per-movie pin. With the tick phase at the level start not pinned
+(the first due tick at the call), one asynchronous sound of bank 0xe5284 ends a tick before the reference's and the
+first play handle differs at frame 6597: the phase is the one point the records must give.
+
+First difference left: frame 8663, SetSoundParams and SoundIsStillPlaying of the stream handle 0x84020002 (given inside
+`TheGame::Update`): ended in the reference, playing in the replay, whose streaming threads (disc reads into the stream's
+ring and its end) do not run yet. The 141 movie positions left are the same G question for the second movie
+(`iop-timing.md` section 8).
+
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 
 The reference's mixer is the team's own code on the fork, so it moved here (PLAN.md section 7) instead of being
