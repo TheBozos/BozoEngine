@@ -28,40 +28,41 @@ namespace bozo::audio
             return (a * b) >> 15;
         }
 
-        // One step of an envelope or a volume sweep: rate is (shift << 2) | step, 0..127, at 48 kHz.
+        // One step of an envelope or a volume sweep, once per 48 kHz sample: rate = (shift << 2) | step, 0..127.
+        // From psx-spx ("SPU ADSR"): the level moves by step = 7 - step (increasing) or -8 + step (decreasing),
+        // << max(0, 11 - shift), every 2^max(0, shift - 11) samples, clamped to 0..0x7FFF; exponential and decreasing,
+        // the move is step x level >> 15. Where psx-spx is ambiguous, the reference mixer's observed behaviour
+        // (libraries.md 15.14, settled black-box): the wait is a counter gaining 0x8000 >> (shift - 11) a sample (0x8000
+        // below shift 11), the level moving when it reaches 0x8000; shift >= 27 never moves; exponential and increasing
+        // at or above 0x6000 slows by 4: a quarter of the move below shift 10, half the move at half the counter's gain
+        // at shift 10, a quarter of the counter's gain from shift 11.
         void envelopeStep(int32_t &level, uint32_t &counter, uint32_t rate, bool decreasing, bool exponential)
         {
             const int32_t shift = static_cast<int32_t>(rate >> 2u);
-            int32_t step = 7 - static_cast<int32_t>(rate & 3u);
-            if (decreasing)
-                step = ~step;
-            uint32_t increment = 0x8000u;
-            if (shift < 11)
-                step *= 1 << (11 - shift);
-            else if (shift > 11)
-                increment = shift - 11 < 16 ? increment >> (shift - 11) : 0u;
-            if (exponential)
-            {
-                if (decreasing)
-                    step = (step * level) >> 15;
-                else if (level >= 0x6000)
-                {
-                    if (shift < 10)
-                        step >>= 2;
-                    else if (shift >= 11)
-                        increment >>= 2;
-                    else
-                    {
-                        step >>= 1;
-                        increment >>= 1;
-                    }
-                }
-            }
-            counter += increment;
-            if ((counter & 0x8000u) == 0u)
+            if (shift >= 27)
                 return;
-            counter = 0u;
-            level = std::clamp(level + step, 0, 0x7FFF);
+            const int32_t low = static_cast<int32_t>(rate & 3u);
+            int32_t move = (decreasing ? -8 + low : 7 - low) << std::max(0, 11 - shift);
+            uint32_t gain = shift >= 11 ? 0x8000u >> (shift - 11) : 0x8000u;
+            if (exponential && decreasing)
+                move = (move * level) >> 15;
+            else if (exponential && level >= 0x6000)
+            {
+                if (shift < 10)
+                    move >>= 2;
+                else if (shift == 10)
+                {
+                    move >>= 1;
+                    gain >>= 1;
+                }
+                else
+                    gain >>= 2;
+            }
+            counter += gain;
+            if (counter < 0x8000u)
+                return;
+            counter = 0;
+            level = std::clamp(level + move, 0, 0x7FFF);
         }
 
         // libsd's reverb presets (its table, mode 0 off .. 9 pipe): dAPF1, dAPF2, vIIR, vCOMB1..4, vWALL, vAPF1, vAPF2,

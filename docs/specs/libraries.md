@@ -888,6 +888,17 @@ of the counter's speed. The phases: **attack** (ADSR1 bits 8-14, exponential bit
 (ADSR2 & 0x1F) x 4, decreasing, exponential bit 5) until the level is 0, then the voice is off. Each phase starts with
 the counter at 0. ENVX is the level.
 
+**Where psx-spx is ambiguous** (its "SPU ADSR" gives the step, the wait of 2^max(0, s - 11) samples and the
+exponential decrease, and for exponential increase above 0x6000 only "cycles x 4"; it gives no upper limit to the
+shift). The reference mixer's behaviour, settled black-box (every rate, both directions, both modes, 200,000 samples
+each, its output compared with the documented formula's): the wait is a counter gaining 0x8000 >> (s - 11) a sample
+(0x8000 below s = 11), the level moving when it reaches 0x8000; **s >= 27 never moves** (psx-spx's formula would move
+every 2^(s - 11) samples: rates 108-127 differ from the 65,536th sample on); **exponential and increasing, at a level of
+0x6000 or more**, the slowing by 4 depends on the shift: s < 10 (the wait already one sample) a quarter of the move;
+s = 10 half the move at half the counter's gain; s >= 11 a quarter of the counter's gain (psx-spx's "cycles x 4" read
+literally differs on every one of the 64 exponential increasing rates). `envelopeStep` (`runtime/audio/mixer.cpp`) is
+written from psx-spx and these rules; `bozo-audio-tests`' digests are the moved mixer's.
+
 **ENVX at the first tick after KeyOn.** KeyOn puts the voice at its start address (SSA) with level 0 in attack,
 decodes its first block and clears its ENDX bit; ENVX read at the KeyOn's own clock is 0. After N samples of attack the
 level is non-zero from the first sample when s <= 11 (rate < 0x30: N x (7 - (r & 3)) << (11 - s) until it saturates),
