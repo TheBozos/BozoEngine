@@ -14,6 +14,8 @@ add_library(bozo_runtime_headers INTERFACE)
 target_include_directories(bozo_runtime_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include)
 
 add_subdirectory(recompiler)
+add_subdirectory(runtime)
+add_subdirectory(tools/replay)
 
 include(CTest)
 if(BUILD_TESTING)

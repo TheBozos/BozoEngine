@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <set>
 
 namespace bozo
@@ -47,8 +48,57 @@ namespace bozo
         return cppName(it != f.entrySymbols.end() ? it->second : std::string(), addr);
     }
 
-    std::string Emitter::callTo(uint32_t target) const
+    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error)
     {
+        std::ifstream in(path);
+        if (!in)
+        {
+            error = "cannot read " + path;
+            return false;
+        }
+        std::string line;
+        int n = 0;
+        while (std::getline(in, line))
+        {
+            ++n;
+            if (const size_t h = line.find('#'); h != std::string::npos)
+                line.resize(h);
+            char kind[32] = {};
+            unsigned long address = 0;
+            if (std::sscanf(line.c_str(), "%31s %lx", kind, &address) != 2)
+            {
+                if (line.find_first_not_of(" \t\r") == std::string::npos)
+                    continue;
+                error = std::format("{}:{}: expected \"stub 0xADDR\" or \"override 0xADDR\"", path, n);
+                return false;
+            }
+            const std::string k = kind;
+            if (k == "stub")
+                out[static_cast<uint32_t>(address)] = ExternalKind::Stub;
+            else if (k == "override")
+                out.emplace(static_cast<uint32_t>(address), ExternalKind::Override); // a stub entry wins
+            else
+            {
+                error = std::format("{}:{}: unknown kind \"{}\"", path, n, k);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool Emitter::isExternal(uint32_t target, bool call) const
+    {
+        const auto it = opt_.externals.find(target);
+        return it != opt_.externals.end() && (call || it->second == ExternalKind::Stub);
+    }
+
+    std::string Emitter::callTo(uint32_t target, bool call)
+    {
+        if (isExternal(target, call))
+        {
+            ++stats_.externalCalls;
+            return std::format("bozo_call_indirect(rdram, ctx, rt, {});", hex(target));
+        }
         if (const Function *g = a_.functionContaining(target))
             if (g->start == target || g->extraEntries.count(target))
                 return entryName(*g, target) + "(rdram, ctx, rt);";
@@ -514,13 +564,13 @@ namespace bozo
         auto label = [](uint32_t a) { return std::format("L_{:x}", a); };
         // A transfer to `target` from the instruction at `from`: goto inside the function, else a tail call.
         auto jumpTo = [&](uint32_t target, uint32_t from) -> std::string {
-            if (target >= f.start && target < f.end)
+            if (target >= f.start && target < f.end && !isExternal(target, false))
             {
                 if (target <= from)
                     return std::format("bozo::checkpoint(rdram, ctx, rt, {}); goto {};", (from - target) / 4 + 2, label(target));
                 return std::format("goto {};", label(target));
             }
-            return callTo(target) + " return;";
+            return callTo(target, false) + " return;";
         };
 
         const bool multiEntry = !f.extraEntries.empty();
@@ -605,7 +655,7 @@ namespace bozo
                 }
                 const uint32_t target = i.branchTarget();
                 const std::string link = (flags & LNK) ? std::format("BZ_D(31) = {}; ", hex64(a + 8)) : std::string();
-                const std::string go = (flags & LNK) ? callTo(target) : jumpTo(target, a);
+                const std::string go = (flags & LNK) ? callTo(target, true) : jumpTo(target, a);
                 if (cond == "true")
                     code = std::format("{}{} {}", link, delay, go);
                 else if (cond == "false")
@@ -618,7 +668,7 @@ namespace bozo
             else if (i.op == Op::J)
                 code = delay + " " + jumpTo(i.jumpTarget(), a);
             else if (i.op == Op::JAL)
-                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callTo(i.jumpTarget()));
+                code = std::format("BZ_D(31) = {}; {} {}", hex64(a + 8), delay, callTo(i.jumpTarget(), true));
             else if (i.op == Op::JR)
             {
                 if (s == 31 || f.returnJr.count(a))
@@ -658,7 +708,7 @@ namespace bozo
         // Falling off the end: continue into the next function.
         if (labels.count(f.end))
             out += label(f.end) + ":;\n";
-        out += "    " + callTo(f.end) + "\n}\n";
+        out += "    " + callTo(f.end, false) + "\n}\n";
 
         if (multiEntry)
         {
@@ -703,29 +753,37 @@ namespace bozo
         out += std::format("}};\nconst size_t {0}_function_count = sizeof({0}_function_table) / sizeof({0}_function_table[0]);\n", opt_.prefix);
     }
 
+
     bool Emitter::emitAll(const std::string &dir, std::string &error)
     {
         namespace fs = std::filesystem;
         std::error_code ec;
         fs::create_directories(dir, ec);
+        std::set<std::string> written;
+        // A file is rewritten only when its contents change, so a build system recompiles only what changed.
         auto write = [&](const std::string &name, const std::string &text) -> bool {
-            std::ofstream o(fs::path(dir) / name, std::ios::binary);
+            const fs::path path = fs::path(dir) / name;
+            written.insert(name);
+            stats_.bytes += text.size();
+            {
+                std::ifstream in(path, std::ios::binary);
+                if (in)
+                {
+                    std::string old((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                    if (old == text)
+                        return true;
+                }
+            }
+            std::ofstream o(path, std::ios::binary);
             o.write(text.data(), static_cast<std::streamsize>(text.size()));
             if (!o)
             {
-                error = "cannot write " + (fs::path(dir) / name).string();
+                error = "cannot write " + path.string();
                 return false;
             }
-            stats_.bytes += text.size();
+            ++stats_.filesWritten;
             return true;
         };
-        // Old generated files would otherwise be compiled with the new ones.
-        for (const auto &e : fs::directory_iterator(dir, ec))
-        {
-            const std::string n = e.path().filename().string();
-            if (n.rfind(opt_.prefix + "_", 0) == 0 && (e.path().extension() == ".cpp" || e.path().extension() == ".h"))
-                fs::remove(e.path(), ec);
-        }
 
         std::string text;
         emitHeader(text);
@@ -737,23 +795,47 @@ namespace bozo
             return false;
 
         const std::string prologue = std::format("// Generated by bozo-recomp. Do not edit.\n#include \"{}_functions.h\"\n\n", opt_.prefix);
-        text = prologue;
-        uint32_t fileIndex = 0;
+        std::vector<std::string> bodies;
+        bodies.reserve(a_.functions().size());
+        size_t total = 0;
         for (const Function &f : a_.functions())
         {
-            emitFunction(f, text);
+            bodies.emplace_back();
+            emitFunction(f, bodies.back());
+            total += bodies.back().size();
             ++stats_.functions;
             stats_.entries += 1 + static_cast<uint32_t>(f.extraEntries.size());
-            if (text.size() >= opt_.maxBytesPerFile)
+        }
+        // Split: at maxBytesPerFile, or into exactly opt_.files files of about the same size.
+        const size_t limit = opt_.files ? (total + opt_.files - 1) / opt_.files : opt_.maxBytesPerFile;
+        uint32_t fileIndex = 0;
+        text = prologue;
+        for (const std::string &b : bodies)
+        {
+            text += b;
+            if (text.size() >= limit && (!opt_.files || fileIndex + 1 < opt_.files))
             {
                 if (!write(std::format("{}_{:03}.cpp", opt_.prefix, fileIndex++), text))
                     return false;
                 text = prologue;
             }
         }
-        if (text.size() > prologue.size() && !write(std::format("{}_{:03}.cpp", opt_.prefix, fileIndex++), text))
-            return false;
+        if (text.size() > prologue.size() || (opt_.files && fileIndex < opt_.files))
+            if (!write(std::format("{}_{:03}.cpp", opt_.prefix, fileIndex++), text))
+                return false;
+        while (opt_.files && fileIndex < opt_.files) // fewer functions than files: empty ones keep the list fixed
+            if (!write(std::format("{}_{:03}.cpp", opt_.prefix, fileIndex++), prologue))
+                return false;
         stats_.files = fileIndex + 2;
+
+        // Old generated files would otherwise be compiled with the new ones.
+        for (const auto &e : fs::directory_iterator(dir, ec))
+        {
+            const std::string n = e.path().filename().string();
+            if (n.rfind(opt_.prefix + "_", 0) == 0 && (e.path().extension() == ".cpp" || e.path().extension() == ".h") &&
+                !written.count(n))
+                fs::remove(e.path(), ec);
+        }
         return true;
     }
 }

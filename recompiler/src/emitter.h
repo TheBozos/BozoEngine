@@ -6,16 +6,33 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace bozo
 {
+    // How the generated code reaches an external address.
+    enum class ExternalKind
+    {
+        Stub,     // a library or kernel function implemented natively: any transfer (call, jump, branch, fall-through)
+        Override, // a port function bound to the address: calls (jal, jalr, bal) only; a direct jump (j, a branch) or a
+                  // fall-through runs the guest code there
+    };
+    // Reads an externals file: one address per line, "stub 0x1234" or "override 0x1234"; '#' starts a comment.
+    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error);
+
     struct EmitOptions
     {
         std::string prefix = "bozo";          // file names: <prefix>_functions.h, <prefix>_table.cpp, <prefix>_NNN.cpp
         size_t maxBytesPerFile = 1u << 20;    // start a new .cpp past this size (parallel builds, compiler memory)
         bool comments = true;                 // a comment with each instruction's address and disassembly
+        // When non-zero: exactly this many <prefix>_NNN.cpp files, the functions spread evenly by size (a build system
+        // can then list the outputs in advance). maxBytesPerFile is ignored.
+        uint32_t files = 0;
+        // Guest addresses the runtime answers instead of the guest code there (abi.md section 5, replay.md): every
+        // transfer to one goes through bozo_call_indirect, where the runtime's override table answers it.
+        std::map<uint32_t, ExternalKind> externals;
     };
 
     struct EmitStats
@@ -25,6 +42,8 @@ namespace bozo
         uint32_t entries = 0;                 // table entries: functions + extra entries
         uint32_t instructions = 0;
         uint64_t bytes = 0;                   // generated source size
+        uint32_t filesWritten = 0;            // files whose contents changed (the others are left untouched)
+        uint32_t externalCalls = 0;           // transfers emitted to external addresses
         std::array<uint32_t, kOpCount> untranslated{}; // decoded but not translated (emitted as bozo_unimplemented)
     };
 
@@ -45,7 +64,10 @@ namespace bozo
 
     private:
         std::string translate(const Insn &i);
-        std::string callTo(uint32_t target) const;
+        // A transfer to `target` leaving the function: a C++ call of its entry, or the runtime for an external address
+        // or an address that is not an entry. `call`: reached by jal/jalr/bal (else a jump, branch or fall-through).
+        std::string callTo(uint32_t target, bool call);
+        bool isExternal(uint32_t target, bool call) const;
         std::string entryName(const Function &f, uint32_t addr) const;
 
         const Analysis &a_;

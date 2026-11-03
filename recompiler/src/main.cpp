@@ -4,8 +4,9 @@
 //   bozo-recomp <elf> --census           only decode the code and count each instruction
 //
 // Options: --prefix <name> (file and table names, default "bozo"), --max-file-bytes <n> (split size of the generated
-// .cpp files, default 1 MiB), --no-comments (no disassembly comment per instruction), --verbose (list the
-// unresolved jr instructions and the extra entry points).
+// .cpp files, default 1 MiB), --files <n> (exactly n .cpp files instead), --externals <file> (addresses the runtime
+// answers: "stub 0xADDR" / "override 0xADDR" lines), --no-comments (no disassembly comment per instruction),
+// --verbose (list the unresolved jr instructions and the extra entry points).
 #include "analysis.h"
 #include "decoder.h"
 #include "elf.h"
@@ -27,7 +28,8 @@ namespace
 {
     int usage()
     {
-        std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--no-comments]\n"
+        std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
+                             "                   [--externals file] [--no-comments] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -88,6 +90,17 @@ int main(int argc, char **argv)
             options.prefix = argv[++k];
         else if (a == "--max-file-bytes" && k + 1 < argc)
             options.maxBytesPerFile = std::strtoull(argv[++k], nullptr, 0);
+        else if (a == "--files" && k + 1 < argc)
+            options.files = static_cast<uint32_t>(std::strtoul(argv[++k], nullptr, 0));
+        else if (a == "--externals" && k + 1 < argc)
+        {
+            std::string error;
+            if (!readExternals(argv[++k], options.externals, error))
+            {
+                std::fprintf(stderr, "bozo-recomp: %s\n", error.c_str());
+                return 1;
+            }
+        }
         else if (a == "--verbose")
             verbose = true;
         else if (a == "--no-comments")
@@ -140,8 +153,10 @@ int main(int argc, char **argv)
     }
     const EmitStats &es = emitter.stats();
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("emitted: %u functions, %u table entries, %u instructions, %u files, %.1f MB, in %.2f s\n", es.functions,
-                es.entries, es.instructions, es.files, es.bytes / 1e6, seconds);
+    std::printf("emitted: %u functions, %u table entries, %u instructions, %u files (%u changed), %.1f MB, in %.2f s\n",
+                es.functions, es.entries, es.instructions, es.files, es.filesWritten, es.bytes / 1e6, seconds);
+    if (!options.externals.empty())
+        std::printf("externals: %zu addresses, %u transfers to them\n", options.externals.size(), es.externalCalls);
     uint32_t untranslated = 0;
     for (unsigned k = 0; k < kOpCount; ++k)
         if (es.untranslated[k])
