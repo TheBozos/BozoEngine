@@ -869,6 +869,29 @@ First difference left: frame 8663, SetSoundParams and SoundIsStillPlaying of the
 ring and its end) do not run yet. The 141 movie positions left are the same G question for the second movie
 (`iop-timing.md` section 8).
 
+**Handover (state at 2026-11-04, for whoever picks this up).**
+
+- *The oracle* (scratch, never committed: it runs 989SND.IRX's code): `D:\BozoScratch\irx\`.
+  - `iop.py`: the MIPS I interpreter and IRX loader.
+  - `drv.py`: the IOP imports in Python. Through `D:\BozoScratchzaudio.dll` (built from `bzaudio.cpp` there, linking `build/runtime/libbozo_audio.a`, clocked mode), libsd goes to `bozo_audio`, except `sceSdNote2Pitch`, which is `n2p.py` from LIBSD.IRX's tables. It also has the heap, the threads' stacks (0x840 each after the module start), DMA-end handlers, `snd_StreamSafeCdRead`'s disc read, and the sreg and SIF stubs.
+  - `run.py`: replays a command trace with the IOP clock of this section and compares every result.
+  - The IRX modules are copies from the disc image (`/MOD/989SND.IRX`, `/MOD/LIBSD.IRX`): the user's data, never committed.
+- *The command traces* (`m1.snd`, `boot.snd` there):
+  - Format: one line per 989SND command: EE cycle, frame, vblank count, followed (1: inside a call answered from the log), command id, the seven argument words, the log's result, whether it returns one.
+  - How they were made: a temporary trace in `SndDriver::call` (since removed) during `bozo-run --pinned` with the log's replies on.
+  - Run: `cd D:\BozoScratch\irx; python t2.py m1.snd phase2=0.0015 verbose=12`, about 5 minutes. It prints the counts per command and the first differences (trace line, frame, id, arguments, the log's result, the replay's).
+  - `t8.py` checks slot generations; `t6.py`/`t9.py` dump libsd calls and handler allocations around a time window.
+- *Pinned points so far:*
+  - G = 0.
+  - The level-start tick phase `phase2` = 1.5 ms after InitVAGStreamingEx (#17536113); 0.5-3.6 ms all work.
+  - The IOP reset at EE cycle 4,927,984.
+- *Next:*
+  1. Run 989SND's streaming threads in the oracle (thread entries 0xe3ec, 0xd3a0, 0xe7d8, 0xdcdc; their disc reads through cdvdman; the stream's ring in sound memory; its end), to clear frame 8663.
+  2. The second movie's G (0x40 positions).
+  3. The native C++ driver on `bozo::audio::Mixer`, per 15.12 and this section, checked against the oracle command by command. Land it with a per-command switch for the log replies, so fully native commands can go off first.
+  4. The IOP clock in `bozo-run`, with the pinned points above.
+  5. `--snd-log-replies off` as the default.
+
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 
 The reference's mixer is the team's own code on the fork, so it moved here (PLAN.md section 7) instead of being
