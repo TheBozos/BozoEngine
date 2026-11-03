@@ -1,0 +1,45 @@
+// The SIF layer as the native runtime answers it (libraries.md section 14): the EE side of the EE-IOP interface with
+// no IOP behind it. RPC calls go to native servers (TMB's only one: the 989SND sound driver, snd.h); module loading
+// loads nothing and gives the reference's module ids; the IOP heap is a model of the IOP memory the reference's
+// allocator handed out (989SND's banks and buffers come from it too).
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <unordered_map>
+
+namespace bozo::libs
+{
+    // IOP memory as the reference's IOP allocator gave it out (libraries.md section 14.3): blocks aligned to 16
+    // bytes, first fit by address, from the first byte its loaded modules left free; a freed block merges with its free
+    // neighbours.
+    class IopHeap
+    {
+    public:
+        static constexpr uint32_t kStart = 0x7FE60u; // the reference's first free byte after the IOP modules
+        static constexpr uint32_t kEnd = 0x200000u;  // 2 MB of IOP RAM
+        IopHeap() { reset(); }
+        void reset();
+        uint32_t allocate(uint32_t bytes); // 0 when no free block is large enough
+        bool release(uint32_t address);    // a block's start; false when it is not one in use
+        // The block in use that contains `address` (its start), 0 if none.
+        uint32_t blockAt(uint32_t address) const;
+
+    private:
+        std::map<uint32_t, uint32_t> free_; // start -> bytes
+        std::map<uint32_t, uint32_t> used_;
+    };
+
+    struct SifState
+    {
+        // The reference keeps the IOP side of each bound server (its SifRpcServerData) in EE RAM; the 989SND's at
+        // 0x1f10000. A call writes the request's fields there.
+        static constexpr uint32_t kServerData = 0x1F10000u;
+        uint32_t rpcId = 0;                       // the client headers' rpc_id: one more at each bind attempt
+        std::map<uint32_t, uint32_t> bindAttempts; // per service id
+        uint32_t sreg[32] = {};
+        uint32_t dmaId = 0;  // the last SIF DMA transfer's id (sceSifSetDma: 1, 2, ...)
+        uint32_t modules = 0; // modules loaded since the IOP's reboot (their ids are 1, 2, ...)
+        IopHeap heap;
+    };
+}

@@ -4,6 +4,7 @@
 #include "bozo/hash.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <format>
 
@@ -94,6 +95,7 @@ namespace bozo::run
         d.kernel().setObserver(this);
         libs_.attach(d);
         libs_.printOutput = !opt_.quiet;
+        libs_.sndNative = (opt_.native & libs::kSnd) != 0;
         names_ = log_.names();
         uint32_t kernel = 0;
         for (const auto &[address, info] : names_)
@@ -584,6 +586,29 @@ namespace bozo::run
                 }
             }
         }
+        if (f.logReply && opt_.pinned)
+        {
+            // The reference's reply words, for what its IOP time decided (libraries.md section 15.5): the log's runs,
+            // else the memory as it was (the reference's call left those bytes as they were).
+            const std::vector<Run> *runs = &c.runs;
+            const uint8_t *flat = d_->runtime().memory.flat();
+            libs_.pin.logWord = [runs, flat](uint32_t address, uint32_t &value) {
+                const int64_t o = GuestMemory::flatOffset(address, 4);
+                if (o < 0)
+                    return false;
+                uint8_t b[4];
+                for (uint32_t i = 0; i < 4; ++i)
+                {
+                    const uint32_t at = static_cast<uint32_t>(o) + i;
+                    b[i] = flat[at];
+                    for (const Run &run : *runs)
+                        if (at >= run.address && at < run.address + run.length)
+                            b[i] = run.data[at - run.address];
+                }
+                std::memcpy(&value, b, 4);
+                return true;
+            };
+        }
         try
         {
             f.handler(libs_, g);
@@ -716,6 +741,46 @@ namespace bozo::run
                 ++native_.divergences;
                 diverge("native state: " + why, &r, true);
             }
+        }
+        // The 989SND driver follows the RPC calls made inside a call answered from the log (port overrides: the movie's
+        // sound, the menus and TheGame::Update), and the SIF DMA ids those calls took (libraries.md section 15.7).
+        if (opt_.native & (libs::kSnd | libs::kSif))
+        {
+            std::vector<std::array<uint32_t, 4>> rpc;
+            for (const Trace &t : c.traces)
+            {
+                auto it = idNames_.find(t.id);
+                if (it == idNames_.end())
+                    continue;
+                if (it->second == "sceSifCallRpc")
+                    rpc.push_back({t.a[0], t.a[1], t.a[2], t.a[3]});
+                else if (it->second == "sceSifSetDma" && (opt_.native & libs::kSif))
+                    libs_.sif.dmaId = t.v0;
+            }
+            if (!rpc.empty() && (opt_.native & libs::kSnd))
+            {
+                libs::Guest g(d_->runtime(), ctx);
+                libs_.snd.followTraced(libs_, g, rpc);
+                ++native_.observed;
+            }
+            // sceSifCallRpc itself answered from the log (the SIF layer not native): the driver follows it.
+            if (c.kind == kStub && (opt_.native & libs::kSnd) && !(opt_.native & libs::kSif))
+                if (auto n = names_.find(c.target); n != names_.end() && n->second.name == "sceSifCallRpc" &&
+                                                    c.value[0] && libs_.sndNative)
+                {
+                    libs::Guest g(d_->runtime(), ctx);
+                    const uint32_t send = c.value[3], ssize = c.t[0], recv = c.t[1], rsize = c.t[2];
+                    libs_.snd.noteBuffers(send, recv);
+                    std::vector<uint32_t> request((ssize + 3) / 4), reply;
+                    for (size_t i = 0; send && i < request.size(); ++i)
+                        request[i] = g.read32(send + static_cast<uint32_t>(4 * i));
+                    libs::SndDriver::LogWord memory = [&g](uint32_t a, uint32_t &v) {
+                        v = g.read32(a);
+                        return true;
+                    };
+                    libs_.snd.call(libs_, g, c.value[1], request, recv, rsize, reply, &memory, true);
+                    ++native_.observed;
+                }
         }
         // A library answered from the log that takes from the native heap (libraries.md section 2.2).
         if (c.kind == kStub && (opt_.native & libs::kLibc))

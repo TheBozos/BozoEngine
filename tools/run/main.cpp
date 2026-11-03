@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -28,7 +29,7 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io,mpeg|all|none]\n"
+                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io,mpeg,sif,snd|all|none]\n"
                      "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
         return 2;
     }
@@ -191,6 +192,17 @@ int main(int argc, char **argv)
         void samples(const int16_t *, size_t count, int64_t) override { frames += count; }
     } movieSound;
     host.libraries().movieSound = &movieSound;
+    // 989SND's output: counted (the mixer takes it in phase 4).
+    struct CountingSoundSink final : libs::SoundSink
+    {
+        uint64_t banks = 0, sounds = 0, params = 0, stops = 0, streams = 0;
+        void bankLoaded(const libs::SndBank &) override { ++banks; }
+        void soundStarted(uint32_t, const libs::SndBank &, uint32_t, int32_t, int32_t, int32_t, int32_t, uint64_t) override { ++sounds; }
+        void soundParams(uint32_t, uint32_t, int32_t, int32_t, int32_t, int32_t) override { ++params; }
+        void soundStopped(uint32_t) override { ++stops; }
+        void streamStarted(uint32_t, uint32_t, uint32_t, uint32_t, int32_t, uint64_t) override { ++streams; }
+    } soundSink;
+    host.libraries().snd.sink = &soundSink;
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
@@ -252,7 +264,7 @@ int main(int argc, char **argv)
         std::printf("native libraries:");
         uint64_t total = 0;
         for (unsigned bit = 0; bit < libs::kLibraryCount; ++bit)
-            if (opt.native & (1u << bit))
+            if ((opt.native & (1u << bit)) && (1u << bit) != libs::kSnd) // 989SND's replies: its own line
             {
                 std::printf(" %s %llu", libs::libraryName(static_cast<libs::Library>(1u << bit)),
                             static_cast<unsigned long long>(n.calls[bit]));
@@ -271,6 +283,30 @@ int main(int argc, char **argv)
         std::printf("movie sound: %llu streams, %llu sample frames (%u Hz, %u channels)\n",
                     static_cast<unsigned long long>(movieSound.movies), static_cast<unsigned long long>(movieSound.frames),
                     movieSound.last.rate, movieSound.last.channels);
+    if (opt.native & libs::kSnd)
+    {
+        const libs::SndStats &st = host.libraries().snd.stats;
+        uint64_t nat = 0, pin = 0;
+        std::string per;
+        for (unsigned i = 0; i < 0x50; ++i)
+        {
+            nat += st.native[i];
+            pin += st.pinned[i];
+            if (st.native[i] || st.pinned[i])
+                per += std::format(" {:02x}:{}/{}", i, st.native[i], st.pinned[i]);
+        }
+        std::printf("989snd: %llu replies native, %llu decided by the reference's IOP time (pinned); per command native/pinned:%s\n",
+                    static_cast<unsigned long long>(nat), static_cast<unsigned long long>(pin), per.c_str());
+        std::printf("989snd: %llu commands followed from calls answered from the log (%llu calls lost), %llu followed allocations "
+                    "elsewhere than the native heap's, %llu pinned lifetimes the native estimate gets wrong, %llu of %llu pinned handles the native model gives; output: %llu banks, "
+                    "%llu sounds, %llu parameter changes, %llu stops, %llu streams\n",
+                    static_cast<unsigned long long>(st.followed), static_cast<unsigned long long>(st.lost),
+                    static_cast<unsigned long long>(st.followMismatch), static_cast<unsigned long long>(st.estimateWrong),
+                    static_cast<unsigned long long>(st.modelAgrees), static_cast<unsigned long long>(st.modelAgrees + st.modelDiffers),
+                    static_cast<unsigned long long>(soundSink.banks), static_cast<unsigned long long>(soundSink.sounds),
+                    static_cast<unsigned long long>(soundSink.params), static_cast<unsigned long long>(soundSink.stops),
+                    static_cast<unsigned long long>(soundSink.streams));
+    }
     if (opt.pinned)
     {
         const run::PinnedStats &p = host.pinnedStats();

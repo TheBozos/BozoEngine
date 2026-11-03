@@ -21,7 +21,9 @@ add_library(bozo_libs STATIC
   libs/vu0.cpp
   libs/io.cpp
   libs/mpeg.cpp
-  libs/mpeg_ffmpeg.cpp)
+  libs/mpeg_ffmpeg.cpp
+  libs/sif.cpp
+  libs/snd.cpp)
 target_link_libraries(bozo_libs PUBLIC bozo_runtime_core)
 target_compile_options(bozo_libs PRIVATE -Wall -Wextra)
 # The VU0 programs compute in single precision rounded toward zero, as the reference does: the host's float operations

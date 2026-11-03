@@ -162,6 +162,8 @@ namespace bozo::libs
         case kVu0: return "vu0";
         case kIo: return "io";
         case kMpeg: return "mpeg";
+        case kSif: return "sif";
+        case kSnd: return "snd";
         default: return "?";
         }
     }
@@ -209,6 +211,7 @@ namespace bozo::libs
         addMc(functions_);
         addCd(functions_);
         addMpeg(functions_);
+        addSif(functions_);
         for (size_t i = 0; i < functions_.size(); ++i)
             byName_[functions_[i].name] = i;
     }

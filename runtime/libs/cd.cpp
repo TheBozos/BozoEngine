@@ -77,6 +77,18 @@ namespace bozo::libs
         return std::fread(out, kSectorBytes, n, f_) == n;
     }
 
+    bool discRead(Libraries &l, uint32_t lbn, uint32_t count, uint8_t *out)
+    {
+        CdState &cd = l.cd;
+        if (!cd.disc.isOpen())
+        {
+            std::string err;
+            if (cd.imagePath.empty() || !cd.disc.open(cd.imagePath, err))
+                return false;
+        }
+        return cd.disc.read(lbn, count, out);
+    }
+
     // ---- The library ---------------------------------------------------------------------------------------------
 
     namespace

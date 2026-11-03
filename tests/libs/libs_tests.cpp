@@ -141,8 +141,61 @@ static void cdStream()
        1000 + 500 * kSectorCycles + 0x10 * kSectorCycles);
 }
 
+// The SIF layer and the 989SND driver's rules that need no disc (libraries.md sections 14 and 15): the IOP heap, a
+// bind, module ids, the SIF registers, a command batch and a direct call with the driver's last result.
+static void sifAndSnd()
+{
+    using namespace bozo::libs;
+    IopHeap heap;
+    eq("first IOP block", heap.allocate(0x42C), 0x7FE60);
+    eq("16-byte aligned", heap.allocate(0xA24), 0x80290);
+    const uint32_t c = heap.allocate(0x5FC);
+    eq("third", c, 0x80CC0);
+    heap.release(0x80290);
+    eq("first fit reuses the hole", heap.allocate(0x100), 0x80290);
+    eq("block lookup", heap.blockAt(c + 8), c);
+
+    Machine m;
+    m.libs.sndNative = true;
+    const uint32_t client = 0x100000, send = 0x100100, recv = 0x100200;
+    eq("bind, first attempt", m.call("sceSifBindRpc", {client, 0x123456, 0}), 0);
+    uint32_t server;
+    std::memcpy(&server, m.rt->memory.ram() + client + 0x24, 4);
+    eq("no server yet", server, 0);
+    m.call("sceSifBindRpc", {client, 0x123456, 0});
+    std::memcpy(&server, m.rt->memory.ram() + client + 0x24, 4);
+    eq("bound at the second", server, 0x1F10000);
+    eq("module 1", m.call("sceSifLoadModule", {0x100400, 0, 0}), 1);
+    eq("module 2", m.call("sceSifLoadModule", {0x100400, 0, 0}), 2);
+    eq("set sreg (old value)", m.call("sceSifSetSreg", {8, 5}), 0);
+    eq("get sreg", m.call("sceSifGetSreg", {8}), 5);
+
+    // A batch: one SetMasterVolume(3, 0x334); then GetMasterVolume(3) directly, then a batch whose command has no
+    // result: its slot holds the driver's last result.
+    const uint32_t batch[9] = {1, 3, 0x334, 0, 0, 0, 0, 0, 0x09};
+    std::memcpy(m.rt->memory.ram() + send, batch, sizeof(batch));
+    m.call("sceSifCallRpc", {client, 0x4A, 1, send, 36, recv, 12, 0});
+    const uint32_t group = 3;
+    std::memcpy(m.rt->memory.ram() + send, &group, 4);
+    m.call("sceSifCallRpc", {client, 0x0A, 1, send, 4, recv, 12, 0});
+    uint32_t reply[3];
+    std::memcpy(reply, m.rt->memory.ram() + recv, 12);
+    eq("reply opens with -1", reply[0], 0xFFFFFFFFu);
+    eq("GetMasterVolume", reply[1], 0x334);
+    eq("reply closes with -1", reply[2], 0xFFFFFFFFu);
+    const uint32_t stop[9] = {1, 0x80000002u, 0, 0, 0, 0, 0, 0, 0x15};
+    std::memcpy(m.rt->memory.ram() + send, stop, sizeof(stop));
+    m.call("sceSifCallRpc", {client, 0x4A, 1, send, 36, recv, 12, 0});
+    std::memcpy(reply, m.rt->memory.ram() + recv, 12);
+    eq("a command with no result leaves the last one", reply[1], 0x334);
+    uint32_t fno;
+    std::memcpy(&fno, m.rt->memory.ram() + 0x1F10024, 4);
+    eq("server data: the function", fno, 0x4A);
+}
+
 int main()
 {
+    sifAndSnd();
     memoryCard();
     heapAndRand();
     cdStream();

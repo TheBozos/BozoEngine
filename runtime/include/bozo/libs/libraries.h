@@ -11,6 +11,8 @@
 #include "bozo/libs/mc.h"
 #include "bozo/libs/mpeg.h"
 #include "bozo/libs/pad.h"
+#include "bozo/libs/sif.h"
+#include "bozo/libs/snd.h"
 
 #include <cstdint>
 #include <functional>
@@ -38,9 +40,11 @@ namespace bozo::libs
         kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
         kIo = 1u << 7,   // the hardware registers the game loads and stores (DMA, timer 0, the GS's privileged ones)
         kMpeg = 1u << 8, // libmpeg: the movies (needs FFmpeg)
-        kAllLibraries = (1u << 9) - 1,
+        kSif = 1u << 9,  // the SIF layer: RPC, the IOP heap, module loading, the SIF registers and DMA
+        kSnd = 1u << 10, // the 989SND sound driver behind the SIF RPC
+        kAllLibraries = (1u << 11) - 1,
     };
-    constexpr unsigned kLibraryCount = 9;
+    constexpr unsigned kLibraryCount = 11;
 
     // Which microcode VU0's code memory holds: the image of the VIF0 chain the game kicked last (libraries.md
     // section 10). TMB's two chains are static data in its ELF.
@@ -79,6 +83,9 @@ namespace bozo::libs
         // The call takes EE time or may make its thread wait (a disc read, a stream read): what it decides about time
         // follows Libraries::pin when a pinned run sets it (the reference's points), else the library's own model.
         bool timed = false;
+        // A pinned run gives the call the log's reply words (Pin::logWord): the 989SND driver behind sceSifCallRpc takes
+        // from them what the reference's IOP time decided (libraries.md section 15.5).
+        bool logReply = false;
     };
 
     // A pinned run's points for the timed call being made (kernel.md section 4: what the reference decided about
@@ -92,6 +99,9 @@ namespace bozo::libs
         // The end (flat address + 1) of the memory the log's call wrote, 0 if it wrote none: how much of a stream read
         // had arrived when it was made (the ring's state at that point).
         uint32_t writtenEnd = 0;
+        // The reference's reply word at an EE address (a pinned run's log), for the decisions its IOP's time made (the
+        // 989SND driver's sound lifetimes): set for a call whose function has `logReply`.
+        SndDriver::LogWord logWord;
     };
 
     // The game's heap as the reference runtime keeps it: blocks carved from guest memory from the heap's start
@@ -189,6 +199,10 @@ namespace bozo::libs
         Vu0State vu0;
         IoState io;
         MpegState mpeg;
+        SifState sif;
+        SndDriver snd;
+        // Whether the 989SND driver answers the RPC (else its replies come from the log and it follows them).
+        bool sndNative = true;
         MovieSoundSink *movieSound = nullptr; // the movie's sound (null: dropped)
         IoAccess ioAccess;
         // The I/O library as a function: makes the access in `ioAccess`.
@@ -218,6 +232,9 @@ namespace bozo::libs
     void addMc(std::vector<Function> &out);
     void addCd(std::vector<Function> &out);
     void addMpeg(std::vector<Function> &out); // nothing without a video decoder (FFmpeg)
+    void addSif(std::vector<Function> &out);
+    // Sectors of the game's disc (the CD library's image, opened on first use): false when there is none.
+    bool discRead(Libraries &l, uint32_t lbn, uint32_t count, uint8_t *out);
 
     // printf-style formatting as the reference's sprintf: the format at `format`, the arguments from argument slot
     // `first` on (64-bit doubles for %f/%e/%g). Returns the text without its terminator.
