@@ -125,8 +125,8 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   PS2XREF1 record equal to `boot.ref` on `ram`, `scratchpad`, `calls`, `threads`, `eeCycle` for all 3000 frames**
   (13.5 s). match1p: 18,297,744 records and frames 0-5772 equal on every field; frame 5773 stops on the EE time of
   a recursion stopped in the middle, whose rule is open (`specs/kernel.md` section 9, K1). `draws` and `sound` wait
-  for the native renderer and mixer. The recompiler now emits the reference's time model and resume entries; phase 1's replay still
-  matches 9,232 of 9,232 samples.
+  for the native renderer and mixer. The recompiler now emits the reference's time model and resume entries;
+  phase 1's replay still matches 9,232 of 9,232 samples.
 
 **Phase 3: native libraries (4-6 weeks).**
 - Pad (and multitap, 4 players), memory card (native save files, plus an importer for today's `mc0`/`mc1` card
