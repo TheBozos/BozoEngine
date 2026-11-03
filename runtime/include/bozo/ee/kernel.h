@@ -283,6 +283,7 @@ namespace bozo::ee
         // head when preempted): no thread runs until setRunning.
         void deschedule(bool toTail);
         void setRunning(int32_t id);
+        uint64_t picks() const { return picks_; } // how many times the running thread changed
         bool handlerQueued() const { return !queued_.empty(); }
         // The next queued handler, stacked on thread `on` (its depth grows by one). Returns its frame.
         Frame &stackHandler(Thread &on);
@@ -329,7 +330,8 @@ namespace bozo::ee
         std::map<int32_t, std::unique_ptr<Thread>> threads_;
         std::array<std::deque<int32_t>, kPriorities> ready_;
         int32_t running_ = 0;
-        bool switchRequested_ = false; // a rotation of the running thread's queue: the next transfer gives way
+        bool switchRequested_ = false;
+        uint64_t picks_ = 0; // a rotation of the running thread's queue: the next transfer gives way
         int32_t nextPseudo_ = -1;
         int32_t handlerSlots_ = 0;
         int32_t nextThreadId_ = 2;

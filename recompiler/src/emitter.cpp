@@ -605,9 +605,10 @@ namespace bozo
         // target; anywhere else than this call's return address (a thread that stopped inside, a callee that returned
         // through another frame), this function returns too, as the reference's code does, and the dispatcher runs the
         // thread on from ctx->pc. A call to a label of this same function is a goto (the reference's: charged, not a
-        // stopping point; the callee's return then leaves this whole function).
+        // stopping point; the callee's return then leaves this whole function). A recursive call to the function's
+        // own start is an ordinary call.
         auto callAt = [&](uint32_t target, uint32_t from) {
-            if (target >= f.start && target < f.end && !isExternal(target, true))
+            if (target > f.start && target < f.end && !isExternal(target, true))
                 return std::format("bozo::charge(ctx, {}); goto {};", kLeaveCycles, label(target));
             return leave(hex(target)) + " " + callTo(target, true) +
                    std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
@@ -623,7 +624,7 @@ namespace bozo
             if (!(opFlags(i.op) & LNK) || i.op == Op::JALR)
                 continue;
             const uint32_t target = i.op == Op::JAL ? i.jumpTarget() : i.branchTarget();
-            if (target >= f.start && target < f.end && !isExternal(target, true) && labels.count(a + 8))
+            if (target > f.start && target < f.end && !isExternal(target, true) && labels.count(a + 8))
                 innerReturns.insert(a + 8);
         }
         auto ret = [&](uint32_t reg, const std::string &delay) {
@@ -772,10 +773,11 @@ namespace bozo
             a += 8;
         }
 
-        // Falling off the end: continue into the next function.
+        // Falling off the end: continue into the next function (not charged: the reference's function goes on there,
+        // as a symbol that is only a label, sysZeroQBuf into sysZeroLabelA, does not end it).
         if (labels.count(f.end))
             out += label(f.end) + ":;\n";
-        out += "    " + leave(hex(f.end)) + " " + callTo(f.end, false) + "\n}\n";
+        out += "    " + callTo(f.end, false) + "\n}\n";
 
         out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) {{ body_0x{:x}(rdram, ctx, rt, 0); }}\n",
                            name, f.start);

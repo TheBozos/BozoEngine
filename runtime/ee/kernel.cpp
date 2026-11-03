@@ -167,6 +167,7 @@ namespace bozo::ee
             return;
         deschedule(false); // preempted: it runs again before the threads of its priority
         running_ = id;
+        ++picks_;
         if (Thread *t = thread(id); t && (t->state == ThreadState::Ready || t->pseudo))
         {
             removeFromQueue(*t);

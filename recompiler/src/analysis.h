@@ -18,8 +18,9 @@ namespace bozo
         uint32_t jrAddress = 0;
         uint32_t tableAddress = 0;
         std::vector<uint32_t> targets; // in table order (may repeat)
-        // The base built in place (lui r; addiu r, r, lo, or lui alone): the switch form the reference resolves as a
-        // switch inside the function. Any other jr through a register goes through its dispatcher (kernel.md 3).
+        // The base built in place (lui r; addiu r, r, lo, or lui alone) and a range check (sltiu) before it: the
+        // switch form the reference resolves as a switch inside the function. Any other jr through a register goes
+        // through its dispatcher (kernel.md section 3).
         bool inPlace = false;
     };
 

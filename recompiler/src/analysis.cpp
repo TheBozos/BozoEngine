@@ -308,7 +308,8 @@ namespace bozo
                         JumpTable t;
                         t.jrAddress = a;
                         t.tableAddress = base;
-                        t.inPlace = hi.op == Op::LUI || hi.rt() == hi.rs();
+                        // The reference resolves a table it can bound: its base built in place and an sltiu range check.
+                        t.inPlace = (hi.op == Op::LUI || hi.rt() == hi.rs()) && bound != 4096;
                         for (uint32_t k = 0; k < bound; ++k)
                         {
                             const uint32_t e = base + 4 * k;

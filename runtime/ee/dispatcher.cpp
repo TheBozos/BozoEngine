@@ -383,7 +383,12 @@ namespace bozo::ee
         {
             kernel_.setOrigin(kOriginEvents);
             kernel_.processEvents(cycle_);
+            const uint64_t picks = kernel_.picks();
             Thread *t = choose();
+            // A time slice runs from the decision that picked the thread out of the ready queue (a handler stacked on
+            // the running thread does not start a new one).
+            if (kernel_.picks() != picks)
+                sliceStart_ = cycle_;
             if (!t)
             {
                 idleUntilEvent();
@@ -399,7 +404,7 @@ namespace bozo::ee
             const uint32_t depth = t->depth();
             if (!started_ || t->id != lastThread_ || depth != lastDepth_)
             {
-                sliceStart_ = decided; // a time slice runs from the dispatcher's decision to switch
+
                 uint16_t reason = kSwitchOther;
                 uint32_t waitReason = 0, waitObject = 0;
                 uint64_t token = 0;

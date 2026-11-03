@@ -142,9 +142,10 @@ namespace bozo::run
             return "";
         const ee::Thread *t = d_->currentThread();
         const ee::Frame *f = d_->currentFrame();
-        return std::format("frame {}, cycle {}, seq {}, thread {} depth {}, pc 0x{:x}, {} checkpoints since the last out-call",
+        return std::format("frame {}, cycle {}, seq {}, thread {} depth {}, pc 0x{:x}, sp 0x{:x}, {} checkpoints since the last "
+                           "out-call",
                            frame_, d_->now(), seq_, t ? t->id : d_->kernel().running(), t ? t->depth() : 0,
-                           f ? f->ctx.pc : 0, d_->checkpointsSince());
+                           f ? f->ctx.pc : 0, f ? f->ctx.r[29].uw[0] : 0, d_->checkpointsSince());
     }
 
     void LogHost::endRun(const std::string &why)
