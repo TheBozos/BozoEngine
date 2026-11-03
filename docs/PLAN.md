@@ -153,6 +153,12 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   callbacks, the pictures' pace, the end), the pictures decoded by FFmpeg (optional dependency) and converted bit-exact
   into the game's memory, the movie's sound to a native sink (`specs/libraries.md` section 9). Boot and match1p still
   match every frame and record, 0 divergences. SIF/989SND remains answered from the log.
+- **Batch B3 (2026-11-03): SIF and 989SND native.** The SIF layer (RPC, the IOP heap, modules, registers) and the
+  989SND sound driver behind its RPC: command batches and direct calls decoded, banks read from the disc and placed in
+  a model of IOP memory, handles, volumes, streams, the movie buffer, the driver's reply rules, and a `SoundSink` for
+  phase 4's mixer (`specs/libraries.md` sections 14, 15). Boot and match1p still match every frame and record, 0
+  divergences; 119,225 of match1p's 122,519 989SND replies are native, the other 3,294 (one-shot sounds' lifetimes and
+  the handler slots they free) are the reference's IOP time, taken from the log in a pinned run.
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at

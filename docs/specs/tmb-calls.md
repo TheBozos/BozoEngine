@@ -32,6 +32,8 @@ direct C++ call is not recorded (a known gap of the recorder).
 
 ## 3. IOP communication (SIF): replaced by native drivers
 
+Native since phase 3's batch B3: `libraries.md` sections 14 (SIF) and 15 (989SND, its commands and replies).
+
 | Call | Count | Must do |
 |---|---|---|
 | `sceSifInitRpc`, `sceSifBindRpc` | 14, 6 | One server is bound: **service 0x123456, the 989SND sound driver's command channel** (client at 0x4fe970) |

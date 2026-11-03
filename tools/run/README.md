@@ -39,7 +39,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--trace-from <record>` | print every record matched from that record index on |
 | `--trace-checkpoints` | with `--trace-from`: also every checkpoint passed (where it goes on, the cycle, the charge) and every dispatcher start |
 | `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
-| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, `cd`, `vu0` (the VU0 microprograms), `io` (the hardware registers), `mpeg` (libmpeg: needs a build with FFmpeg), comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
+| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, `cd`, `vu0` (the VU0 microprograms), `io` (the hardware registers), `mpeg` (libmpeg: needs a build with FFmpeg), `sif` (the SIF layer), `snd` (the 989SND sound driver behind the SIF RPC: banks are read from the disc image), comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
 | `--iso <image>` | the game's disc image for the native CD library (`libraries.md` section 8; also `BOZO_ISO`); without one the CD stays answered from the log |
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
@@ -55,7 +55,10 @@ then the context words, the first memory byte, or the rest of the record that di
 libraries:` counts the calls answered natively per library, the answered calls the native state followed (traced
 `rand`, `sceMpegCreate`'s heap block, timer 0 after the frame boundary) and the divergences; then, when there are any,
 the calls of a native library it had no answer for (left to the log) and the timed calls whose EE time is not the log's
-(free mode).
+(free mode). With `snd`, two `989snd:` lines: the replies the driver made and those a pinned run took from the log
+because the reference's IOP time decided them (per command id, native/pinned), the commands it followed from calls
+answered from the log, how often its free-mode models agree with the pinned decisions, and what it sent its
+`SoundSink` (`docs/specs/libraries.md` section 15).
 
 ## Reading a log
 
@@ -100,5 +103,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 | match1p, batch B1 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (52,773,508 calls native, 0 divergences) | 267 s |
 | boot, batch B2 (libmpeg native too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,530,467 calls native, 0 divergences) | 20 s |
 | match1p, batch B2 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (52,781,732 calls native, 0 divergences) | 286 s |
+| boot, batch B3 (SIF and 989SND native too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,537,679 calls native, 3,591 of 3,592 989SND replies native, 0 divergences) | 21 s |
+| match1p, batch B3 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (53,026,840 calls native, 119,225 of 122,519 989SND replies native, 0 divergences) | 287 s |
 
 What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.

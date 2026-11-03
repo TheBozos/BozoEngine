@@ -34,6 +34,12 @@ what the log's call wrote). Everything else (the data, results, the operations i
 as above. In free mode a timed call's EE time is the library's own; `bozo-run` counts the calls whose time is not the
 log's and keeps the log's clock (a free run cannot go on past a different wait: section 8.4).
 
+**Replies decided by the IOP's time (batch B3).** The 989SND driver behind `sceSifCallRpc` (section 15) answers
+most of its replies itself, but whether a one-shot sound still plays, and so which handler a new sound gets, was
+decided by the reference's IOP time. A pinned run gives such a call (`Function::logReply`) the log's reply words
+(`Pin::logWord`: the record's runs, else the memory as it was); the driver takes from them only those decisions, counts
+them, and makes everything else (section 15.5). In free mode it answers from its own models.
+
 **Continuations.** A wait a native library makes with a completion (`Libraries::waitVblank` with a continuation) is
 finished by the library when its thread resumes (`calllog.md` section 5, origin resume): `bozo-run` runs it on the
 thread's context, checks the memory it writes against the log's `MEM` records of that point (every run there, nothing
@@ -149,7 +155,7 @@ None. Every NAME class 1 (kernel) function of the boot and match1p logs is nativ
 prints a note for any kernel function it would leave to the log, and prints none): `FlushCache` (30,121 calls in boot, 2,675,616 in match1p) and
 the other trivial ones (`EnableCache`, `DisableCache`, `GetMemorySize`, `GsGetIMR`/`GsPutIMR`, `SetGsCrt`...) included.
 The SIF-side helpers that look kernel-like (`sceSifGetSreg`, `sceSifSetSreg`, `sceSifInitIopHeap`...) are library
-calls of the SIF and stay with batch B.
+calls of the SIF: native since batch B3 (section 14).
 
 ## 5. The GS library (`gs`)
 
@@ -518,9 +524,10 @@ Results: boot 855,098 accesses native (`D_ENABLEW`/`D_ENABLER` 472,180, IPU_TO 2
 
 ## 12. Still answered from the log
 
-SIF and 989SND (`sceSif*`, the RPC to service 0x123456, the IOP heap and modules), the 2D image's VU0 programs (never
-called), and every port override (TMB's own native renderer, sound and the frame boundary, the Logitech wheel functions,
-the movie's PCM callback).
+The 2D image's VU0 programs (never called), and every port override (TMB's own native renderer, sound and the frame
+boundary, the Logitech wheel functions, the movie's PCM callback, and the overrides that call 989SND: section 15.7).
+Since batch B3 the SIF layer is native (section 14) and so is the 989SND driver behind it (section 15), except the
+replies the reference's IOP time decided, which a pinned run takes from the log (section 15.5).
 
 ## 13. Results
 
@@ -535,12 +542,218 @@ with `--pad-script reference/tmb/scripts/ch1p_frames.txt`:
 | match1p, batch B1 | 52,773,508 (batch A's, cd 587, vu0 24,047,924, io 17,605,351) and 33 CD continuations | 12,979 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 267 s |
 | boot, batch B2 | 1,530,467 (batch B1's, mpeg 6,822: `videoCallback` 3,685, `sceMpegDemuxPssRing` 1,532, `sceMpegIsEnd` 788, `sceMpegGetPicture` 785, ...) and every libmpeg handler end and resume (the 59k nodata callbacks') | 0 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 20 s |
 | match1p, batch B2 | 52,781,732 (batch B1's, mpeg 8,224) | 12,968 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 286 s |
+| boot, batch B3 | 1,537,679 (batch B2's, sif 7,212) and 3,591 989SND replies (1 pinned) | 937 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 21 s |
+| match1p, batch B3 | 53,026,840 (batch B2's, sif 245,108) and 119,225 989SND replies (3,294 pinned) | 14,691 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 287 s |
 
 Frames match on ram, scratchpad, calls and threads (eeCycle too). Phase 2's runs with everything from the log took 17 s
 (boot) and 164 s (match1p). match1p's extra time is the check, not the libraries: each of its 42 million VU0 and I/O
 calls has its 332 context words compared before and after, and its writes journaled.
 
-Open points: L1 (section 3: the Universal CRT's float sine and cosine off Windows), the `save` run's call log
+The "followed" column counts the calls answered from the log the native state followed (since B3 also the port
+overrides whose 989SND calls the driver follows: section 15.7). Open points: L1 (section 3: the Universal CRT's float
+sine and cosine off Windows), the `save` run's call log
 (section 7), L2/R2's pressure places (section 6), PAL's display constants (not in TMB's runs: US only), libmpeg's open points
 (section 9.8), the CD's free-mode timing against a real drive (section 8.2: a model, not the reference's IOP), and the two points
-the I/O model follows from the log (section 11).
+the I/O model follows from the log (section 11), and 989SND's sound lifetimes, handler slots and voice allocation
+(section 15.10).
+
+## 14. The SIF layer (`sif`)
+
+Native: `sceSifInitRpc`, `sceSifBindRpc`, `sceSifCallRpc`, `sceSifCheckStatRpc`, `sceSifGetSreg`, `sceSifSetSreg`,
+`sceSifInitIopHeap`, `sceSifAllocIopHeap`, `sceSifFreeIopHeap`, `sceSifLoadModule`, `sceSifRebootIop`, `sceSifSyncIop`,
+and `sceSifSetDma`, `sceSifDmaStat` (`bozo/libs/sif.h`, `libs/sif.cpp`). There is no IOP: an RPC goes to a native
+server (TMB's only one: 989SND, section 15), a module load loads nothing, the IOP heap is a model of the memory the
+reference's IOP allocator handed out. Every call of both logs returns at once (0 EE cycles, no record inside it): the
+reference's IOP answered every RPC inside the call, so nothing is ever in flight.
+
+### 14.1 What each call answers (settled on the records)
+
+| Function | Native answer |
+|---|---|
+| `sceSifInitRpc(mode)` | 0, nothing written (boot #25, #29, #150; 14 calls in match1p, the movie code's too) |
+| `sceSifBindRpc(client, service, mode)` | the client header's `rpc_id` (`client + 4`) the next one (1, 2...) and its semaphore (`+ 8`) -1; once the service has a server, `client + 0x24` = its server data (0x1f10000) and the server data's first word the service id; 0. The reference's 989SND registered its server between the game's first and second attempts (boot #151: `rpc_id` 1, no server; #152: `rpc_id` 2, bound), so a service binds at the second attempt |
+| `sceSifCallRpc(client, fno, mode, send, ssize, recv, rsize, end, param)` | `client + 0x0c` = mode, `+ 0x10` = fno; in the server data `+ 0x0c` ssize, `+ 0x1c` client, `+ 0x24` fno, `+ 0x28` recv, `+ 0x2c` rsize (boot #156, #159, #210987); the server's reply in `recv` (section 15); 0 |
+| `sceSifCheckStatRpc(client)` | 0 (never busy) |
+| `sceSifGetSreg(reg)`, `sceSifSetSreg(reg, value)` | the 32 software registers; Set returns the old value (boot #153, #154; match1p #17536116: GetSreg(8) 0) |
+| `sceSifInitIopHeap()` | 0 |
+| `sceSifAllocIopHeap(bytes)`, `sceSifFreeIopHeap(address)` | a block of the IOP heap (14.2); 0 (match1p: 11 of each, every block at 0x8b6c0) |
+| `sceSifLoadModule(path, argc, argv)` | the module id: 1 for the first since the IOP's reboot, then 2... (boot #119-#127: TMB's nine modules, ids 1-9) |
+| `sceSifRebootIop(image)`, `sceSifSyncIop()` | 1 (`v0` is already 1 in the records: #27, #28) |
+| `sceSifSetDma(transfers, n)`, `sceSifDmaStat(id)` | the transfer's id (1, 2, ...); -1 (finished). TMB calls them only inside a port override (the movie's PCM, traced: boot #2157634 id 1, then 2...), so they are never checked against a record of their own; the native ids follow the traced ones |
+
+The reference keeps the IOP side of the bound server (its `SifRpcServerData`) in EE RAM at 0x1f10000, so the game's
+memory holds those words and the native call writes them exactly. A call with an end function (none in TMB) would need
+its RPC callback handler queued: not implemented (open).
+
+### 14.2 The IOP heap
+
+`IopHeap` (`sif.h`): IOP memory from 0x7fe60 (the reference's first free byte after its modules: TMB's first bank lands
+there, boot #210987) to 2 MB, blocks rounded up to 16 bytes, first fit by address, a freed block merged with its free
+neighbours. `sceSifAllocIopHeap` and 989SND's allocations (banks, the movie's buffer, the VAG streams' buffers) share
+it. Every placement of both logs (21 banks, 11 movie buffers, 11 `sceSifAllocIopHeap` blocks) is the native heap's.
+
+### 14.3 Results
+
+Native calls: boot 7,212 (`sceSifCallRpc` and `sceSifCheckStatRpc` 3,592 each, and the setup calls), match1p 245,108
+(`sceSifCallRpc` and `sceSifCheckStatRpc` 122,519 each, `sceSifGetSreg` 18, `sceSifInitRpc` 14, ...); 0 divergences.
+
+## 15. The 989SND sound driver (`snd`)
+
+TMB's IOP-side sound driver is 989SND (989 Studios' sound system), RPC service 0x123456, client at 0x4fe970. The EE side
+is the game's own code (the ELF's `snd_*` functions, 0x1baca0-0x1bcec4); the native driver (`bozo/libs/snd.h`,
+`libs/snd.cpp`) is the IOP side behind `sceSifCallRpc`: it decodes each request, keeps the driver's state, writes the
+reply, and tells a `SoundSink` what should be playing.
+
+### 15.1 The client and its two kinds of call
+
+From the EE client's code:
+
+- **Batched commands** (`snd_SendIOPCommandNoWait`, 0x1bc188): a command is 32 bytes, seven argument words then the
+  command id, appended to the current one of two buffers (`gSndCommandBuffer1/2`, 0x4871c0 and 0x488200: a count word,
+  then up to 128 commands). Only the arguments the function has are copied, so the other words of a slot are what an
+  older command left there (match1p #4083097: SoundIsStillPlaying's words 1-2 are an earlier command's volume and
+  pan). `snd_SendCurrentBatch` (0x1bc448) sends the current buffer as **function 0x4a**: `ssize` = 32n + 4, the reply
+  to that side's return buffer (0x48a240, 0x48a480), `rsize` = 4n + 8; then it switches buffers and zeroes the new
+  one's count. TMB's batches hold one command each (every one of both logs).
+- **Direct calls** (`snd_SendIOPCommandAndWait`, 0x1bbfc0): function = the command id, the arguments as the request
+  (`ssize` = 4 x their count), the reply to 0x487040, 12 bytes.
+
+`snd_PrepareReturnBuffer` clears the reply's first word and the one after its last result; `snd_GotReturns` waits until
+both are -1. So a reply is **-1, one word per command, -1**.
+
+### 15.2 The reply: results and the driver's last result
+
+A command that returns something (15.3) puts its result in its slot. One that does not leaves **the driver's last
+result**: that of the last command that had one, direct call or batch alike (boot #228345: SetMasterVolume's slot holds
+0x80cc4, the last bank load's address; #1394803: ResetMovieSound's holds 0x856b0, the movie buffer; match1p #6588780:
+0x81000002, the shell music's handle; #18034990: PlaySound_A's holds the handle the SetSoundParams before it returned).
+Settled on every reply of both logs (match1p: 20,828 slots of commands with no result, and 464 more right after a call
+answered from the log, which the driver follows: 15.7).
+
+### 15.3 Commands
+
+The command ids are the client's (each `snd_*` function passes its own). What TMB's runs use:
+
+| Id | Client function | Arguments | Result | Native |
+|---|---|---|---|---|
+| 0x00 | (boot's first call, #156) | | none | yes |
+| 0x03 | `snd_BankLoadByLoc` | sector, offset | the bank's IOP address (15.4) | yes |
+| 0x06 | `snd_UnloadBank` | bank | none | yes: its blocks freed |
+| 0x08 | `snd_ResolveBankXREFS` | | none | yes |
+| 0x09 | `snd_SetMasterVolume` | group, volume | none | yes |
+| 0x0a | `snd_GetMasterVolume` | group | the group's volume, 0x400 until set (match1p #17541046-#17541055: 0x370, 0x400, 0x334, 0x30b) | yes |
+| 0x0b | `snd_SetPlaybackMode` | mode | none | yes |
+| 0x0e, 0x0f | `snd_SetReverbType`, `snd_SetReverbDepth` | core, type / core, left, right | none | yes |
+| 0x11 | `snd_PlaySoundVolPanPMPB` | bank, sound, volume, pan, pitch modifier, pitch bend | the sound's handle, 0 if it does not play | an empty sound (type 0): 0; else the handle is pinned (15.5) |
+| 0x12 | `snd_PlaySoundVolPanPMPB_A` | the same | none (the play takes a handler all the same) | yes |
+| 0x15 | `snd_StopSound` | handle | none | yes |
+| 0x18 | `snd_StopAllSounds` | | none | yes |
+| 0x19 | `snd_SoundIsStillPlaying` | handle | the handle while it plays, else 0 | 15.5 |
+| 0x20 | `snd_SetSoundPitchModifier` | handle, modifier | none | yes |
+| 0x21 | `snd_SetSoundParams` | handle, mask, volume, pan, pitch modifier, pitch bend | the handle while it plays, else 0 | 15.5 |
+| 0x2a | `snd_InitVAGStreamingEx` | streams, buffer bytes | none (IOP memory: streams x bytes + 0x6200) | yes |
+| 0x2c | `snd_PlayVAGStreamByLoc` | left sector, right sector, flags, ... | the stream's handle | pinned (15.5) |
+| 0x2d | `snd_PauseVAGStream` | handle | none | yes |
+| 0x3b | `snd_InitMovieSound` | (inside the movie override only) | the movie's buffer: 0x6010 bytes of IOP memory | followed (15.7) |
+| 0x3c, 0x3d, 0x3e | `snd_CloseMovieSound` (frees the buffer), `snd_ResetMovieSound`, `snd_StartMovieSound` | | none | yes |
+| 0x40 | `snd_GetTransStatus` | (inside the movie override only) | the movie sound's position | followed |
+
+The results of the other commands that return one (0x05, 0x0c, 0x1a, 0x1c, 0x1d, 0x26, 0x28, 0x30-0x33, 0x36,
+0x41-0x44, 0x47, 0x48) are not modelled (TMB never sends them outside an override): a pinned run would take them from
+the log, a free run answers 0.
+
+### 15.4 Banks
+
+`snd_BankLoadByLoc` loads a bank file from the disc by sector (the IOP reads it; the native driver reads the disc image,
+section 8). The file: u32 1, u32 the chunk count, then each chunk's offset and size. Chunk 0 is the `SBv2` header,
+chunk 1 the samples (SPU ADPCM, to SPU memory), chunk 2 (when present) MIDI data with its own header (u32 2, 1, 0x10,
+then the inner size). In the header: the bank id at 0x0c; the sound, program, tone and sample counts (int16) at 0x14;
+the offsets of the sound, program and tone tables at 0x1c. A sound is 28 bytes (type at 0, program at 13, note at 14);
+a program 8 (tone count at 0, tone table offset at 4); a tone 24 (priority, volume, centre note and fine at 0-3, pan at
+4, key range at 6-7, ADSR at 10-13, flags at 14, the sample's offset at 16). A sample ends at its first ADPCM block
+flagged 1; flagged 3 it loops.
+
+**Where a bank lands in IOP memory** (settled on all 21 bank loads of match1p, boot's 3 among them): its header takes a
+block of the header chunk's size; a bank with MIDI data takes the header's size + 4 and starts 4 bytes into it, and its
+MIDI data (the inner size) the next block. So boot's banks are at 0x7fe60 (header 0x42c), 0x80290 (0xa24) and 0x80cc4
+(0x5f8 + 4, its MIDI data's 0x43e4 at 0x812c0); the movie buffer then lands at 0x856b0 (boot #228390) and
+`sceSifAllocIopHeap(0x28010)` at 0x8b6c0 (#228406). At match1p's level start (#17536095-#17536220) the three shell
+banks are unloaded, `snd_InitVAGStreamingEx(6, 0xfa00)` takes 0x7fe60-0xe3c60, and the eighteen level banks follow
+from 0xe3c64.
+
+### 15.5 Handles, lifetimes and the reference's IOP time
+
+A handle is `pool << 24 | slot << 16 | generation`: pool 0x80 for programs and sound effects, 0x81 for MIDI (type 4),
+0x84 for VAG streams; the slot a handler's index; the generation counts that slot's uses (a slot's first is 2: match1p
+#4082688, the shell music 0x81000002; #17541061, the first stream 0x84000002). The native model gives the lowest slot
+whose sound is not playing.
+
+Whether a sound still plays (0x19, 0x21) is decided:
+
+- natively when it is certain: 0 for a handle the driver never gave (0, -1), one stopped (0x15, 0x18, 0x2f, 0x34) or
+  seen ended before; the handle for a looping program (type 3: every sample of its tones loops), a MIDI sequence (type
+  4), and a stream whose data (its VAGp header's size, 28 samples a 16-byte block, at its rate) lasts more than a second
+  past now (TMB's streams last 462 s);
+- by the reference's IOP time otherwise: a one-shot program or sound effect (types 1 and 2) lives as long as its voices
+  play, which the reference's SPU and 989SND's tick decided. A pinned run takes that decision from the log's reply
+  (`Pin::logWord`, set for `Function::logReply`: section 1), and once a sound is seen ended every later answer about it
+  is native. The handle a play returns (0x11, 0x2c) names a free slot, and which slots are free depends on those same
+  ends: it is pinned too (the native model's handle is compared with it and counted).
+
+Pinned decisions in match1p: 776 play handles, 1,284 SoundIsStillPlaying and 1,232 SetSoundParams results, 2 stream
+handles (3,294 of 122,519 replies; boot: 1, the shell music's handle, which the model gives). The native lifetime
+estimate (a one-shot's longest tone at 48 kHz at its centre note, shifted by the sound's note) disagrees with 570 of
+the 2,516 pinned lifetimes, and the handle model gives 302 of the 778 pinned handles: free mode needs better (15.8).
+
+Never time-dependent, and native: the empty sound (match1p: sound 7 of bank 0xe8694, 1,161 plays, every one 0).
+
+### 15.6 Output: `SoundSink`
+
+What should be playing goes to `Libraries::snd.sink` (null: dropped), like libmpeg's `MovieSoundSink`, for phase 4's
+mixer: `bankLoaded` (the parsed bank: sounds, programs and tones with their sample offsets, loop flags and ADSR, the
+sample data, the MIDI data), `bankUnloaded`, `soundStarted` (the handle, 0 for an asynchronous play; bank, sound, volume,
+pan, pitch modifier, pitch bend, EE cycle), `soundParams` (SetSoundParams' mask and words), `soundPitchModifier`,
+`soundStopped`, `masterVolume`, `reverb`, `streamStarted` (the two VAGp files' sectors, flags, volume), `streamPaused`,
+`streamStopped`. `bozo-run` counts them: match1p 21 banks, 1,539 sounds, 85,285 parameter changes, 768 stops, 5
+streams. No audio device in this batch.
+
+### 15.7 Calls answered from the log
+
+Port overrides call 989SND from game code inside them: the movie's sound (`audioDecCreate` 0x3b, `audioDecReset` 0x3d,
+`audioDecSendToIOP` 0x40), the menus (`uiCarSel`, `uiLvlSel`, `uiAiSel`) and `TheGame::Update` (batches: plays, stops,
+the music stream's 0x2c, 0x19 and 0x21). Their RPC calls are traced (client, function, mode, send buffer) and their
+memory is the log's, so the driver follows them after the call: for each traced call, the request left in its send
+buffer and the reply in its receive buffer (which goes with which send buffer it learned from the calls it saw); every
+result taken from the reply; the state updated (handles given, sounds ended or stopped, the movie buffer's allocation
+checked against the native heap, the last result). A call whose receive buffer a later call of the same override
+reused lost its request (10 in match1p, each `TheGame::Update`'s first of three batches); nothing such a call did was
+needed later. `sceSifCallRpc` answered from the log (`--native` without `sif`) is followed the same way.
+
+### 15.8 Timing, and what free mode needs
+
+In both logs every reply lands inside its `sceSifCallRpc` (no IOP change outside a call: `calllog.md` section 7), so the
+RPC never waits. What the reference's IOP time decided, which free mode needs natively:
+
+- **sound lifetimes**: a one-shot ends when its voices do (its samples' length, the pitch history through 0x20 and
+  0x21, the ADSR release) at 989SND's tick; free mode estimates it today (15.5) and gets 23% of match1p's wrong;
+- **handler slots**, which follow from those ends (the model gives 39% of match1p's play handles);
+- **voice allocation**: a non-empty sound that could not play (0x11 returning 0: match1p #21696667, #32014550,
+  #51184025, #51299223): 989SND's voice priorities and stealing, not modelled;
+- **the movie sound's position** (0x40) and the streams' ends.
+
+A free run answers these from the models (a different reply then ends a log-checked run, as the CD's waits do: section
+8.4). Boot runs in free mode with every library but the CD native (`--native libc,libm,gs,pad,mc,vu0,io,mpeg,sif,snd`):
+3,592 replies native, none pinned, every frame matching.
+
+### 15.9 Results
+
+| Run | Replies native | Pinned | Followed | Divergences |
+|---|---|---|---|---|
+| boot | 3,591 (SetMasterVolume 2,191, SoundIsStillPlaying 1,385, bank loads 3, ...) | 1 (the shell music's handle) | 937 commands | 0 |
+| match1p | 119,225 (SetSoundParams 83,641, SetSoundPitchModifier 17,615, SoundIsStillPlaying 13,106, SetMasterVolume 2,195, plays 1,913, stops 687, bank loads 21, ...) | 3,294 | 2,481 commands (10 calls lost) | 0 |
+
+### 15.10 Open
+
+- Sound lifetimes, handler slots and voice allocation natively (15.8): match1p's 3,294 pinned replies.
+- The results of the commands TMB does not send (15.3); an RPC end function (14.1).
+- 0x2a's IOP memory (streams x bytes + 0x6200) and the movie buffer's 0x6010 rest on TMB's single sizes.
