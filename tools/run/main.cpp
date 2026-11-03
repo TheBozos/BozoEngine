@@ -26,7 +26,8 @@ namespace
     {
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
-                     "                [--max-errors n] [--trace-from record] [--quiet]\n");
+                     "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
+                     "                [--pinned] [--quiet]\n");
         return 2;
     }
 
@@ -73,6 +74,8 @@ int main(int argc, char **argv)
             opt.traceCheckpoints = true;
         else if (a == "--quiet")
             opt.quiet = true;
+        else if (a == "--pinned")
+            opt.pinned = true;
         else
             return usage();
     }
@@ -111,6 +114,7 @@ int main(int argc, char **argv)
 
     run::LogHost host(log, opt);
     ee::Dispatcher d(host);
+    d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
     const uint32_t kernel = host.bind(d);
     if (!host.init(d))
@@ -165,9 +169,29 @@ int main(int argc, char **argv)
         std::printf("frames matching the reference: ram %s, scratchpad %s, calls %s, threads %s, eeCycle %s\n",
                     pct(s.ram, s.frames, b1), pct(s.scratchpad, s.frames, b2), pct(s.calls, s.frames, b3),
                     pct(s.threads, s.frames, b4), pct(s.eeCycle, s.frames, b5));
+    if (opt.pinned)
+    {
+        const run::PinnedStats &p = host.pinnedStats();
+        std::printf("pinned: %llu events at the log's points", static_cast<unsigned long long>(p.events));
+        if (p.shifted)
+        {
+            std::printf(" (%llu one checkpoint later:", static_cast<unsigned long long>(p.shifted));
+            for (uint64_t i : p.shiftedRecords)
+                std::printf(" #%llu", static_cast<unsigned long long>(i));
+            std::printf(")");
+        }
+        std::printf("; not checked: %llu records at another cycle", static_cast<unsigned long long>(p.cycleDiffers));
+        if (p.cycleDiffers)
+            std::printf(" (first #%llu)", static_cast<unsigned long long>(p.firstCycleRecord));
+        std::printf(", %llu at another checkpoint count", static_cast<unsigned long long>(p.checkpointsDiffer));
+        if (p.checkpointsDiffer)
+            std::printf(" (first #%llu)", static_cast<unsigned long long>(p.firstCheckpointRecord));
+        std::printf("\n");
+    }
+    // Pinned mode checks every record and ram, scratchpad, calls, threads; eeCycle is reported only.
     const bool ok = host.errors() == 0 && host.completed() &&
                     (refFrames.empty() || (s.ram == s.frames && s.scratchpad == s.frames && s.calls == s.frames &&
-                                           s.threads == s.frames && s.eeCycle == s.frames));
+                                           s.threads == s.frames && (opt.pinned || s.eeCycle == s.frames)));
     std::printf("%s\n", ok ? "MATCH" : "DIFFERS");
     return ok ? 0 : 1;
 }

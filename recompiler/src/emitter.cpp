@@ -642,7 +642,7 @@ namespace bozo
         auto callAt = [&](uint32_t target, uint32_t from) {
             if (isInner(target))
                 return std::format("recursed = true; ++innerDepth; bozo::innerCall(rdram, ctx, rt, {}, {}); goto {};",
-                                   kLeaveCycles, hex(target), label(target));
+                                   kLeaveCycles, hex(from + 8), label(target));
             const std::string mark = target == f.start && !selfReturns.empty() ? "recursed = true; " : "";
             return mark + leave(hex(target)) + " " + callTo(target, true) +
                    std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));

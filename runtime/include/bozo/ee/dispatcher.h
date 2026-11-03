@@ -60,6 +60,11 @@ namespace bozo::ee
         virtual void threadEnded(Dispatcher &, Thread &) {}
         // The dispatcher idles from `from` to `to` (every thread waiting).
         virtual void idle(Dispatcher &, uint64_t /*from*/, uint64_t /*to*/) {}
+        // Pinned mode (Dispatcher::pinned, kernel.md section 4): whether the next asynchronous event (the vblank's
+        // start or end) is due right here, at this checkpoint (`ctx`: guest code's context, null in the dispatcher's
+        // loop); and whether one is due before the next out-call (every checkpoint then asks).
+        virtual bool eventPinned(Dispatcher &, const R5900Context * /*ctx*/) { return false; }
+        virtual bool eventPinnedSoon(Dispatcher &) { return false; }
         // A pc with neither code nor an override, a break, a trap...: report and end the run.
         virtual void fault(Dispatcher &, R5900Context *, const std::string &what) = 0;
     };
@@ -120,6 +125,17 @@ namespace bozo::ee
         Thread *currentThread() { return current_; }
         Frame *currentFrame() { return currentFrame_; }
         uint32_t currentDepth() const { return current_ ? current_->depth() : 0; }
+        // Inside inner calls (kernel.md section 3): whether guest code is in one, and whether it passed a checkpoint
+        // going on at `pc` lately (among the last 64 that asked the runtime: every one when traced, or in pinned mode
+        // near an event).
+        bool insideInnerCall(const R5900Context *ctx) const { return ctx && (ctx->noStop || ctx->inPlace); }
+        bool passedLately(uint32_t pc) const
+        {
+            for (uint32_t p : recentPcs_)
+                if (p == pc)
+                    return true;
+            return false;
+        }
         // Leave guest code now: the current frame resumes at `pc` later.
         [[noreturn]] void stop(R5900Context *ctx, uint32_t pc);
         // After an out-call: the kernel's state may have changed (a handler queued, a thread readied).
@@ -148,6 +164,9 @@ namespace bozo::ee
 
         // Debugging: every checkpoint calls yield and is printed (pc it goes on to, cycle).
         bool traceCheckpoints = false;
+        // Pinned mode (kernel.md section 4): asynchronous events are taken where the host says (the reference's
+        // points), not when the EE clock reaches them; everything else is decided as in free mode.
+        bool pinned = false;
 
         // Statistics.
         uint64_t dispatches = 0, stops = 0, handlersRun = 0, jumps = 0;
@@ -161,8 +180,12 @@ namespace bozo::ee
         void runFrame(Thread &t, Frame &f);
         // Runs guest code at ctx->pc until the bottom function returns.
         void enter(R5900Context *ctx);
-        bool mustStop(uint64_t cycle) const;
+        bool mustStop(const R5900Context *ctx, uint64_t cycle);
         void idleUntilEvent();
+        // Whether an event is due (free mode: by the clock; pinned mode: the host's point), and taking it (free mode:
+        // every event due by `cycle`; pinned mode: the next one).
+        bool eventDue(const R5900Context *ctx, uint64_t cycle);
+        void takeEvents(uint64_t cycle);
 
         Host &host_;
         Runtime rt_;
@@ -176,6 +199,8 @@ namespace bozo::ee
         Thread *current_ = nullptr;
         Frame *currentFrame_ = nullptr;
         uint64_t outcallCheckpoints_ = 0; // ctx->checkpoints when the last out-call ended
+        uint32_t recentPcs_[64] = {}; // the pcs of the last checkpoints that asked the runtime (a ring)
+        uint32_t recentNext_ = 0;
         // The (thread, depth) guest code last ran on, and how it was left.
         int32_t lastThread_ = 0;
         uint32_t lastDepth_ = 0;

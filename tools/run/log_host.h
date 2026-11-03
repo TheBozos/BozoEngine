@@ -24,6 +24,20 @@ namespace bozo::run
         bool traceCheckpoints = false; // and every checkpoint passed from there
         uint32_t maxErrors = 1;        // stop at the n-th divergence (cycle mismatches are resynced to go on)
         bool quiet = false;
+        // Pinned mode (kernel.md section 4): the vblank's events are taken at the log's points (out-calls before,
+        // checkpoints since the last one, pc); EE time is reported, not checked.
+        bool pinned = false;
+    };
+
+    // Pinned mode: how far BozoEngine's own clock and checkpoint count are from the log's (reported, not checked).
+    struct PinnedStats
+    {
+        uint64_t events = 0;            // events taken at the log's point
+        uint64_t cycleDiffers = 0;      // records whose cycle differs from BozoEngine's clock
+        uint64_t checkpointsDiffer = 0; // records whose checkpoint count differs
+        uint64_t shifted = 0;           // taken one checkpoint later than the log's count, at its pc
+        uint64_t firstCycleRecord = ~0ull, firstCheckpointRecord = ~0ull;
+        std::vector<uint64_t> shiftedRecords; // the first 16 of them
     };
 
     struct FieldStats
@@ -48,6 +62,7 @@ namespace bozo::run
         void setWriter(reference::Writer *w) { writer_ = w; }
 
         const FieldStats &stats() const { return stats_; }
+        const PinnedStats &pinnedStats() const { return pinned_; }
         uint32_t errors() const { return errors_; }
         uint64_t recordsMatched() const { return matched_; }
         uint64_t calls() const { return seq_; }
@@ -72,6 +87,8 @@ namespace bozo::run
         void handlerCompleted(ee::Dispatcher &, ee::Thread &, const ee::Frame &) override;
         void threadEnded(ee::Dispatcher &, ee::Thread &) override;
         void fault(ee::Dispatcher &, R5900Context *, const std::string &what) override;
+        bool eventPinned(ee::Dispatcher &, const R5900Context *ctx) override;
+        bool eventPinnedSoon(ee::Dispatcher &) override;
 
         // ee::KernelObserver
         void op(const ee::OpEvent &e) override;
@@ -85,6 +102,8 @@ namespace bozo::run
         [[noreturn]] void endRun(const std::string &why);
         std::string where() const;
         void checkPoint(const calllog::Record &r, uint64_t cycle, const char *what);
+        // The next record, when it is an event's first (an OP of origin events outside any call); else null.
+        const calllog::Record *nextEvent();
         // An out-call answered from the log: the CALL is checked, applied, and the records inside it made again.
         const calllog::Record &takeCall(uint8_t kind, uint32_t target, R5900Context *ctx, calllog::Call &c);
         void answer(R5900Context *ctx, const calllog::Record &r, calllog::Call &c, bool traced);
@@ -114,6 +133,11 @@ namespace bozo::run
         uint32_t errors_ = 0;
         bool completed_ = false;
         FieldStats stats_;
+        PinnedStats pinned_;
+        int64_t callDrift_ = 0;       // BozoEngine's clock minus the log's at the last out-call (pinned mode)
+        uint64_t eventIndex_ = ~0ull; // the record nextEvent() last looked at, and whether it starts an event
+        bool eventIs_ = false;
+        uint64_t armed_ = ~0ull;      // the event record found due (until it is taken)
         reference::CallList calls_;
 
         // The kernel call in progress.

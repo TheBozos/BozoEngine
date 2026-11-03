@@ -687,11 +687,14 @@ namespace bozo::ee
     void Kernel::processEvents(uint64_t cycle)
     {
         while (nextEvent() <= cycle)
-        {
-            if (nextStart_ <= nextEnd_)
-                vblankStart();
-            else
-                vblankEnd();
-        }
+            processNextEvent();
+    }
+
+    void Kernel::processNextEvent()
+    {
+        if (nextStart_ <= nextEnd_)
+            vblankStart();
+        else
+            vblankEnd();
     }
 }

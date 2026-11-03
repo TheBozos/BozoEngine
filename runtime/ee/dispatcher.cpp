@@ -152,9 +152,22 @@ namespace bozo::ee
         throw StopGuest{};
     }
 
-    bool Dispatcher::mustStop(uint64_t cycle) const
+    bool Dispatcher::eventDue(const R5900Context *ctx, uint64_t cycle)
     {
-        if (cycle >= kernel_.nextEvent())
+        return pinned ? host_.eventPinned(*this, ctx) : cycle >= kernel_.nextEvent();
+    }
+
+    void Dispatcher::takeEvents(uint64_t cycle)
+    {
+        if (pinned)
+            kernel_.processNextEvent();
+        else
+            kernel_.processEvents(cycle);
+    }
+
+    bool Dispatcher::mustStop(const R5900Context *ctx, uint64_t cycle)
+    {
+        if (eventDue(ctx, cycle))
             return true;
         if (current_ && current_->depth() == 0 && cycle >= sliceStart_ + kTimeSlice && kernel_.sliceContender())
             return true;
@@ -165,11 +178,12 @@ namespace bozo::ee
     void Dispatcher::updateLimit(R5900Context *ctx)
     {
         if (traceCheckpoints || timerPending_ ||
-            (current_ && current_->depth() == 0 && (kernel_.handlerQueued() || kernel_.reschedulePending())))
+            (current_ && current_->depth() == 0 && (kernel_.handlerQueued() || kernel_.reschedulePending())) ||
+            (pinned && host_.eventPinnedSoon(*this)))
             ctx->cycleLimit = 0;
         else
         {
-            ctx->cycleLimit = kernel_.nextEvent();
+            ctx->cycleLimit = pinned ? ~0ull : kernel_.nextEvent();
             if (current_ && current_->depth() == 0 && kernel_.sliceContender() && sliceStart_ + kTimeSlice < ctx->cycleLimit)
                 ctx->cycleLimit = sliceStart_ + kTimeSlice;
         }
@@ -305,6 +319,7 @@ namespace bozo::ee
                         static_cast<long long>(ctx->cycles - last));
             last = ctx->cycles;
         }
+        recentPcs_[recentNext_++ & 63u] = ctx->pc;
         if (timerPending_)
         {
             ctx->cycles += timerPending_;
@@ -321,11 +336,12 @@ namespace bozo::ee
             stop(ctx, ctx->pc);
         }
         const bool inPlace = ctx->noStop || ctx->inPlace;
-        while (inPlace && !ctx->stopDue && ctx->cycles >= kernel_.nextEvent() && current_ && !current_->pseudo &&
-               !(current_->depth() == 0 && ctx->cycles >= sliceStart_ + kTimeSlice && kernel_.sliceContender()))
+        while (inPlace && !ctx->stopDue && current_ && !current_->pseudo &&
+               !(current_->depth() == 0 && ctx->cycles >= sliceStart_ + kTimeSlice && kernel_.sliceContender()) &&
+               eventDue(ctx, ctx->cycles))
         {
             kernel_.setOrigin(kOriginEvents);
-            kernel_.processEvents(ctx->cycles);
+            takeEvents(ctx->cycles);
             if ((current_->depth() == 0 && kernel_.handlerQueued()) || kernel_.best() != current_->id)
             {
                 if (ctx->inPlace != 2)
@@ -343,11 +359,11 @@ namespace bozo::ee
             updateLimit(ctx);
             return;
         }
-        if (mustStop(ctx->cycles))
+        if (mustStop(ctx, ctx->cycles))
         {
             // The end of a time slice: the thread gives way to the next one of its priority (no operation recorded).
-            if (ctx->cycles < kernel_.nextEvent() && current_ && current_->depth() == 0 &&
-                ctx->cycles >= sliceStart_ + kTimeSlice && kernel_.sliceContender())
+            if (current_ && current_->depth() == 0 && ctx->cycles >= sliceStart_ + kTimeSlice &&
+                kernel_.sliceContender() && !eventDue(ctx, ctx->cycles))
                 kernel_.deschedule(true);
             stop(ctx, ctx->pc);
         }
@@ -405,6 +421,14 @@ namespace bozo::ee
 
     void Dispatcher::idleUntilEvent()
     {
+        if (pinned)
+        {
+            // Every thread waits: nothing passes a checkpoint until the next event, taken here.
+            host_.idle(*this, cycle_, cycle_);
+            kernel_.setOrigin(kOriginEvents);
+            kernel_.processNextEvent();
+            return;
+        }
         const uint64_t to = kernel_.nextEvent();
         host_.idle(*this, cycle_, to);
         if (to > cycle_)
@@ -416,7 +440,11 @@ namespace bozo::ee
         for (;;)
         {
             kernel_.setOrigin(kOriginEvents);
-            kernel_.processEvents(cycle_);
+            if (pinned)
+                while (eventDue(nullptr, cycle_))
+                    takeEvents(cycle_);
+            else
+                kernel_.processEvents(cycle_);
             const uint64_t picks = kernel_.picks();
             Thread *t = choose();
             // A time slice runs from the decision that picked the thread out of the ready queue (a handler stacked on
@@ -428,12 +456,11 @@ namespace bozo::ee
                 idleUntilEvent();
                 continue;
             }
-            const uint64_t decided = cycle_;
             cycle_ += kDispatchCycles;
             ++checkpoints_;
             ++dispatches;
             // Starting guest code is a checkpoint: an event due by now is processed first, and the choice made again.
-            if (kernel_.nextEvent() <= cycle_)
+            if (eventDue(nullptr, cycle_))
                 continue;
             const uint32_t depth = t->depth();
             if (!started_ || t->id != lastThread_ || depth != lastDepth_)

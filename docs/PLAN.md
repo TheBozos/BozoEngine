@@ -119,15 +119,18 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   implements natively (the EE kernel, section 6 there) and what it answers from the log. The reference build replays
   its own log with only guest code, its kernel and its scheduler running: every record and the PS2XREF1 fields `ram`,
   `scratchpad`, `calls`, `threads`, `eeCycle` match `boot.ref` for all 3000 frames.
-- **Status (2026-11-03): boot passes; match1p to frame 5785.** BozoEngine's own EE kernel, dispatcher and cycle model
-  (`runtime/ee/`, `specs/kernel.md`) run TMB's generated code with every library answered from the call log
-  (`bozo-run`, `tools/run/README.md`), every record checked in lockstep. **boot: all 4,650,558 records, and the
-  PS2XREF1 record equal to `boot.ref` on `ram`, `scratchpad`, `calls`, `threads`, `eeCycle` for all 3000 frames**
-  (13.5 s). match1p: 18,359,663 records and frames 0-5785 equal on every field (K1, events inside a recursion made
-  of inner calls, settled: `specs/kernel.md` section 3); frame 5786 stops one dispatcher start short after an event
-  taken at an inner call, whose rule is open (`specs/kernel.md` section 9, K4). `draws` and `sound` wait
-  for the native renderer and mixer. The recompiler now emits the reference's time model and resume entries;
-  phase 1's replay still matches 9,232 of 9,232 samples.
+- **Status (2026-11-03): phase 2's exit check passes in pinned mode: boot and match1p, every record, every frame.**
+  BozoEngine's own EE kernel, dispatcher and cycle model (`runtime/ee/`, `specs/kernel.md`) run TMB's generated code,
+  with every library answered from the call log (`bozo-run`, `tools/run/README.md`) and every record checked in
+  lockstep.
+  - **Pinned mode** (`--pinned`, the check) takes the vblank's events at the log's points and decides everything
+    else natively. boot: all 4,650,558 records and 3000 of 3000 frames; match1p: all 74,615,923 records and 16000 of
+    16000 frames. Both are equal to the reference on `ram`, `scratchpad`, `calls` and `threads` (eeCycle reported,
+    equal as well).
+  - **Free mode** (the real runtime's own clock): boot on every field, match1p to frame 5785. Frame 5786 is a
+    difference of the reference's EE time (K4), not of the game's state.
+  - `draws` and `sound` wait for the native renderer and mixer. The recompiler emits the reference's time model and
+    resume entries; phase 1's replay still matches 9,232 of 9,232 samples.
 
 **Phase 3: native libraries (4-6 weeks).**
 - Pad (and multitap, 4 players), memory card (native save files, plus an importer for today's `mc0`/`mc1` card

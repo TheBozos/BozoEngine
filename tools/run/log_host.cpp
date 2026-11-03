@@ -189,6 +189,22 @@ namespace bozo::run
 
     void LogHost::checkPoint(const Record &r, uint64_t cycle, const char *what)
     {
+        if (opt_.pinned)
+        {
+            // Pinned mode: EE time and the checkpoint count are reported, not checked; the clock follows the log.
+            if (r.checkpoints != d_->checkpointsSince())
+            {
+                ++pinned_.checkpointsDiffer;
+                pinned_.firstCheckpointRecord = std::min(pinned_.firstCheckpointRecord, r.index);
+            }
+            if (r.cycle != cycle)
+            {
+                ++pinned_.cycleDiffers;
+                pinned_.firstCycleRecord = std::min(pinned_.firstCycleRecord, r.index);
+                d_->setNow(nullptr, r.cycle);
+            }
+            return;
+        }
         if (r.cycle != cycle)
         {
             diverge(std::format("{}: cycle {} (log {}, {:+}); checkpoints since the last out-call: {} (log {})", what, cycle,
@@ -235,6 +251,7 @@ namespace bozo::run
             diverge(std::format("{} 0x{:x}: on thread {}, the log has {}", kindName(kind), target, t ? t->id : 0, r.thread), &r);
         if (c.depth != d_->currentDepth())
             diverge(std::format("{} 0x{:x}: at depth {}, the log has {}", kindName(kind), target, d_->currentDepth(), c.depth), &r);
+        callDrift_ = static_cast<int64_t>(d_->now(ctx)) - static_cast<int64_t>(r.cycle);
         checkPoint(r, d_->now(ctx), std::format("{} 0x{:x}", kindName(kind), target).c_str());
         if (c.timerBefore != d_->timerPending())
             diverge(std::format("{} 0x{:x}: timer-poll cycles pending {}, the log has {}", kindName(kind), target,
@@ -361,6 +378,7 @@ namespace bozo::run
             diverge(std::format("{} 0x{:x}: the call {} here, the log's {}", kindName(c.kind), c.target,
                                 mine ? "left to the dispatcher" : "returned", theirs ? "left" : "returned"),
                     &r);
+        d_->markOutcallEnd(ctx); // also when the call leaves to the dispatcher (the count restarts here)
         uint32_t pc = gpr(ctx, 31);
         bool hasPc = false;
         for (const auto &[w, v] : c.words)
@@ -751,6 +769,70 @@ namespace bozo::run
         endRun("FAULT: " + what + "\n  here: " + where());
     }
 
+    // ---- Pinned mode -------------------------------------------------------------------------------------------
+
+    const Record *LogHost::nextEvent()
+    {
+        const Record *p = log_.peek();
+        if (!p || p->type != kOp || p->inside())
+            return nullptr;
+        if (p->index != eventIndex_)
+        {
+            Op o;
+            std::string err;
+            eventIndex_ = p->index;
+            eventIs_ = parse(*p, o, err) && o.origin == ee::kOriginEvents;
+        }
+        return eventIs_ ? p : nullptr;
+    }
+
+    bool LogHost::eventPinnedSoon(ee::Dispatcher &)
+    {
+        const Record *p = nextEvent();
+        return p && p->seq == seq_;
+    }
+
+    bool LogHost::eventPinned(ee::Dispatcher &d, const R5900Context *ctx)
+    {
+        const Record *p = nextEvent();
+        if (!p || p->seq != seq_)
+            return false;
+        if (p->index == armed_)
+            return true; // already found due (guest code stopped for it; the dispatcher now takes it)
+        const uint64_t n = d.checkpointsSince();
+        if (n < p->checkpoints)
+            return false;
+        // The record carries the reference's context pc, which inside inner calls lags behind: it is the pc of a
+        // checkpoint passed lately in the same inner calls (kernel.md section 4: match1p #18297743 at bspPlaneTest2Vec's
+        // call records 0x201418; #18359662 at the inner call records 0x201660; #31601175 at bspPlaneTest2Vec's call,
+        // after an inner call returning to 0x201490, records 0x201418).
+        const bool pcOk = !ctx || ctx->pc == p->pc || (d.insideInnerCall(ctx) && d.passedLately(p->pc));
+        if (n == p->checkpoints && pcOk)
+        {
+            ++pinned_.events;
+            armed_ = p->index;
+            return true;
+        }
+        // BozoEngine's count one ahead of the reference's in this stretch (a checkpoint the reference does not count,
+        // kernel.md section 4): the event is taken at the next checkpoint, if it goes on at the logged pc.
+        if (n == p->checkpoints + 1 && ctx && pcOk)
+        {
+            ++pinned_.events;
+            ++pinned_.shifted;
+            if (pinned_.shiftedRecords.size() < 16)
+                pinned_.shiftedRecords.push_back(p->index);
+            armed_ = p->index;
+            return true;
+        }
+        if (n == p->checkpoints && ctx)
+            return false; // wait one checkpoint: the pc may come there
+        diverge(std::format("the log's event ({}) comes {} checkpoints after the last out-call at pc 0x{:x}; here {} have "
+                            "passed, at pc 0x{:x}",
+                            ee::opName(p->sub), p->checkpoints, p->pc, n, ctx ? ctx->pc : 0),
+                p);
+        return false;
+    }
+
     // ---- Kernel operations -------------------------------------------------------------------------------------
 
     void LogHost::op(const ee::OpEvent &e)
@@ -820,7 +902,9 @@ namespace bozo::run
         std::vector<int32_t> order;
         d_->kernel().runOrder(order);
         fr.threads = reference::threadsHash(order);
-        fr.eeCycle = r.cycle;
+        // The frame ends inside an out-call, at the log's time there: BozoEngine's own is that plus how far its clock
+        // was from the log's when the call was made (0 in free mode, where a difference ends the run).
+        fr.eeCycle = static_cast<uint64_t>(static_cast<int64_t>(r.cycle) + callDrift_);
         if (writer_)
             writer_->write(fr);
         ++stats_.frames;

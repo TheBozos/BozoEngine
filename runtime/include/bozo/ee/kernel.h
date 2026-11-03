@@ -303,6 +303,8 @@ namespace bozo::ee
         uint64_t nextEvent() const { return nextStart_ < nextEnd_ ? nextStart_ : nextEnd_; }
         // Processes every event due at or before `cycle`, in order (origin: events).
         void processEvents(uint64_t cycle);
+        // Processes the next event whatever its cycle (pinned mode: the host says when; kernel.md section 4).
+        void processNextEvent();
 
         const std::map<int32_t, std::unique_ptr<Thread>> &threads() const { return threads_; }
 

@@ -49,7 +49,8 @@ namespace bozo
     // An inner call (kernel.md section 3): charged and counted as a call; the events due by then are taken here, in
     // place, but a stop they call for (a handler to run, another thread to run) waits for the call's return
     // (match1p #14757679: the irq's handler starts at the return address 0x1fba84; #24702159: an irq without a
-    // handler, taken at the inner call itself).
+    // handler, taken at the inner call itself). The context's pc there is the call's return address `pc` (the
+    // reference's: the records made there carry it, #14757679, #24702159).
     BOZO_INLINE void innerCall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
     {
         ++ctx->noStop;

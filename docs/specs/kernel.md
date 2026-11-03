@@ -7,6 +7,11 @@ that settled each rule is named next to it. The kernel and the dispatcher are th
 stands in, behind the `ee::Host` interface, for the libraries BozoEngine does not implement yet (`tools/run/`,
 `bozo-run`, section 7).
 
+The dispatcher runs in one of two modes (section 4, "Free mode and pinned mode"). In **free mode**, the real
+runtime's, BozoEngine's own cycle model decides when the vblank's events happen. In **pinned mode**, a verification
+layer on top of it, they happen where the reference took them, as its log records them; every other decision is
+still the native kernel's and dispatcher's.
+
 ## 1. Layout
 
 | Piece | Where | What |
@@ -128,6 +133,19 @@ checkpoint or an inner return, at the call's return when the event was taken at 
   override 0x1d2ea0 stopped there: three dispatcher starts at 0x201418). A recursive call to the function's own start
   without a thunk is an ordinary call whose frames a stop loses (match1p #17531044, _M_erase).
 
+**What has a hardware reason and what is the reference's.** Free mode needs a clock that advances with guest work
+so the vblank (every field, 60/1.001 Hz) and the time slice land at sensible points; any monotonic charge would do.
+These rules have no reason on real hardware and are there because the reference's runtime has them. They keep
+BozoEngine's checkpoint count equal to the reference's between out-calls, which is what pinned mode places events
+by, so both modes keep them:
+- the exact charges: 8 per call, 32 per backward branch, 8 per dispatcher start, 16 for a jump through a register;
+- the frames a stop loses, and the dispatcher start each lost frame's return costs;
+- the `recursed` exit through the dispatcher;
+- which jump tables are a switch;
+- inner calls: events taken in place, a stop deferred to the call's return, the invocation's own return stack.
+A free mode that never needs to be compared with the reference (phase 3 onward) can charge a single cost per
+checkpoint and treat inner calls as ordinary calls.
+
 **Which jump tables the reference resolves.** dbsTraverse's table (`lui a0; addiu v1, a0, lo`) is not resolved: each
 jump costs 16 and loses the frames (boot, 3,359 jumps: 6,719 checkpoints); uiFadeText's (`lui v0; addiu v0, v0, lo`,
 `sltiu`) is resolved (boot record 228027); the table at 0x17f304, built in place but with no `sltiu`, is not
@@ -153,6 +171,50 @@ the decode thread's library handler preempted by the vblank).
 queue (before its 8-cycle start; boot #729788 and #729793: preempted exactly 65,536 cycles later), not restarted by
 a handler stacked on it (match1p #14760095). When it ends and a ready thread of the same or a higher priority exists,
 the thread goes to the tail of its queue (no operation is recorded) and the SWITCH says preempted.
+
+**Free mode and pinned mode.** In free mode (`Dispatcher::pinned` false), an event is due when the EE clock reaches
+it (`Kernel::nextEvent`). In pinned mode the host says when: the vblank's next event (its start or end, in the
+kernel's own order: `Kernel::processNextEvent`) is due at the point its first record has in the log. That point is
+the out-calls made before it, the checkpoints passed since the last one ended, and the pc. Nothing else changes:
+- every checkpoint counts as in free mode;
+- the event stops guest code, is taken in place inside inner calls, and wakes, queues and switches through the
+  native kernel;
+- the kernel's records (OP, INVOKE, SWITCH, CTX) are checked in lockstep.
+
+The other asynchronous decisions need no pin, because they follow from these events and from out-calls that are
+answered at their own records:
+- handler invocations, wait completions, the MEM records of library continuations (origin resume, handler-end,
+  thread-end);
+- preemption at the end of a time slice: the clock is resynced to the log's at every record, and the native slice
+  matched every SWITCH of boot and match1p.
+
+When an event is near (the next record is one, before the next out-call), every checkpoint asks the dispatcher
+(`Host::eventPinnedSoon`); otherwise checkpoints run at full speed. Two tolerances, both settled by records:
+- **The record's pc inside inner calls.** A record carries the reference's context pc when it was made. Outside
+  inner calls that is the checkpoint's pc: every event of boot (6,144) and match1p (32,808) outside inner calls
+  matches it exactly. Inside inner calls the
+  reference's context pc lags: it is the pc of a checkpoint passed lately in the same inner calls.
+  - match1p #18297743, at bspPlaneTest2Vec's call: 0x201418, the return address of the inner call before.
+  - #18359662, at the inner call itself: 0x201660, the call before.
+  - #31601175, at bspPlaneTest2Vec's call after an inner call that returns to 0x201490: 0x201418.
+
+  So inside inner calls the logged pc is also accepted when it is one of the last 64 checkpoints' pcs. An inner
+  call's own pc is its return address (#14757679 at texmActivateTextureAsm: 0x1fba84; #24702159).
+- **One checkpoint late.** When BozoEngine's count is one ahead of the reference's in a stretch, the logged count
+  is reached one checkpoint early, at another pc. The event is then taken at the next checkpoint, if that one goes
+  on at the logged pc, and reported. This happened twice in match1p (#50893616, #50900546, frame 11358).
+  - #50893616 (frame 11358): animation code after timerGetCurTics' io-load. findCurrentKeyframe's loop reaches
+    count 203 at 0x1bea20 at cycle 57900060779; the reference is at 0x1bea80, the next checkpoint, at cycle
+    57900060803.
+  - So BozoEngine counts one 8-cycle checkpoint before the loop that the reference does not. Which one is open
+    (section 9, K5).
+
+A count that passes the logged one by more, or a pc that matches neither way, is a divergence. EE time is reported,
+not checked:
+- the records at another cycle, and those at another checkpoint count (the K4 kind: for a CALL, a difference ends
+  at the next out-call);
+- eeCycle, BozoEngine's clock at the frame's end. Out-calls set the clock to the log's, so this is the clock at the
+  frame's out-call plus how far it was from the log's there.
 
 **SWITCH reasons.** Start for the first; handler-end after a handler returned; handler-start for a handler stacked on
 the thread that ran; else from the state of the thread that ran last: blocked (with its wait), preempted (ready),
@@ -191,16 +253,23 @@ and traced calls, then the PS2XREF1 record.
 
 ## 8. Results (TMB)
 
-| Run | Frames | Matching (ram, scratchpad, calls, threads, eeCycle) | Records matched | Time |
-|---|---|---|---|---|
-| boot | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 13.5 s |
-| match1p | 16000 | 5,786 (frames 0-5785) on every field | 18,359,663 of 74,615,923 | 36 s |
+| Run | Mode | Frames | Matching (ram, scratchpad, calls, threads, eeCycle) | Records matched | Time |
+|---|---|---|---|---|---|
+| boot | pinned | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 17 s |
+| match1p | pinned | 16000 | all 16000 on every field (eeCycle reported, not checked) | 74,615,923 of 74,615,923 | 164 s |
+| boot | free | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 14 s |
+| match1p | free | 16000 | 5,786 (frames 0-5785) on every field | 18,359,663 of 74,615,923 | 41 s |
+
+Pinned mode is the check (section 4). Free mode stops at match1p frame 5786 on K4 (section 9), a difference of the
+reference's EE time and not of the game's state.
 
 ## 9. Open questions
 
 **K1.** (settled: section 3, inner calls) A vblank inside bspVecTestIn's recursion (match1p frame 5773, #18297744).
 
-**K4. One more dispatcher start after some events taken at an inner call (match1p frame 5786, #18359663).** Seven
+**K4. One more dispatcher start after some events taken at an inner call (match1p frame 5786, #18359663).**
+Settled for pinned mode, which places these events at their records' points (section 4). It remains a free-mode
+difference of EE time only, kept here as history; it is not worked on further (the fork's own cycle accounting). Seven
 events of TMB's match1p land on bspVecTestIn's inner call at 0x201410 (a vblank due at or up to 6 cycles before its
 charge, no handler). Each record's cycle and checkpoint count equal BozoEngine's right after that inner call. Two of
 them (#24702159, #31440533, depths 12 and 5) then cost one dispatcher start, as section 3 says; five (#18359662,
@@ -211,6 +280,11 @@ the new level makes next) for the second. Neither the depth, nor how late the ev
 or end) separates them. Charging the extra start for exactly those five carries match1p to frame 9177 (#37860383, a
 separate +48 on an OP, 4 checkpoints against 1, not looked at), but that is a fit, not a rule, and is not in the code.
 Open: what state of the reference's the pc 0x201660 reflects.
+
+**K5. A checkpoint BozoEngine counts and the reference does not (match1p #50893616, frame 11358).** It sits between
+timerGetCurTics' io-load and findCurrentKeyframe's loop: animationResume twice, 0x1bf108, animationUpdateFromControlNode,
+animationGetCurrentTime, timerGetFieldCount, each an 8-cycle call here. Pinned mode takes the event one checkpoint
+later, at the logged pc. Which call the reference does not count is open.
 
 **K2.** (settled) texmActivateTextureAsm's return after its calls to texmFindVramSpaceAsm (#17538483) and
 bspVecTestIn's return after it recursed (#17537437, #17538428, #17538329) go through the dispatcher (section 3).

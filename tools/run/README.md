@@ -37,9 +37,13 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--max-errors n` | go on after a cycle divergence (the cycle is resynced to the log's) until the n-th; anything else stops the run |
 | `--trace-from <record>` | print every record matched from that record index on |
 | `--trace-checkpoints` | with `--trace-from`: also every checkpoint passed (where it goes on, the cycle, the charge) and every dispatcher start |
+| `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
 | `--quiet` | only the summary |
 
-The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference.
+The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference: on
+ram, scratchpad, calls, threads and eeCycle in free mode, and on all of them but eeCycle in pinned mode. Pinned mode
+also prints how many events it placed (and which ones it took one checkpoint late), and how many records are at
+another cycle or checkpoint count than BozoEngine's.
 
 ## A divergence
 
@@ -57,9 +61,11 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 
 ## Results (TMB, 2026-11-03)
 
-| Run | Frames matching on every field | Records | Time |
-|---|---|---|---|
-| boot (`boot.clg`, 194 MB) | 3000 of 3000 | 4,650,558 of 4,650,558 | 13.5 s |
-| match1p (`match1p.clg`, 3.46 GB, streamed) | 5,786 of 16000 | 18,359,663 of 74,615,923 | 36 s |
+| Run | Mode | Frames matching | Records | Time |
+|---|---|---|---|---|
+| boot (`boot.clg`, 194 MB) | `--pinned` | 3000 of 3000 (ram, scratchpad, calls, threads; eeCycle too) | 4,650,558 of 4,650,558 | 17 s |
+| match1p (`match1p.clg`, 3.46 GB, streamed) | `--pinned` | 16000 of 16000 (ram, scratchpad, calls, threads; eeCycle too) | 74,615,923 of 74,615,923 | 164 s |
+| boot | free | 3000 of 3000 on every field | 4,650,558 of 4,650,558 | 14 s |
+| match1p | free | 5,786 of 16000 | 18,359,663 of 74,615,923 | 41 s |
 
-What stops match1p: `kernel.md` section 9 (K4).
+What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.

@@ -459,4 +459,6 @@ record that settled it. Points this document leaves implicit, read from the logs
   middle of bspVecTestIn's recursion records the recursive call's return address (match1p #18297743).
 - Events taken inside inner calls (calls to a label of the same function) keep guest code's frames and cost one
   dispatcher start (`kernel.md` section 3; match1p #14757679, #18297743).
-- Open: `kernel.md` section 9, K4 (match1p frame 5786).
+- Pinned mode (`kernel.md` section 4) places the vblank's events by their first record's (seq, checkpoints, pc);
+  inside inner calls that pc is the reference's lagging context pc (match1p #18297743, #18359662, #31601175).
+- Open in free mode only: `kernel.md` section 9, K4 (match1p frame 5786) and K5 (#50893616).
