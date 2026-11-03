@@ -120,7 +120,8 @@ namespace bozo::libs
         // A sound's native lifetime estimate (libraries.md section 15.5): the longest of its tones in the note's key
         // range, its sample (ADPCM blocks to the end flag, 28 samples each) at 48 kHz shifted by the note's distance
         // from the tone's centre note and the play's pitch bend (the tone's bend range, bytes 8-9, in semitones), then
-        // 1.166 s more (settled on the two natural ends match1p shows: sound 3 of bank 0xe8310 started at EE cycles
+        // 1.166 s more (989SND's end counter: 256 silent ticks at 240 Hz after the mixer reports a voice silent,
+        // 989SND.IRX 0x54b8; libraries.md 15.12. Settled on the two natural ends match1p shows: sound 3 of bank 0xe8310 started at EE cycles
         // 39,259,868,387 and 46,869,503,443, both ended 2.9002-2.9169 s later). -1: it plays until stopped (a looping tone).
         double lifetime(const SndBank &b, const SndSound &s, int32_t bend)
         {

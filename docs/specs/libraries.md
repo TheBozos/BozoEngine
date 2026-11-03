@@ -708,7 +708,7 @@ handles (3,294 of 122,519 replies; boot: 1, the shell music's handle, which the 
 and 2, no tone looping) lives as long as its longest tone in the note's key range (tone bytes 6-7), that tone's sample
 (ADPCM blocks to the end flag, 28 samples each) at 48 kHz shifted by the distance from the tone's centre note (byte 2)
 to the sound's note and by the play's pitch bend (argument 5, over the tone's bend range: bytes 8 and 9, semitones
-down and up), **plus 1.166 s**. The constant is settled on the only natural ends match1p shows: two handles of sound 3
+down and up), **plus 1.166 s** (989SND's 256-tick end counter: 15.12). The constant is settled on the only natural ends match1p shows: two handles of sound 3
 of bank 0xe8310 (no bend; tones of 941 blocks at centre notes 78 and 79, note 59: 1.743 s of sample), started at EE
 cycles 39,259,868,387 and 46,869,503,443, alive 2.9002 s later and ended 2.9169 s later: the constant lies in
 (1.1575, 1.1742]. It is not the tones' ADSR release (0x5fcd: linear rate 13, 0.341 s on the SPU2's envelope; 0x5fce
@@ -801,7 +801,52 @@ differ (the log's effect replacing each, every frame still matches). What would 
   handles constrain (619 hidden uses);
 - the shell's 21 plays against its slot generations (one play without a slot).
 
-In the reference, 989SND runs as recompiled IOP code whose voice search is native code of the fork, over the fork's
-native libsd mixer (TMB_Recomp's `docs/RECOMP_NOTES.md`, "IOP modules recompiled" and "native libsd"): its exact rules
-are that code's, outside the clean room; they can only be inferred from the records, which show voice behaviour only
-through the replies above.
+The driver's own rules are in its module on the disc (15.12); what stays outside the clean room is the fork's mixer
+under it (15.13).
+
+### 15.12 989SND's own code (`989SND.IRX`)
+
+The driver ships on the disc as `/MOD/989SND.IRX` ("989snd (c)2000, 2001 Sony Computer Entertainment America", built with
+sce library rev 2.1.3), an IOP relocatable (MIPS R3000) that imports `libsd` (`/MOD/LIBSD.IRX`), `cdvdman`, `sysmem`,
+`intrman`, `sifcmd`, `sifman`, `thbase`, `thsemap`, `timrman`. `tools/irx/irx_disasm.py` lists it (sections, import and
+export tables, code, data references); addresses below are offsets into the module's `.text`/`.data`. What it settles:
+
+| Rule | Where (989SND.IRX) | Records it explains |
+|---|---|---|
+| The RPC server 0x123456 is registered with function 0xf20 and buffer 0x15980 (a second server, 0x123457, "Loading RPC", with 0x1030) | 0xfa0, 0x10f0 | the bind (14.1) |
+| 0xf20 calls the command table at 0x1490c by function number; the reply is a static buffer (0x15760): -1, then each command's result written through a pointer (0x14908) that advances per command, then -1. A command that writes no result leaves what the buffer held: the "driver's last result" | 0xf20; batch 0xe6c | 15.2: every reply of both logs |
+| PlaySound (0x11, 0x12) goes to 0x5730: sound type 1-3 to 0x7460 (programs), 4 to 0x87a0 (MIDI), 5 to 0x9b10; type 0 (or no data) answers 0; an `SBlk` bank to 0x11fe0 | 0x5730 | the empty sound (15.5) |
+| A type 2 sound stops the instances of the same sound still playing before it plays (the handler list at 0x14ac0) | 0x6fd0 | the asynchronous plays' lifetimes (15.5) |
+| A sound handler is the lowest free of 48 (56 bytes each at 0x197f0; free when its sound word is 0); its handle word is slot << 16 \| (the slot's previous low half + 1): the generation counts the slot's allocations (the first is 2); MIDI handlers are a second pool (0x1a3d0, prefix 0x01000000) | 0x64d8, 0x65ac | 15.5's handle format and slots |
+| The tick: an IOP hardware timer at 1/240 s (USec2SysClock(1 s) / 240) whose handler wakes the tick thread, which runs 0x54b8; a command locks it (0x1630) and the ticks missed meanwhile run at the unlock (0x16a0) | 0x4a04, 0x4c78, 0x4cd4, 0x54b8 | |
+| KeyOn and KeyOff are sent once a tick, after the voice loop (0x1ed0: KOFF, 0x1db0: KON through `sceSdProcBatch`): a sound's voices start at the tick after its command | 0x56bc | |
+| **A voice's end** (0x54b8): for each active voice the tick reads ENVX (`sceSdGetParam(0x500 \| voice << 1 \| core)`). Not 0: nothing. 0 and keyed off: the voice is freed (0x1fc0, its owner told with reason 2). 0 and still keyed on: the voice's byte counter (0x183c0) is decremented and, when it reaches 0, the sound ends (0x214c: its owner told with reason 3, KeyOff queued). The counter's reset ("4 when the last ENVX was not 0") never fires, because the last ENVX (0x18360) is only stored on the zero path: the counter runs from 0 to 0 through 255, so **a natural end comes 256 silent ticks after the mixer reports the voice silent** | 0x54b8, 0x214c, 0x1fc0 | the +1.166 s of 15.5 |
+| A voice's pitch at KeyOn: `sceSdNote2Pitch(centre note, centre fine, note, fine)` from the tone (a negative centre note is a 44.1 kHz sample, converted); ADSR1/ADSR2 the tone's bytes 10-13; the start address the tone's sample | 0x1a00-0x1c88, 0x27d0 | |
+| `sceSdNote2Pitch` (LIBSD.IRX 0x33a0): fine = note's fine + centre fine (the semitones it carries moved to the note), the semitone from a 12-entry table (LIBSD 0x4680), the fine from a 128-entry one (0x4698), their product >> 16, then shifted right by the octave with rounding | LIBSD 0x33a0 | |
+| InitVAGStreamingEx creates four streaming threads (stacks of 0x800) and allocates the streams' buffers and state (0x61d00 for TMB's 6 x 0xfa00); with the reference's thread stacks taken from the IOP heap (0x840 each) that is the 0x63e00 of 15.4 | 0x7fc, 0xb4ac-0xb590 | the first level bank at 0xe3c64 |
+| Bank transfers to sound memory take a free DMA channel (0xe590), their end handler (0x4714) frees it; while streams run, disc reads go through the streaming thread (0xd55c) | | |
+
+**The +1.166 s, explained.** Sound 3 of bank 0xe8310 (941 blocks): 989SND gives its two voices pitches 1288 and 1216
+(of 4096), so the longer one plays 1.849 s; the mixer reports it silent at the next tick after its end; the 256th silent
+tick ends the sound: start + (KeyOn at the next tick) + 1.849 s + 255 ticks = 2.912-2.920 s after the play, against the
+log's 2.9002-2.9169 s (both natural ends). The constant in the native estimate (15.5) is this counter, not a release.
+
+### 15.13 What is still open: the mixer under libsd
+
+989SND decides from ENVX, the envelope the mixer reports. In the reference the mixer is the fork's native libsd
+(TMB_Recomp's `docs/RECOMP_NOTES.md`: "989SND's calls to libsd act on the fork's native mixer"; its voice search is
+native code there too), outside the clean room. What the records need from it, and do not settle:
+
+- whether ENVX is already non-zero at the first tick after a KeyOn (a silent first tick starts a voice's counter);
+- what ENVX does at a sample's end without repeat (silent at once, or a release first) and how long a release after a
+  KeyOff lasts (the voice stays taken until ENVX is 0: it decides which voices are free, and so voice stealing);
+- the mixer's granularity, and where the IOP timer's ticks fall against the EE's calls (the IOP runs ahead of EE time
+  after a vblank: `calllog.md` section 7).
+
+A replay of 989SND.IRX's own code against the logs' command streams (an analysis aid kept out of the repository: the
+module's code on a MIPS interpreter, with libsd and the IOP answered by a model of the mixer) gives every reply of boot
+(but GetTransStatus 0x40, inside the movie override) and every reply of match1p's shell; from the level start it
+depends on the mixer model: the best of the variants tried (silent at the sample's end, the SPU2 envelope's release, a
+silent first tick) gives 15 of the 26 play handles to frame 5770; the first difference is the shell's slot generations
+(#17541429: one asynchronous play's slot). With the mixer's behaviour known, 989SND's rules above give every reply; the
+native driver then takes them (handler and voice pools, the tick, the counter, stealing in 989SND's order).

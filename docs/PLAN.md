@@ -164,6 +164,10 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   asynchronous plays taking slots) are settled. Voice stealing, the asynchronous plays' slots and four failed plays
   are not: `--snd-log-replies off` matches boot fully native but not match1p (`specs/libraries.md` 15.5, 15.11), so
   pinned runs keep taking those 3,294 decisions from the log by default.
+- **989SND's own code (2026-11-03).** Its module on the disc (`989SND.IRX`, read with `tools/irx/irx_disasm.py`)
+  settles the driver's rules: the reply buffer, the handler pools, the 240 Hz tick and the 256-tick end counter (the
+  +1.166 s), KeyOn at the tick, the type 2 single instance (`specs/libraries.md` 15.12). Open: the fork's mixer under
+  libsd (ENVX at KeyOn, at a sample's end, release times), which decides voice stealing (15.13).
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at
