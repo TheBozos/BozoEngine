@@ -52,3 +52,12 @@ if(MINGW)
   target_link_options(bozo-libs-tests PRIVATE -static)
 endif()
 add_test(NAME libs COMMAND bozo-libs-tests)
+
+# The native mixer and libsd (runtime/audio): the voice-status rules, the clock, libsd's entries, and the reference's
+# samples for a fixed scenario (audio/mixer_scenario.h).
+add_executable(bozo-audio-tests audio/audio_tests.cpp)
+target_link_libraries(bozo-audio-tests PRIVATE bozo_audio)
+if(MINGW)
+  target_link_options(bozo-audio-tests PRIVATE -static)
+endif()
+add_test(NAME audio COMMAND bozo-audio-tests)

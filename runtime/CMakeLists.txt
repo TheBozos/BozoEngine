@@ -9,6 +9,14 @@ add_library(bozo_runtime_core STATIC
 target_link_libraries(bozo_runtime_core PUBLIC bozo_runtime_headers)
 target_compile_options(bozo_runtime_core PRIVATE -Wall -Wextra)
 
+# The native sound mixer and libsd at its API (bozo/audio/, docs/specs/libraries.md section 15.14). The interpolation
+# computes in single precision, never fused (the samples must stay the reference's).
+add_library(bozo_audio STATIC
+  audio/mixer.cpp
+  audio/libsd.cpp)
+target_include_directories(bozo_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(bozo_audio PRIVATE -Wall -Wextra -ffp-contract=off)
+
 # The native libraries (bozo/libs/, docs/specs/libraries.md): the game's library calls answered natively.
 add_library(bozo_libs STATIC
   libs/libraries.cpp
