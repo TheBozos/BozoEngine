@@ -607,10 +607,23 @@ namespace bozo
         // thread on from ctx->pc. A call to a label of this same function is a goto (the reference's: charged, not a
         // stopping point; the callee's return then leaves this whole function). A recursive call to the function's
         // own start is an ordinary call.
+        // A recursive call (to the function's own start) or a call to one of its labels marks the invocation: once it
+        // has made one, its return to anything but one of those calls' return addresses goes through the dispatcher
+        // (the reference's: the frames below it are gone; bspVecTestIn, calllog match1p #17537437, #17538428,
+        // #17538329; texmActivateTextureAsm, #17538483).
+        std::set<uint32_t> selfReturns;
+        for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+        {
+            const Insn i = decodeAt(p.read32(a), a);
+            if ((opFlags(i.op) & LNK) && i.op != Op::JALR &&
+                (i.op == Op::JAL ? i.jumpTarget() : i.branchTarget()) == f.start)
+                selfReturns.insert(a + 8);
+        }
         auto callAt = [&](uint32_t target, uint32_t from) {
             if (target > f.start && target < f.end && !isExternal(target, true))
-                return std::format("bozo::charge(ctx, {}); goto {};", kLeaveCycles, label(target));
-            return leave(hex(target)) + " " + callTo(target, true) +
+                return std::format("recursed = true; bozo::charge(ctx, {}); goto {};", kLeaveCycles, label(target));
+            const std::string mark = target == f.start && !selfReturns.empty() ? "recursed = true; " : "";
+            return mark + leave(hex(target)) + " " + callTo(target, true) +
                    std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
         };
         // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
@@ -637,6 +650,15 @@ namespace bozo
                                          hex(r), label(r));
                 inner += "default: break; } ";
             }
+            if (!selfReturns.empty() || !innerReturns.empty())
+            {
+                std::string cond;
+                for (uint32_t r : selfReturns)
+                    cond += std::format(" && target != {}", hex(r));
+                for (uint32_t r : innerReturns)
+                    cond += std::format(" && target != {}", hex(r));
+                inner += std::format("if (recursed{} && bozo_jump(rdram, ctx, rt, target)) return; ", cond);
+            }
             return std::format("{{ const uint32_t target = BZ_W({}); {} {}ctx->pc = target; return; }}", reg, delay, inner);
         };
 
@@ -646,6 +668,8 @@ namespace bozo
         // points where a stopped thread resumes (abi.md section 3; the dispatcher's resume table).
         out += std::format("static void body_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t entry)\n{{\n", f.start);
         out += std::format("    ctx->pc = entry ? entry : {};\n", hex(f.start));
+        if (!selfReturns.empty() || !innerReturns.empty())
+            out += "    bool recursed = false;\n";
         // A jr through a register we could not resolve may be a return through a copy of ra: compare with the
         // return address the function was entered with.
         if (!f.unresolvedJr.empty())
