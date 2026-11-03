@@ -65,3 +65,50 @@ Scripted runs, each from a cold boot with a fixed user folder:
 
 A component of BozoEngine is accepted when every reference run matches field for field on its whole length, and
 the timed runs (`PS2X_FRAME_STATS`-style work per frame) are no slower.
+
+## 6. The record file (PS2XREF1)
+
+The format both the reference build and BozoEngine write (`runtime/harness/reference.cpp`, `bozo/reference.h`;
+compared with `tools/capture/ref_compare.py`). Little-endian.
+
+Header (240 bytes, then `maskCount` pairs of u32 {address, bytes}, the RAM ranges hashed as zeros):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | char[8] | magic `PS2XREF1` |
+| 8 | u32 | version (1) |
+| 12 | u32 | headerBytes (240 + 8 x maskCount: where the records start) |
+| 16 | u32 | recordBytes (80) |
+| 20 | u32 | hash kind (1: XXH64 seed 0; the sound FNV-1a 64) |
+| 24 | u32 | ramBytes (0x2000000) |
+| 28 | u32 | scratchpadBytes (0x4000) |
+| 32 | u64 | XXH64 of the game's ELF file |
+| 40 | u32 | flags (bit 0: deterministic mode) |
+| 44 | u32 | maskCount |
+| 48 | char[64] | run name |
+| 112 | char[64] | build |
+| 176 | char[64] | the ELF's file name |
+
+Record (80 bytes), one per game frame:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | frame |
+| 4 | i32 | the guest thread running at the frame end |
+| 8 | u64 | `ram`: XXH64 of the 32 MB of RAM at the frame end |
+| 16 | u64 | `scratchpad`: XXH64 of the 16 KB scratchpad |
+| 24 | u64 | `calls`: XXH64 of the frame's calls, 7 u32 each {id, a0, a1, a2, a3, v0, flags} in call order |
+| 32 | u64 | `draws`: the renderer's draw lists (0 until BozoEngine has its renderer) |
+| 40 | u64 | `sound`: FNV-1a 64 of the frame's mixed samples (0 when none) |
+| 48 | u64 | `threads`: XXH64 of i32 {the running thread, then the ready threads in run order} |
+| 56 | u64 | `eeCycle`: the EE cycle count at the frame end |
+| 64 | u32 | callCount |
+| 68 | u32 | drawBatches |
+| 72 | u32 | drawVertices |
+| 76 | u32 | soundSamples |
+
+`calls`: the calls guest code makes by `jal`/`jalr` to a named library or kernel stub, and raw syscalls (`kernel.md`
+section 5 for what is left out). `id` is the FNV-1a 32 hash of the stub's name with the top bit clear, or
+`0x80000000 | number` for a syscall; `v0` the result's low word; `flags` 1 for a call that blocked, 2 for the call
+the frame ended inside (both with v0 0). The run order of `threads` is the kernel's (`kernel.md` section 2): the
+ready queues from priority 0, each in order.

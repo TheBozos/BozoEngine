@@ -38,8 +38,10 @@ Helpers a port uses: `getRegU32(ctx, n)`, `getRegS32(ctx, n)`, `setRegU32(ctx, n
 - A jump into the middle of another function (tail calls, shared epilogues) must work: either the target becomes a
   function of its own, or the generated function can be entered at that label.
 - The runtime must be able to stop guest code at points it chooses (the scheduler switching guest threads, a frame
-  boundary): the generated code calls a cheap check at function entry and on backward branches, with an estimate
-  of the guest cycles spent.
+  boundary): the generated code charges EE cycles and checks at backward branches, calls and jumps through a register
+  (the reference's time model, `kernel.md` section 3), with the point it goes on from in `ctx->pc`. A stopped thread
+  is run on later through each function's resume entry (`<prefix>_resume_table`: any label, any call's return
+  address). After a call, a `ctx->pc` other than the return address returns to the runtime.
 
 ## 4. Memory accesses
 

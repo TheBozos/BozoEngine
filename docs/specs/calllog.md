@@ -436,3 +436,23 @@ Boot's calls: 743,918 to 25 overrides (708,818 of them libmpeg's `switchThread` 
 queue), 374,583 VU0 microprograms (3), 500,969 hardware stores and 354,129 loads (DMA channel and GS registers),
 310,986 library calls (72 functions), 148,349 kernel calls (18) and 2 syscalls; 130,824 thread switches, 66,677
 handlers, 1,883,705 kernel operations.
+
+## 12. What phase 2 found (BozoEngine's runtime against these logs)
+
+`kernel.md` holds the kernel, the dispatcher and the time model as BozoEngine implements them, every rule with the
+record that settled it. Points this document leaves implicit, read from the logs:
+
+- A syscall's CALL target is its return address (the instruction after `syscall`), not the instruction's.
+- NAME gives the kernel's own wrappers the reference's names, `ps2__EnableIntc` and the like.
+- A CALL that returned (no flag) with a `pc` other than its `ra` sends guest code back to the dispatcher, which runs
+  it on from that `pc` (the port's override 0x1d2ea0 returns with `pc` 0x1fba84 and `sp` 0 every frame): `pc` is not
+  only bookkeeping.
+- The dispatcher's start of guest code is a checkpoint: an event due by then is processed before guest code runs
+  (boot #1315977, `checkpoints` 1); one due before it is processed with 0 checkpoints (boot #82).
+- Section 2's "a call or jump that leaves the function" is a call (`jal`, `jalr`, `bal`) and a jump through a
+  register; a direct jump or branch to another function, and falling into the next one, are not charged. A jump
+  through a register goes back to the dispatcher (16 cycles in all), except a jump table the reference resolves as a
+  switch (`kernel.md` section 3).
+- The reference record's `calls` leaves out a named stub reached by a jump and one the dispatcher runs at the bottom of
+  a thread (`kernel.md` section 5).
+- Open: `kernel.md` section 9, K1 and K2 (match1p frame 5591).

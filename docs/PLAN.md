@@ -119,6 +119,14 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   implements natively (the EE kernel, section 6 there) and what it answers from the log. The reference build replays
   its own log with only guest code, its kernel and its scheduler running: every record and the PS2XREF1 fields `ram`,
   `scratchpad`, `calls`, `threads`, `eeCycle` match `boot.ref` for all 3000 frames.
+- **Status (2026-11-03): boot passes; match1p to frame 5590.** BozoEngine's own EE kernel, dispatcher and cycle model
+  (`runtime/ee/`, `specs/kernel.md`) run TMB's generated code with every library answered from the call log
+  (`bozo-run`, `tools/run/README.md`), every record checked in lockstep. **boot: all 4,650,558 records, and the
+  PS2XREF1 record equal to `boot.ref` on `ram`, `scratchpad`, `calls`, `threads`, `eeCycle` for all 3000 frames**
+  (13.4 s). match1p: 17,537,437 records and frames 0-5590 equal on every field; frame 5591 stops on the EE time of
+  two code paths whose rule is open (`specs/kernel.md` section 9, K1 and K2). `draws` and `sound` wait for the native
+  renderer and mixer. The recompiler now emits the reference's time model and resume entries; phase 1's replay still
+  matches 9,232 of 9,232 samples.
 
 **Phase 3: native libraries (4-6 weeks).**
 - Pad (and multitap, 4 players), memory card (native save files, plus an importer for today's `mc0`/`mc1` card
