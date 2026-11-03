@@ -3,11 +3,13 @@
 // the game's ELF gives that name. Spec: docs/specs/libraries.md.
 #pragma once
 
+#include "bozo/ee/kernel.h"
 #include "bozo/libs/cd.h"
 #include "bozo/libs/gs.h"
 #include "bozo/libs/guest.h"
 #include "bozo/libs/io.h"
 #include "bozo/libs/mc.h"
+#include "bozo/libs/mpeg.h"
 #include "bozo/libs/pad.h"
 
 #include <cstdint>
@@ -35,9 +37,10 @@ namespace bozo::libs
         kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
         kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
         kIo = 1u << 7,   // the hardware registers the game loads and stores (DMA, timer 0, the GS's privileged ones)
-        kAllLibraries = (1u << 8) - 1,
+        kMpeg = 1u << 8, // libmpeg: the movies (needs FFmpeg)
+        kAllLibraries = (1u << 9) - 1,
     };
-    constexpr unsigned kLibraryCount = 8;
+    constexpr unsigned kLibraryCount = 9;
 
     // Which microcode VU0's code memory holds: the image of the VIF0 chain the game kicked last (libraries.md
     // section 10). TMB's two chains are static data in its ELF.
@@ -59,7 +62,7 @@ namespace bozo::libs
         void kick(uint32_t chcr, uint32_t tadr);
     };
     const char *libraryName(Library l);
-    // "libc,libm,gs,pad,mc,cd,vu0,io", "all" or "none" -> a mask; false on an unknown name.
+    // "libc,libm,gs,pad,mc,cd,vu0,io,mpeg", "all" or "none" -> a mask; false on an unknown name.
     bool parseLibraries(const std::string &list, uint32_t &mask);
 
     class Libraries;
@@ -163,6 +166,12 @@ namespace bozo::libs
         // A library continuation of a thread's wait, run by the runtime as the thread resumes (null if none).
         std::function<void(Libraries &, Guest &)> takeContinuation(int32_t thread);
         bool hasContinuation(int32_t thread) const { return continuations_.count(thread) != 0; }
+        // The running thread waits (any reason) with a completion: `then` runs as it resumes.
+        void waitFor(uint32_t reason, uint32_t object, uint64_t token, int32_t fixedResult,
+                     std::function<void(Libraries &, Guest &)> then);
+        // A handler queued by a library; `end` (if any) is its completion, run as it returns (origin handler-end).
+        void queueHandler(const ee::QueuedHandler &h, std::function<void(Libraries &, Guest &)> end);
+        std::function<void(Libraries &, Guest &)> takeHandlerEnd(uint64_t sequence);
         Pin pin;
 
         // ---- VU0 microprograms ----
@@ -179,6 +188,8 @@ namespace bozo::libs
         CdState cd;
         Vu0State vu0;
         IoState io;
+        MpegState mpeg;
+        MovieSoundSink *movieSound = nullptr; // the movie's sound (null: dropped)
         IoAccess ioAccess;
         // The I/O library as a function: makes the access in `ioAccess`.
         static const Function &ioFunction();
@@ -196,6 +207,7 @@ namespace bozo::libs
         std::vector<Function> functions_;
         std::unordered_map<std::string, size_t> byName_;
         std::map<int32_t, std::function<void(Libraries &, Guest &)>> continuations_;
+        std::map<uint64_t, std::function<void(Libraries &, Guest &)>> handlerEnds_;
     };
 
     // Each library's functions (libc.cpp, libm.cpp, gs.cpp, pad.cpp, mc.cpp).
@@ -205,6 +217,7 @@ namespace bozo::libs
     void addPad(std::vector<Function> &out);
     void addMc(std::vector<Function> &out);
     void addCd(std::vector<Function> &out);
+    void addMpeg(std::vector<Function> &out); // nothing without a video decoder (FFmpeg)
 
     // printf-style formatting as the reference's sprintf: the format at `format`, the arguments from argument slot
     // `first` on (64-bit doubles for %f/%e/%g). Returns the text without its terminator.

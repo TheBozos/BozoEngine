@@ -161,6 +161,7 @@ namespace bozo::libs
         case kCd: return "cd";
         case kVu0: return "vu0";
         case kIo: return "io";
+        case kMpeg: return "mpeg";
         default: return "?";
         }
     }
@@ -207,6 +208,7 @@ namespace bozo::libs
         addPad(functions_);
         addMc(functions_);
         addCd(functions_);
+        addMpeg(functions_);
         for (size_t i = 0; i < functions_.size(); ++i)
             byName_[functions_[i].name] = i;
     }
@@ -255,6 +257,35 @@ namespace bozo::libs
         if (completion)
             continuations_[id] = std::move(then);
         k.block(id, ee::kWaitVblank, 0, static_cast<uint32_t>(fixedResult), 0, completion, token, fixedResult);
+    }
+
+    void Libraries::waitFor(uint32_t reason, uint32_t object, uint64_t token, int32_t fixedResult,
+                            std::function<void(Libraries &, Guest &)> then)
+    {
+        ee::Kernel &k = d_->kernel();
+        const int32_t id = k.running();
+        const bool completion = static_cast<bool>(then);
+        if (completion)
+            continuations_[id] = std::move(then);
+        k.block(id, reason, object, 0, 0, completion, token, fixedResult);
+    }
+
+    void Libraries::queueHandler(const ee::QueuedHandler &h, std::function<void(Libraries &, Guest &)> end)
+    {
+        ee::Kernel &k = d_->kernel();
+        k.queue(h);
+        if (end)
+            handlerEnds_[k.sequence()] = std::move(end);
+    }
+
+    std::function<void(Libraries &, Guest &)> Libraries::takeHandlerEnd(uint64_t sequence)
+    {
+        auto it = handlerEnds_.find(sequence);
+        if (it == handlerEnds_.end())
+            return {};
+        auto c = std::move(it->second);
+        handlerEnds_.erase(it);
+        return c;
     }
 
     std::function<void(Libraries &, Guest &)> Libraries::takeContinuation(int32_t thread)

@@ -28,7 +28,7 @@ namespace
         std::fprintf(stderr,
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
-                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io|all|none]\n"
+                     "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io,mpeg|all|none]\n"
                      "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
         return 2;
     }
@@ -158,6 +158,11 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    if ((opt.native & libs::kMpeg) && !libs::haveVideoDecoder())
+    {
+        opt.native &= ~static_cast<uint32_t>(libs::kMpeg);
+        std::printf("note: built without FFmpeg: libmpeg is answered from the log\n");
+    }
     run::LogHost host(log, opt);
     libs::ScriptInput padScript;
     for (const auto &[port, path] : padScripts)
@@ -173,6 +178,19 @@ int main(int argc, char **argv)
     host.libraries().pad.input = &padScript;
     host.libraries().mc.hostDirectory = cardDir; // empty: cards in memory, fresh and formatted
     host.libraries().cd.imagePath = isoPath;
+    // The movies' sound: counted (the mixer takes it in the real runtime).
+    struct CountingSink final : libs::MovieSoundSink
+    {
+        uint64_t frames = 0, movies = 0;
+        libs::MovieSoundFormat last;
+        void format(const libs::MovieSoundFormat &f) override
+        {
+            last = f;
+            ++movies;
+        }
+        void samples(const int16_t *, size_t count, int64_t) override { frames += count; }
+    } movieSound;
+    host.libraries().movieSound = &movieSound;
     ee::Dispatcher d(host);
     d.pinned = opt.pinned;
     d.setFunctions(tmb_function_table, tmb_function_count, tmb_resume_table, tmb_resume_count);
@@ -249,6 +267,10 @@ int main(int argc, char **argv)
             std::printf("; %llu timed calls at another EE time than the log's (kept)", static_cast<unsigned long long>(n.timeDiffers));
         std::printf("\n");
     }
+    if (movieSound.movies)
+        std::printf("movie sound: %llu streams, %llu sample frames (%u Hz, %u channels)\n",
+                    static_cast<unsigned long long>(movieSound.movies), static_cast<unsigned long long>(movieSound.frames),
+                    movieSound.last.rate, movieSound.last.channels);
     if (opt.pinned)
     {
         const run::PinnedStats &p = host.pinnedStats();

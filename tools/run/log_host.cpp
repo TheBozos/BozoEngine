@@ -667,11 +667,16 @@ namespace bozo::run
             }
         // Bytes the native call changed that the log's call did not: each written range's bytes as they were before
         // the call (an earlier write to the same bytes holds their older value) against now, outside the log's runs.
+        // The runs as sorted spans, searched by address (a picture's write meets thousands of runs); runs of one
+        // record never overlap.
+        std::vector<std::pair<uint32_t, uint32_t>> spans;
+        spans.reserve(runs.size());
+        for (const Run &run : runs)
+            spans.emplace_back(run.address, run.address + run.length);
+        std::sort(spans.begin(), spans.end());
         auto covered = [&](uint32_t a) {
-            for (const Run &run : runs)
-                if (a >= run.address && a < run.address + run.length)
-                    return true;
-            return false;
+            auto it = std::upper_bound(spans.begin(), spans.end(), std::make_pair(a, ~0u));
+            return it != spans.begin() && a < std::prev(it)->second;
         };
         const auto &entries = journal_.entries;
         std::vector<uint8_t> before;
@@ -1051,8 +1056,13 @@ namespace bozo::run
         }
     }
 
-    void LogHost::handlerCompleted(ee::Dispatcher &, ee::Thread &, const ee::Frame &)
+    void LogHost::handlerCompleted(ee::Dispatcher &, ee::Thread &t, const ee::Frame &f)
     {
+        if (auto run = libs_.takeHandlerEnd(f.sequence))
+        {
+            nativeContinuation(t, std::move(run), ee::kOriginHandlerEnd, "handler-end");
+            return;
+        }
         continuation(ee::kOriginHandlerEnd, ee::kOriginHandlerEnd, "handler-end");
     }
 
@@ -1159,7 +1169,7 @@ namespace bozo::run
             diverge("OP differs: the kernel made " + mine(), &r);
         checkPoint(r, d_->now(), "OP");
         // libmpeg (answered from the log) queueing the game's nodata callback: its decoder took the IPU's input.
-        if (e.op == ee::kOpQueue && e.argc > 0 && e.args[0] == ee::kInvokeLibraryCall)
+        if (!(opt_.native & libs::kMpeg) && e.op == ee::kOpQueue && e.argc > 0 && e.args[0] == ee::kInvokeLibraryCall)
             libs_.io.ipuDemand = true;
         if (e.op == ee::kOpBlock && d_->currentThread() && static_cast<int32_t>(e.args[0]) == d_->currentThread()->id)
             blockedInCall_ = true;

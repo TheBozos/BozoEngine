@@ -1,0 +1,117 @@
+// libmpeg as the native runtime answers it (libraries.md section 9): the PSS demux, the pictures (decoded by FFmpeg's
+// mpeg2video decoder when the build has it) delivered to the game's memory as the reference delivered them, the
+// decoder-feeding protocol the game observes (when sceMpegGetPicture delivers, waits for a vblank or asks the game for
+// data), and the movie's sound to a native sink.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <vector>
+
+#include "bozo/ee/kernel.h"
+
+namespace bozo::libs
+{
+    // A decoded picture (4:2:0, display order).
+    struct YuvPicture
+    {
+        int width = 0, height = 0;
+        std::vector<uint8_t> y, u, v; // width x height, and (width / 2) x (height / 2) each
+    };
+
+    // The video decoder behind libmpeg: coded pictures in, pictures out in display order.
+    class VideoDecoder
+    {
+    public:
+        virtual ~VideoDecoder() = default;
+        // One coded picture with the headers before it (sequence, GOP).
+        virtual void picture(const uint8_t *data, size_t bytes) = 0;
+        // The stream ended: every picture still held comes out.
+        virtual void flush() = 0;
+        // The next picture in display order, if one is out.
+        virtual bool next(YuvPicture &out) = 0;
+    };
+    // FFmpeg's mpeg2video decoder (null when the build has no FFmpeg: libmpeg then stays answered from a log).
+    std::unique_ptr<VideoDecoder> makeVideoDecoder();
+    bool haveVideoDecoder();
+
+    // Where a movie's sound goes (the future mixer). TMB's movies carry Sony's PCM in private stream 1: a 4-byte
+    // sub-stream header (0xff 0xa0 0 0), then, in the first packet, an "SShd" header (format 1, rate 48000, 2 channels,
+    // 512-byte interleave) and an "SSbd" data header; the samples are 16-bit little-endian, 512 bytes of the left channel
+    // then 512 of the right (libraries.md section 9).
+    struct MovieSoundFormat
+    {
+        uint32_t format = 0, rate = 0, channels = 0, interleave = 0;
+    };
+    class MovieSoundSink
+    {
+    public:
+        virtual ~MovieSoundSink() = default;
+        // A movie starts (sceMpegCreate) and ends (sceMpegDelete).
+        virtual void start() {}
+        virtual void stop() {}
+        // The sound stream's header, once (the first packet's SShd).
+        virtual void format(const MovieSoundFormat &) {}
+        // Interleaved 16-bit samples (host order), as they are demuxed; `pts` the packet's (90 kHz, -1 if none).
+        virtual void samples(const int16_t *frames, size_t count, int64_t pts) { (void)frames, (void)count, (void)pts; }
+    };
+
+    // One sceMpeg (TMB plays one movie at a time).
+    struct MpegState
+    {
+        bool active = false;
+        uint32_t mp = 0, work = 0, size = 0, block = 0; // block: the 0x600 bytes taken from the game's heap
+
+        struct Callback
+        {
+            uint32_t function = 0, data = 0, gp = 0;
+            bool set = false;
+        };
+        Callback callbacks[8];    // sceMpegAddCallback types (1: nodata)
+        Callback strCallbacks[8]; // sceMpegAddStrCallback types (0: video, 2: PCM)
+        uint32_t callbacksAdded = 0;
+
+        // The demux: bytes taken from the ring so far, those not yet parsed into whole packets, the program end.
+        uint64_t consumed = 0;
+        std::vector<uint8_t> pending; // bytes [pendingAt, consumed) of the stream
+        uint64_t pendingAt = 0;
+        uint32_t ring = 0, ringSize = 0, ringBias = 0; // ring address of stream byte x: ring + (x + ringBias) % ringSize
+        bool programEnd = false;
+
+        // The video elementary stream: its bytes, its start codes counted (pictures and the sequence end), the cuts
+        // into coded pictures.
+        std::vector<uint8_t> es;
+        size_t scanned = 0;
+        uint32_t starts = 0;        // picture starts and sequence ends whole in the stream so far
+        uint32_t pictureStarts = 0; // picture starts alone
+        bool sequenceEnd = false;
+        bool headerOpen = false;
+        std::vector<size_t> cuts; // where each coded picture's data (with its headers) begins
+        size_t sent = 0;          // coded pictures given to the decoder
+        bool flushed = false;
+
+        // The callbacks a demux call queues as it ends (their data already taken from the heap).
+        struct DueCallback
+        {
+            ee::QueuedHandler handler;
+            uint32_t entry = 0;
+        };
+        std::vector<DueCallback> callbacksDue;
+        // The thread waiting in sceMpegGetPicture for data (0: none).
+        int32_t waiting = 0;
+
+        // Pictures delivered to the game, and the vblank count the first was due at.
+        uint32_t delivered = 0;
+        uint64_t base = 0;
+        std::unique_ptr<VideoDecoder> decoder;
+        std::deque<YuvPicture> decoded;
+
+        // The sound stream.
+        bool soundHeader = false;
+        std::vector<uint8_t> soundCarry;
+        MovieSoundFormat sound;
+    };
+}
