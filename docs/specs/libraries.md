@@ -25,6 +25,20 @@ the native library instead of being answered from its CALL record, and checked a
 Any difference is a divergence reported with the record (`native <function> (<library>) differs from the log: ...`);
 with `--max-errors` the log's effect then replaces the native one and the run goes on.
 
+**Timed calls (batch B1).** A disc read or a stream read takes EE time and may make its thread wait (`Function::timed`).
+Its library decides that with its own model of the drive (free mode: a PS2 drive's pace, section 8). The reference's
+decisions came from its emulated IOP, which BozoEngine does not have, so in a pinned run the call takes them from the
+log (`Libraries::pin`, set by `bozo-run` before the call): the EE cycles the call took, whether it waited (the log's
+`block` inside it) and until which vblank (its token), and, for a stream read, how much of it had arrived (the end of
+what the log's call wrote). Everything else (the data, results, the operations it makes) is the library's and is checked
+as above. In free mode a timed call's EE time is the library's own; `bozo-run` counts the calls whose time is not the
+log's and keeps the log's clock (a free run cannot go on past a different wait: section 8.4).
+
+**Continuations.** A wait a native library makes with a completion (`Libraries::waitVblank` with a continuation) is
+finished by the library when its thread resumes (`calllog.md` section 5, origin resume): `bozo-run` runs it on the
+thread's context, checks the memory it writes against the log's `MEM` records of that point (every run there, nothing
+outside them), its operations as they are made, and the context the thread resumes with (the `CTX` record, strictly).
+
 Native state (the heap, the random generator) also follows what the log still answers: the traced calls made inside a
 call answered from the log (an override running game code that calls `rand`: `calllog.md` 4.10) and the libraries
 answered from the log that touch it (section 2.2). A disagreement there is a divergence as well.
@@ -62,12 +76,12 @@ policy, settled on every `malloc` of boot (1,936) and match1p (7,924):
 - the block is the first free block large enough, by address, split at its start;
 - `free` gives the block back and merges it with free neighbours.
 
-**The reference's libmpeg allocates from the same heap.** Each `sceMpegCreate` (answered from the log until batch B)
+**The reference's libmpeg allocates from the same heap.** Each `sceMpegCreate` (still answered from the log: section 9)
 takes 0x600 bytes and never gives them back; the reference keeps the block's address at the work area + 0x44
 (`sceMpegCreate`'s second argument), which the record's memory runs show (match1p: 11 creates, the blocks at
 `0x752720`, `0x752d20`, ... `0x756320`; the 12th `malloc` after them, record #16897922, returns `0x756920`, 0x4200 past
 where a heap without them would). The native heap follows each `sceMpegCreate` answered from the log and checks the
-address. A native libmpeg (batch B) must take its 0x600 bytes from this heap in the same order.
+address. A native libmpeg (batch B2) must take its 0x600 bytes from this heap in the same order.
 
 ### 2.3 rand
 
@@ -248,25 +262,209 @@ Open/Read/Write/Close (descriptors, byte counts), the free clusters after files 
 accounting), the attributes and dates of created folders and files, whether `sceMcSync`'s `cmd` is ever written, and
 the card's error codes on the paths TMB tries.
 
-## 8. Still answered from the log (batch B)
+## 8. The CD and file access (`cd`)
 
-CD and CD streaming (`sceCd*`, `sceFsReset`), SIF and 989SND (`sceSif*` and the IOP heap and modules), libmpeg
-(`sceMpeg*`; its `sceMpegCreate` heap blocks are followed by the native heap: section 2.2), VU0 microprograms, hardware
-loads and stores (DMA, GS registers), and every port override (TMB's own native renderer, sound and the frame
-boundary, the Logitech wheel functions).
+Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
+`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
-## 9. Results (batch A)
+Sectors come from the game's disc image (`DiscImage`: an ISO 9660 image of 2048-byte sectors, checked by its primary
+volume descriptor at sector 16; sectors past its end read as zeros). `bozo-run --iso <image>` (or `BOZO_ISO`) names
+it; without one the CD library stays answered from the log. TMB_Recomp's runtime finds the user's image the same way
+(`TMB_ISO`, else the `.iso` beside the game's folder). The extracted game folder cannot serve TMB: the game reads raw
+sectors (the primary volume descriptor and the directories at boot, with its own ISO 9660 code) and streams movies by
+LBN, so the image is required. Every sector a call wrote in the logs equals the image's.
 
-`bozo-run <log> --pinned --ref <ref>` with every batch A library native (`--native all`, the default), match1p with
-`--pad-script reference/tmb/scripts/ch1p_frames.txt`:
+### 8.1 What each call answers (settled on the records)
+
+| Function | Native answer |
+|---|---|
+| `sceCdInit(mode)`, `sceCdMmode(media)` | 1 |
+| `sceCdDiskReady(mode)` | 2 (ready) |
+| `sceFsReset()` | 0 |
+| `sceCdReadClock(clock)` | 1; the 8 bytes stat 0, second, minute, hour, 0, day, month, year in BCD: the reference's deterministic clock, 2001-06-18 12:00:00 (`CdState::hostClock` for the host's time in the real runtime) |
+| `sceCdRead(lbn, sectors, buffer, mode)` | 1; the sectors are in the buffer when it returns (the reference's too: its runs hold them); it takes `sectors` x 114,400 EE cycles (every read of the logs) |
+| `sceCdSync(0)` | waits for the read to end: when it waits, a vblank wait (reason 4, its result 0, no completion) until the vblank the drive is done by; then 0 |
+| `sceCdSync(1)` | 1 while a read is in progress, else 0 |
+| `sceCdGetError()` | the last read's error: 0 |
+| `sceCdStInit(sectors, banks, buffer)` | 1; the ring's size (TMB: 0x50 sectors in 5 banks) |
+| `sceCdStStart(lbn, mode)`, `sceCdStStop()` | 1; the stream starts at `lbn` / stops |
+| `sceCdStRead(sectors, buffer, mode, error)` | the next sectors of the stream. Those that have arrived are copied at once; mode 1 (TMB's) waits for the rest: a vblank wait (its result the vblank's parity, -1) with a completion that copies them and sets v0 = sectors as the thread resumes. `*error` = 0; returns the sectors copied |
+
+### 8.2 The drive's time and waits
+
+In the reference these points came from the IOP it emulated (its CD driver answering RPCs as EE time was accounted):
+`sceCdSync(0)` sometimes returned at once, sometimes took 273,058 cycles (the IOP's reply), sometimes waited for one
+or two vblanks; a stream read waited for the vblank by which its sectors had arrived. Pinned runs take those points
+from the log (section 1, timed calls). The stream ring's state the game observes is what a read copies at once: TMB's
+streams always show the same shape (the first two reads of a stream wait with nothing there, the third copies 16
+sectors and waits for 16, the rest find all 32 there).
+
+Free mode (the native model, `CdState`): a read finishes within its call after its sectors' time (so sceCdSync never
+waits); the stream's drive reads a sector every 114,400 cycles from `sceCdStStart` into the ring and pauses while the
+ring is full; a read waits until the vblank by which its sectors have arrived. This gives the IOP side (and later the
+native sound driver) a load's time, as the Midtown Suburbs lesson asks (`reference/tmb/README.md`).
+
+### 8.3 What overrides read
+
+Some reads are made by game code inside port overrides (`T` lines of `bozo-calllog-tool calls`: 19 `sceCdRead` in
+match1p); those calls are answered whole from the log. None of them leaves state the native library depends on (the
+drive is idle after every read in this model), so nothing is followed.
+
+### 8.4 Free mode
+
+`bozo-run` without `--pinned` and with the native CD departs from boot's log at the first `sceCdSync` (record #36,
+where the reference waited for a vblank and the native drive has finished): a free run of the native CD is the real
+runtime's, which no log can follow. Boot still matches in free mode with every other library native (15 s).
+
+Results: boot 378 calls native (`sceCdStRead` 281, `sceCdSync` 40, `sceCdRead` 33, ...) and 9 stream continuations;
+match1p 587 (`sceCdStRead` 338, `sceCdSync` 87, `sceCdRead` 65, `sceCdGetError` 52, ...) and 33 continuations; 0
+divergences.
+
+## 9. libmpeg (movies): still answered from the log
+
+The calls TMB makes: `sceMpegInit`, `sceMpegCreate`, `sceMpegAddCallback`, `sceMpegAddStrCallback`,
+`sceMpegDemuxPssRing`, `sceMpegGetPicture`, `sceMpegIsEnd`, `sceMpegReset`, `sceMpegDelete`, and the reference's stub of
+the game's own `videoCallback` (0x1ec2c8). Batch B1 leaves them answered from the log; what was settled for the native
+library:
+
+**What the guest observes (the reference's libmpeg, read from the logs).**
+- `sceMpegCreate(mp, work, size, ...)` writes the sceMpeg structure (`mp` + 0x10.. all ones, + 0x40 the work area), the
+  work area's own fields, two words of libmpeg's static data in the ELF (0x1717bc, 0x171800...) and takes 0x600 bytes
+  from the game's heap (section 2.2; returns `work` + 0x118).
+- `sceMpegDemuxPssRing(mp, data, bytes, ring)` demuxes PSS packs, a sector at a time, up to a limit of pictures ahead:
+  for each packet of a registered stream it writes a `sceMpegCbDataStr` (32 bytes, in the 0x600 block: the packet's
+  data pointer in the ring, its length, PTS and DTS) and queues the stream's callback as a handler of kind 4 (RPC
+  callback) on the calling thread; it returns the bytes consumed (0x9800, 0x2000, 0x1800, 0x800..., 0 at the limit). The
+  reference stubs the game's `videoCallback` (it returns 1 and copies nothing): the video data stays in the ring for
+  the decoder.
+- `sceMpegGetPicture(mp, rgb32, mbcount)` either returns at once with the picture written, or makes its thread wait:
+  for the next vblank (reason 4, its result the parity, with a completion), or for data (reason 6 "libmpeg's picture
+  wait", object 1, token `mp`) after queueing the game's nodata callback (`sceMpegAddCallback` type 1, 0x1feb98) as a
+  library handler (kind 7, with a completion) on another thread: the handler's end wakes the waiting thread (origin
+  handler-end), and its resume either queues the callback again or delivers the picture (origin resume: `MEM` with the
+  picture and `mp`'s width, height and frame count).
+- A picture is 640 x 368 RGBA32, alpha 0x80, in 16 x 16 macroblocks in **column-major** order (macroblock (x, y) at
+  index x * 23 + y), as TMB uploads it. Each pixel is a function of its decoded Y and its 2 x 2 block's Cb and Cr
+  (nearest chroma): the pictures FFmpeg 9.0.2's `mpeg2video` decoder gives for the same stream have 0 inconsistencies
+  over every (Y, Cb, Cr) the checked pictures hold. The luma term is (Y - 16) x 255 / 219 truncated (Y = 12-51 checked);
+  the chroma terms are not settled yet (boot's movies are nearly grey where checked).
+
+**Why it is not native yet.** Whether a call delivers a picture, waits for a vblank or asks for data depends on the
+decoder's state as the reference fed it (how much video it had demuxed, the pictures decoded ahead, the display
+pace), and the logs fix every one of those points (59k library handlers in boot). A native libmpeg must reproduce that
+protocol exactly: its demux limit, when the decoder has a picture (MPEG-2 reordering: a picture is out when the next
+reference picture's start is in), and the vblank waits. That is batch B2's first item, with the colour conversion's
+chroma terms (from a colourful movie: the intro, LBN 0xf53, or the story movies).
+
+**FFmpeg.** The native libmpeg decodes with FFmpeg's `libavcodec` (`mpeg2video` decoder only) and `libavutil`; no
+`libswscale` (the conversion to the game's RGBA32 macroblocks is ours, bit-exact to the reference) and no
+`libavformat` (the PSS demux is ours: the game drives it). Linked as an optional dependency, as TMB_Recomp's kit does
+it: the kit's static FFmpeg 9.0.2 (LGPL, `--disable-everything` plus the `mpeg2video` decoder and parser), found
+through a `BOZO_FFMPEG_ROOT` folder, else `pkg-config` (MSYS2's `mingw-w64-ucrt-x86_64-ffmpeg` is the same 9.0.2);
+without it the library stays answered from a log and the real runtime shows no movie. LGPL: dynamic or with the
+object files for relinking, as the kit already ships.
+
+**What the renderer and the mixer take later.** The renderer: each picture as the game receives it (640 x 368 RGBA32,
+alpha 0x80, column-major macroblocks), or better straight from the decoder before conversion, with `mp`'s width and
+height, shown as the backdrop while the game's vblank handler would upload it (TMB's native renderer does this today).
+The mixer: the PSS's audio stream (the PCM stream TMB registers with `sceMpegAddStrCallback` type 2, its callback at
+0x1ec3e8, a port override in the reference) at its rate, through the native mixer, never through guest memory; the
+reference sent the movie sound to the IOP's sound input.
+
+## 10. VU0 microprograms (`vu0`)
+
+Native: every VCALLMS TMB makes, the hierarchy image's eight programs (`libs/vu0.cpp`):
+
+| Program | What it computes | Calls (boot / match1p) |
+|---|---|---|
+| 0x278 `hierFovTest2Asm` | an object's bounding sphere in the two view frames at VU vi10 + 50 and + 53, pushed out and in by its radius; vi2, vi5 the sign tests the microcode reads of them | 230,002 / 11,883,364 |
+| 0x3a8 | vf3 = vf1 + vf4, vf6.x = (vf3 . vf3) x vf8.y | 0 / 2,514,914 |
+| 0x410 `hierMulEoForObjAsm` | vf6 = the rotation at VU vi10 + 59 applied to vf4; vf7-9 = VU vi10 + 56..58 | 18,016 / 3,993,967 |
+| 0x450 `hierCsUpdateAsm` | the camera: its rotation to VU 59-61, its transpose applied to VU 10 + vf19, VU 50-58 the three frames at VU 11-21 by it | 126,565 / 1,471,274 |
+| 0x5a8 `hier` | the root's frames: VU 50-58 from VU 11-21, VU 59-61 the identity | 0 / 13,722 |
+| 0x670 `vu0HierRotateAsm` | a child's frames twelve quadwords on from its parent's, by the rotation vf1-3 | 0 / 1,082,417 |
+| 0x808 `hierTraverseAsm` | the lights reaching an object (at most four of VU 9.x spheres), as the light matrix and colours | 0 / 2,813,762 |
+| 0xab0 `hdHatSphereTestAsm` | a sphere against a segment: vi3 0x80 when it is hit | 0 / 274,504 |
+
+Each was written from its microcode in the ELF (the hierarchy image: file offset 0x135070, two MPGs of 256 pairs at 0
+and 135 at 0x800, from the static VIF0 chain at 0x234060) and checked on every call of the logs: every VU register
+word (vf, vi, ACC, Q, I, the clip flags) and every VU0 data memory byte each call changes, 0 divergences.
+
+**Arithmetic (what makes them bit-exact).** Single precision rounded toward zero (products, quotients, roots); sums
+on VU0's adder: the operand with the smaller exponent loses its bits below the larger one's last mantissa bit first (no
+guard bits), then the sum is rounded toward zero; MULA/MADDA/MADD chains are those products and sums in the microcode's
+order (nothing fused); a field moved with ADDbc vf0 turns -0 into +0. The status and MAC flags are not changed (the
+reference leaves them). `vu0.cpp` is compiled with `-frounding-math -ffp-contract=off` and runs each program under
+`fesetround(FE_TOWARDZERO)`. vi registers are kept as their 16 bits.
+
+**Which image VU0 holds.** The game sends VU0 its microcode through VIF0 from two static chains in the ELF: the
+hierarchy one (0x234060, by `main` and `hier__Fi` each frame) and the 2D one (0x2337d0, `drawInit`: debug draws only,
+never in TMB's runs). The hierarchy chain's kicks happen inside calls the logs answer whole (no VIF0 store of theirs is
+an out-call), so the image is the hierarchy one until a kick of the 2D chain is seen (`Vu0State::kick`, from the I/O
+model's VIF0 channel); the 2D image's programs (0x278, 0x3b0, 0x438, 0x548, 0x5e0) are not native: a call to one would
+be answered from the log and counted ("calls with no native answer").
+
+## 11. Hardware registers (`io`)
+
+Native: every hardware load and store TMB's logs hold (`bozo/libs/io.h`, `libs/io.cpp`), answered by a model of only
+what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
+
+| Address | Register | Native answer |
+|---|---|---|
+| 0x10000000 | T0_COUNT | the count written last plus the periods since (T0_MODE 0x82: BUSCLK/256, a count every 512 EE cycles); a load that reads the same count as the previous one (a poll) leaves the period, 512 cycles, pending (charged at the next checkpoint: `calllog.md` section 2) |
+| 0x10000010 | T0_MODE | kept (0x82) |
+| 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
+| 0x10009000-30 | VIF1 | as VIF0 (D_STAT bit 1): TMB's 3D packets, 2.5M kicks in match1p |
+| 0x1000a000-30 | GIF | as VIF0 (bit 2), except a chain whose first packet draws (its GIF tag sets PRIM: the sprite TMB sends from 0x4fe180 before `sceGsSyncV` on its loading screens, 2,269 kicks in match1p): the reference drops it, no completion and no interrupt |
+| 0x1000b400-30 | IPU_TO (channel 4) | the transfer completes (bit 4, the interrupt) at the game's first store after libmpeg's decoder took it, i.e. after the decoder asked for more data (it queued the game's nodata callback); a CHCR store without STR stops the channel (TMB's movie end: the last transfer never completes) |
+| any channel | CHCR load | the value written, STR cleared once complete |
+| any channel | MADR, QWC, TADR loads | 0 (the reference's answer: TMB reads channel 4's MADR, 0 in every record, also before any transfer) |
+| 0x1000e000 | D_CTRL | kept (TMB writes 3; reads 0 before) |
+| 0x1000e010 | D_STAT | bits 0-9 set by completions, written 1 clear them; bits 16-25 written 1 toggle |
+| 0x1000e020 | D_PCR | kept; CPCOND0 (BC0F/BC0T) is every channel it names completed (any channel before the first write: phase 2's rule) |
+| 0x1000e030-60 | D_SQWC, D_RBSR, D_RBOR, D_STADR | kept |
+| 0x1000f520 | D_ENABLER | 0: no transfer is ever suspended (none runs) |
+| 0x1000f590 | D_ENABLEW | kept |
+| 0x12000000-f0 | the GS's privileged registers (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2, BGCOLOR...) | 64-bit stores kept in `IoState::gsPrivileged` for the renderer (TMB's movie layer uses both circuits: PMODE 0xff03) |
+
+The kernel's question at `EnableDmac` (is the channel's D_STAT bit still set, `calllog.md` section 6) is now answered by
+the model's D_STAT, no longer from the log.
+
+**Followed from the log.** Two of the model's points live inside calls the logs still answer whole, and `bozo-run`
+follows them (counted as followed calls):
+- TMB's frame boundary (the port override that ends the frame) restarts timer 0 inside it: after a call with a frame
+  inside, the next load of T0_COUNT re-bases the count on the log's value (and whether the override's last read was
+  that same value, from the log's pending poll cycles). The native frame boundary of the real runtime restarts it
+  itself.
+- IPU_TO's completion follows libmpeg's nodata callbacks while libmpeg is answered from the log (its queue operations).
+
+Results: boot 855,098 accesses native (`D_ENABLEW`/`D_ENABLER` 472,180, IPU_TO 236,108, VIF1 62,997, ...), match1p
+17,605,351 (VIF1 7,544,895, `D_STAT`/`D_PCR` 5,020,295, `D_ENABLEW`/`D_ENABLER` 2,631,172, T0_COUNT 927,111 loads, ...);
+0 divergences.
+
+## 12. Still answered from the log (batch B2)
+
+SIF and 989SND (`sceSif*`, the RPC to service 0x123456, the IOP heap and modules), libmpeg (section 9), the 2D image's
+VU0 programs (never called), and every port override (TMB's own native renderer, sound and the frame boundary, the
+Logitech wheel functions).
+
+## 13. Results
+
+`bozo-run <log> --pinned --ref <ref> --iso <image>` with every library native (`--native all`, the default), match1p
+with `--pad-script reference/tmb/scripts/ch1p_frames.txt`:
 
 | Run | Calls answered natively | Followed | Divergences | Frames matching | Records | Time |
 |---|---|---|---|---|---|---|
-| boot | 293,586 (libc 242,372, libm 216, gs 20,982, pad 29,973, mc 43) | 3 | 0 | 3000 of 3000 (ram, scratchpad, calls, threads; eeCycle too) | 4,650,558 of 4,650,558 | 14 s |
-| match1p | 11,119,646 (libc 2,060,202, libm 8,780,783, gs 117,534, pad 161,084, mc 43) | 4,843 | 0 | 16000 of 16000 (ram, scratchpad, calls, threads; eeCycle too) | 74,615,923 of 74,615,923 | 165 s |
+| boot, batch A | 293,586 (libc 242,372, libm 216, gs 20,982, pad 29,973, mc 43) | 3 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 14 s |
+| match1p, batch A | 11,119,646 (libc 2,060,202, libm 8,780,783, gs 117,534, pad 161,084, mc 43) | 4,843 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 165 s |
+| boot, batch B1 | 1,523,645 (batch A's, cd 378, vu0 374,583, io 855,098) and 9 CD continuations | 3 | 0 | 3000 of 3000 | 4,650,558 of 4,650,558 | 17 s |
+| match1p, batch B1 | 52,773,508 (batch A's, cd 587, vu0 24,047,924, io 17,605,351) and 33 CD continuations | 12,979 | 0 | 16000 of 16000 | 74,615,923 of 74,615,923 | 267 s |
+
+Frames match on ram, scratchpad, calls and threads (eeCycle too). Phase 2's runs with everything from the log took 17 s
+(boot) and 164 s (match1p). match1p's extra time is the check, not the libraries: each of its 42 million VU0 and I/O
+calls has its 332 context words compared before and after, and its writes journaled.
 
 Open points: L1 (section 3: the Universal CRT's float sine and cosine off Windows), the `save` run's call log
-(section 7), L2/R2's pressure places (section 6), PAL's display constants (not in TMB's runs: US only).
-
-Phase 2's runs with everything from the log took 17 s (boot) and 164 s (match1p): the native libraries and their
-checks cost nothing measurable. Boot also matches in free mode with every batch A library native (15 s).
+(section 7), L2/R2's pressure places (section 6), PAL's display constants (not in TMB's runs: US only), libmpeg (section
+9), the CD's free-mode timing against a real drive (section 8.2: a model, not the reference's IOP), and the two points
+the I/O model follows from the log (section 11).

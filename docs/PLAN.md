@@ -143,8 +143,13 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   display mode, environments and transfers kept for the renderer), libpad (two DualShock 2s from a frame-keyed script
   or, later, the PC's input) and libmc (two formatted cards on host files). `bozo-run --pinned` makes every one of
   their calls natively and checks it against its record (result registers, every byte written): boot and match1p
-  still match every frame and record, 0 divergences. Batch B (CD, SIF/989SND, libmpeg, VU0 microprograms, I/O) is
-  still answered from the log.
+  still match every frame and record, 0 divergences.
+- **Batch B1 (2026-11-03): CD, VU0 and I/O native.** The CD library reads the disc image (sectors and the movie
+  stream; in a pinned run its waits follow the reference's points, in free mode a PS2 drive's pace), TMB's eight VU0
+  microprograms are native C++ bit-exact to the reference, and the hardware registers the game still touches are
+  answered by a model of what it observes (`specs/libraries.md` sections 8, 10, 11). Boot and match1p still match
+  every frame and record, 0 divergences. libmpeg's protocol and picture format are settled but it stays answered from
+  the log (section 9), with SIF/989SND, for batch B2.
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at

@@ -38,7 +38,8 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--trace-from <record>` | print every record matched from that record index on |
 | `--trace-checkpoints` | with `--trace-from`: also every checkpoint passed (where it goes on, the cycle, the charge) and every dispatcher start |
 | `--pinned` | pinned mode (`kernel.md` section 4): the vblank's events at the log's points; EE time and checkpoint counts reported, not checked; eeCycle not part of the exit status |
-| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
+| `--native <list>` | the native libraries answering their calls instead of the log, each call checked against its record (`docs/specs/libraries.md` section 1): `libc`, `libm`, `gs`, `pad`, `mc`, `cd`, `vu0` (the VU0 microprograms), `io` (the hardware registers), comma-separated, or `all` (the default) or `none` (phase 2: everything from the log) |
+| `--iso <image>` | the game's disc image for the native CD library (`libraries.md` section 8; also `BOZO_ISO`); without one the CD stays answered from the log |
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
 | `--quiet` | only the summary |
@@ -51,7 +52,9 @@ another cycle or checkpoint count than BozoEngine's.
 A native call that differs from its record is a divergence too (`native <function> (<library>) differs from the log:`
 then the context words, the first memory byte, or the rest of the record that differ). The summary line `native
 libraries:` counts the calls answered natively per library, the answered calls the native state followed (traced
-`rand`, `sceMpegCreate`'s heap block) and the divergences.
+`rand`, `sceMpegCreate`'s heap block, timer 0 after the frame boundary) and the divergences; then, when there are any,
+the calls of a native library it had no answer for (left to the log) and the timed calls whose EE time is not the log's
+(free mode).
 
 ## Reading a log
 
@@ -63,6 +66,10 @@ libraries:` counts the calls answered natively per library, the answered calls t
 | `dump <log> <target>[,...] [n] [skip]` | the first n CALL records at those addresses: inputs, words, runs, traces, records inside |
 | `calls <log> <name>[,...]` | every call to the named stubs in run order, those traced inside other calls included |
 | `writes <log> <lo> <hi> [from] [to]` | the records whose memory runs touch [lo, hi) |
+| `range <log> <from> <to> [bytes] [types]` | every record in [from, to), one line each (`types`: `CALL,MEM,OP`...) with its runs' first bytes |
+| `io <log>` | per hardware register: loads and stores, their values, the context words and operations inside them |
+| `memory <log> <record> <out> <lo> <hi>` | guest memory in [lo, hi) as the log's effects leave it at the end of a record (what out-calls and continuations wrote; guest code's own stores are not in a log) |
+| `extract <log> <record> <out> <lo> <hi>` | the bytes one record's runs hold in [lo, hi), and a mask of those it covers |
 
 ## A divergence
 
@@ -88,5 +95,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 | match1p | free | 5,786 of 16000 | 18,359,663 of 74,615,923 | 41 s |
 | boot, every batch A library native (`--native all`) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (293,586 calls native, 0 divergences) | 14 s |
 | match1p, `--native all --pad-script reference/tmb/scripts/ch1p_frames.txt` | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (11,119,646 calls native, 0 divergences) | 165 s |
+| boot, batch B1 (`--native all --iso <image>`: CD, VU0, I/O too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,523,645 calls native, 0 divergences) | 17 s |
+| match1p, batch B1 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (52,773,508 calls native, 0 divergences) | 267 s |
 
 What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.
