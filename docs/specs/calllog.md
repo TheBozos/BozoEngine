@@ -457,4 +457,6 @@ record that settled it. Points this document leaves implicit, read from the logs
   a thread (`kernel.md` section 5).
 - A record's `pc` is the context's pc when it was made, not always where guest code stopped: an event taken in the
   middle of bspVecTestIn's recursion records the recursive call's return address (match1p #18297743).
-- Open: `kernel.md` section 9, K1 (match1p frame 5773).
+- Events taken inside inner calls (calls to a label of the same function) keep guest code's frames and cost one
+  dispatcher start (`kernel.md` section 3; match1p #14757679, #18297743).
+- Open: `kernel.md` section 9, K4 (match1p frame 5786).

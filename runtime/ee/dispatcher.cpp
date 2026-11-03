@@ -1,6 +1,7 @@
 // BozoEngine's dispatcher. See bozo/ee/dispatcher.h and docs/specs/kernel.md.
 #include "bozo/ee/dispatcher.h"
 
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -309,6 +310,39 @@ namespace bozo::ee
             ctx->cycles += timerPending_;
             timerPending_ = 0;
         }
+        // Inner calls in progress, at an inner call and at an inner call's return (kernel.md section 3): the events
+        // due are taken in place, guest code's frames kept, with the dispatcher's start of guest code charged; guest
+        // code stops only when they call for it (a handler to run, another thread to run), at once at a checkpoint
+        // or an inner return, at the call's return when they were taken at the inner call itself (match1p
+        // #14757679, #18297743, #18359662). Nothing else stops guest code inside inner calls.
+        if (ctx->stopDue && ctx->inPlace != 2)
+        {
+            ctx->stopDue = 0;
+            stop(ctx, ctx->pc);
+        }
+        const bool inPlace = ctx->noStop || ctx->inPlace;
+        while (inPlace && !ctx->stopDue && ctx->cycles >= kernel_.nextEvent() && current_ && !current_->pseudo &&
+               !(current_->depth() == 0 && ctx->cycles >= sliceStart_ + kTimeSlice && kernel_.sliceContender()))
+        {
+            kernel_.setOrigin(kOriginEvents);
+            kernel_.processEvents(ctx->cycles);
+            if ((current_->depth() == 0 && kernel_.handlerQueued()) || kernel_.best() != current_->id)
+            {
+                if (ctx->inPlace != 2)
+                    stop(ctx, ctx->pc);
+                ctx->stopDue = 1;
+                ctx->cycleLimit = 0; // the next checkpoint or inner return stops
+                return;
+            }
+            ctx->cycles += kDispatchCycles;
+            ++ctx->checkpoints;
+            ++dispatches;
+        }
+        if (ctx->noStop)
+        {
+            updateLimit(ctx);
+            return;
+        }
         if (mustStop(ctx->cycles))
         {
             // The end of a time slice: the thread gives way to the next one of its priority (no operation recorded).
@@ -489,6 +523,9 @@ namespace bozo::ee
         {
         }
         inGuest_ = false;
+        ctx->noStop = 0; // a stop or a return to the dispatcher ends every inner call (their return stack is gone)
+        ctx->inPlace = 0;
+        ctx->stopDue = 0;
         cycle_ = ctx->cycles;
         checkpoints_ = ctx->checkpoints;
         f.status = rt_.cop0Status;

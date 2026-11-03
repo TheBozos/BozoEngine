@@ -87,8 +87,9 @@ dispatcher adds, all from the logs:
 |---|---|---|
 | A taken branch or `j` to a label of the same function at or before it | 32 | yes, resuming at the target |
 | A call (`jal`, `jalr`, `bal`...) | 8, before the callee | yes, resuming at the target (the callee's entry or the stub) |
-| A call to a label inside the same function (texmActivateTextureAsm's calls to texmUpdateLastUsedAsm and texmFindVramSpaceAsm) | 8; a goto | no; the return to its return address is a stopping point (0 cycles) (boot frame 2088: the event taken at pc 0x1fba84, after the callee ran) |
-| A recursive call to the function's own start | 8, an ordinary call | yes (match1p #17531044) |
+| An inner call: a call to a label inside the same function (texmActivateTextureAsm's calls to texmUpdateLastUsedAsm and texmFindVramSpaceAsm), or to the function's own start when the function before it is a two-instruction thunk whose `j` goes there (bspVecTest into bspVecTestIn: one function for the reference) | 8, counted; a goto | events taken in place (below); a stop they call for waits for the call's return (match1p #14757679) |
+| The return to an inner call's return address, by the invocation that made it | 0; a goto back there | events taken in place; a stop they call for happens there (boot frame 2088, match1p #14757679: pc 0x1fba84, after the callee ran) |
+| A recursive call to the function's own start (no thunk) | 8, an ordinary call | yes (match1p #17531044) |
 | A return (`jr ra`) to anything but those calls' return addresses, by an invocation that made a recursive call or a call to one of its own labels | 0; it goes through the dispatcher (the frames below are gone) | yes |
 | A `jr` through any register but ra (a copy of ra included), and a jump table the reference does not resolve | 8, then the jump goes through the dispatcher (the jumping function's frame is gone) | yes |
 | A jump table the reference resolves: its base built in place (`lui r; addiu r, r, lo`) and an `sltiu` range check before it | 0, a switch | no |
@@ -105,6 +106,27 @@ C++ frame is gone returns to the dispatcher, and running its caller on costs a d
 cycles from sceCdGetError to the override 0x1c2ba8). After every call the generated code compares ctx->pc with the
 call's return address and returns too when they differ: an override that left guest code elsewhere (0x1d2ea0 returns
 with pc 0x1fba84, boot #228128) is run on from there.
+
+**Inner calls.** The invocation that makes an inner call keeps its return address (a return stack of its own); its
+return there is a goto. Until all of them have returned, guest code does not leave to the dispatcher: an event due at
+the inner call, at any checkpoint between (a call the callee makes) or at the return is taken in place, the frames
+kept, and costs one dispatcher start (8 cycles, one checkpoint), as if the dispatcher had stopped guest code and
+resumed it where it is with nothing lost. Only a handler to run or a thread to switch to stops it: at once at a
+checkpoint or an inner return, at the call's return when the event was taken at the inner call itself. Records:
+- boot frame 2088, match1p #14757679: texmActivateTextureAsm's inner call ends at 23149141076 with the vblank (due
+  23149141075) and its handler queued: the irq is recorded there, the handler starts once the callee ran, and guest
+  code resumes at the return address 0x1fba84 (no lost frame: one dispatcher start, then the jump through t9 and its
+  own start).
+- match1p #18297743 (K1, frame 5773): a vblank start (disabled, no handler) due at 30445671620 during bspVecTestIn's
+  11-deep recursion is taken at its call to bspPlaneTest2Vec (30445671627): one dispatcher start; the levels return
+  to each other without the dispatcher, and the recursion's exit goes through it as every such exit does. Stopping
+  there instead (every level lost) costs 12 dispatcher starts too many by #18297744.
+- match1p #24702159, #31440533: a vblank end taken at bspVecTestIn's inner call itself (36133472019, 41540678403):
+  one dispatcher start.
+- An invocation the dispatcher resumed in the middle has no return stack: its returns to those addresses are plain
+  returns, each a dispatcher start (match1p #17538427: bspVecTestIn resumed at 0x201418 three levels deep after the
+  override 0x1d2ea0 stopped there: three dispatcher starts at 0x201418). A recursive call to the function's own start
+  without a thunk is an ordinary call whose frames a stop loses (match1p #17531044, _M_erase).
 
 **Which jump tables the reference resolves.** dbsTraverse's table (`lui a0; addiu v1, a0, lo`) is not resolved: each
 jump costs 16 and loses the frames (boot, 3,359 jumps: 6,719 checkpoints); uiFadeText's (`lui v0; addiu v0, v0, lo`,
@@ -172,21 +194,23 @@ and traced calls, then the PS2XREF1 record.
 | Run | Frames | Matching (ram, scratchpad, calls, threads, eeCycle) | Records matched | Time |
 |---|---|---|---|---|
 | boot | 3000 | all 3000 on every field | 4,650,558 of 4,650,558 | 13.5 s |
-| match1p | 16000 | 5,773 (frames 0-5772) on every field | 18,297,744 of 74,615,923 | 35 s |
+| match1p | 16000 | 5,786 (frames 0-5785) on every field | 18,359,663 of 74,615,923 | 36 s |
 
 ## 9. Open questions
 
-**K1. A recursion stopped or resumed in the middle (match1p frame 5773, #18297744).** bspVecTestIn (entered through
-bspVecTest, a FUNC of two instructions whose `j` goes to it) recurses about 17 levels; a vblank is due at the
-checkpoint of its call to bspPlaneTest2Vec. The log takes the event at the same cycle and checkpoint count (44) but
-records pc 0x201418, the return address of the recursive call, and the 42 checkpoints after it hold 12 dispatcher
-starts fewer than BozoEngine's: as if the stop happened at the recursion's return point and the lost levels then
-returned to each other without the dispatcher. The model that fits this record (a call to the function's own start is
-a goto for a function entered through such a thunk, its return addresses a stopping point, no stop between) breaks
-#17531044 (_M_erase, resumed mid-recursion after the port's override 0x1f8868 returned there: its lost levels do go
-through the dispatcher) and #17538427 (bspVecTestIn resumed at 0x201418 after the override 0x1d2ea0 returned there:
-two more dispatcher starts). What makes a stop at a recursion's return point differ from a resume there after an
-override is the open point.
+**K1.** (settled: section 3, inner calls) A vblank inside bspVecTestIn's recursion (match1p frame 5773, #18297744).
+
+**K4. One more dispatcher start after some events taken at an inner call (match1p frame 5786, #18359663).** Seven
+events of TMB's match1p land on bspVecTestIn's inner call at 0x201410 (a vblank due at or up to 6 cycles before its
+charge, no handler). Each record's cycle and checkpoint count equal BozoEngine's right after that inner call. Two of
+them (#24702159, #31440533, depths 12 and 5) then cost one dispatcher start, as section 3 says; five (#18359662,
+#31497573, #31540689, #31581810, #37796924: depths 3, 1, 3, 1, 7) cost exactly one more before the next record (+8
+cycles and +1 checkpoint, wherever it is placed: no record lies between). The only field that tells them apart is
+the record's pc: 0x201418 (the inner call's return address) for the first kind, 0x201660 (bspPlaneTest2Vec, the call
+the new level makes next) for the second. Neither the depth, nor how late the event is, nor the vblank's kind (start
+or end) separates them. Charging the extra start for exactly those five carries match1p to frame 9177 (#37860383, a
+separate +48 on an OP, 4 checkpoints against 1, not looked at), but that is a fit, not a rule, and is not in the code.
+Open: what state of the reference's the pc 0x201660 reflects.
 
 **K2.** (settled) texmActivateTextureAsm's return after its calls to texmFindVramSpaceAsm (#17538483) and
 bspVecTestIn's return after it recursed (#17537437, #17538428, #17538329) go through the dispatcher (section 3).

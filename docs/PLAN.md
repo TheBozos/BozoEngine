@@ -119,12 +119,13 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   implements natively (the EE kernel, section 6 there) and what it answers from the log. The reference build replays
   its own log with only guest code, its kernel and its scheduler running: every record and the PS2XREF1 fields `ram`,
   `scratchpad`, `calls`, `threads`, `eeCycle` match `boot.ref` for all 3000 frames.
-- **Status (2026-11-03): boot passes; match1p to frame 5772.** BozoEngine's own EE kernel, dispatcher and cycle model
+- **Status (2026-11-03): boot passes; match1p to frame 5785.** BozoEngine's own EE kernel, dispatcher and cycle model
   (`runtime/ee/`, `specs/kernel.md`) run TMB's generated code with every library answered from the call log
   (`bozo-run`, `tools/run/README.md`), every record checked in lockstep. **boot: all 4,650,558 records, and the
   PS2XREF1 record equal to `boot.ref` on `ram`, `scratchpad`, `calls`, `threads`, `eeCycle` for all 3000 frames**
-  (13.5 s). match1p: 18,297,744 records and frames 0-5772 equal on every field; frame 5773 stops on the EE time of
-  a recursion stopped in the middle, whose rule is open (`specs/kernel.md` section 9, K1). `draws` and `sound` wait
+  (13.5 s). match1p: 18,359,663 records and frames 0-5785 equal on every field (K1, events inside a recursion made
+  of inner calls, settled: `specs/kernel.md` section 3); frame 5786 stops one dispatcher start short after an event
+  taken at an inner call, whose rule is open (`specs/kernel.md` section 9, K4). `draws` and `sound` wait
   for the native renderer and mixer. The recompiler now emits the reference's time model and resume entries;
   phase 1's replay still matches 9,232 of 9,232 samples.
 

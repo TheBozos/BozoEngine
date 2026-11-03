@@ -82,6 +82,9 @@ struct R5900Context
     uint64_t cycles = 0;
     uint64_t cycleLimit = ~0ull;
     uint64_t checkpoints = 0; // checkpoints passed (the call log's points count them)
+    uint32_t noStop = 0;      // inner calls in progress: events are taken in place until they have returned
+    uint32_t inPlace = 0;     // the runtime is asked at an inner call (2) or at its return (1)
+    uint32_t stopDue = 0;     // an event taken at an inner call called for a stop: it waits for the return
 
     R5900Context()
     {

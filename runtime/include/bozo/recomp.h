@@ -46,6 +46,40 @@ namespace bozo
         ++ctx->checkpoints;
     }
 
+    // An inner call (kernel.md section 3): charged and counted as a call; the events due by then are taken here, in
+    // place, but a stop they call for (a handler to run, another thread to run) waits for the call's return
+    // (match1p #14757679: the irq's handler starts at the return address 0x1fba84; #24702159: an irq without a
+    // handler, taken at the inner call itself).
+    BOZO_INLINE void innerCall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
+    {
+        ++ctx->noStop;
+        ctx->cycles += cycles;
+        ++ctx->checkpoints;
+        if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
+        {
+            ctx->pc = pc;
+            ctx->inPlace = 2;
+            bozo_yield(rdram, ctx, rt);
+            ctx->inPlace = 0;
+        }
+    }
+
+    // A return to an inner call's return address (kernel.md section 3): the call has returned (ordinary checkpoints
+    // can stop guest code again once none is left), and the events due meanwhile are taken here, in place, guest
+    // code's frames kept, however many inner calls are still in progress (match1p #18297743).
+    BOZO_INLINE void innerReturn(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
+    {
+        if (ctx->noStop)
+            --ctx->noStop;
+        if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
+        {
+            ctx->pc = pc;
+            ctx->inPlace = 1;
+            bozo_yield(rdram, ctx, rt);
+            ctx->inPlace = 0;
+        }
+    }
+
     // ---- Multiply and divide (r5900.md "Multiply and divide") ----
     // HI/LO (or HI1/LO1) receive the two 32-bit halves of the result, each sign-extended to 64 bits.
     BOZO_INLINE void setHiLo(uint64_t &hi, uint64_t &lo, uint64_t product)

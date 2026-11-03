@@ -600,54 +600,63 @@ namespace bozo
         auto jumpThrough = [&]() {
             return leave("target") + " if (bozo_jump(rdram, ctx, rt, target)) return;";
         };
-        // A call (jal, bal...): charged, then the callee; execution continues at the return address's label.
         // A call (jal, bal...) from `from`: charged, then the callee. The callee returns with ctx->pc at its return
         // target; anywhere else than this call's return address (a thread that stopped inside, a callee that returned
         // through another frame), this function returns too, as the reference's code does, and the dispatcher runs the
-        // thread on from ctx->pc. A call to a label of this same function is a goto (the reference's: charged, not a
-        // stopping point; the callee's return then leaves this whole function). A recursive call to the function's
-        // own start is an ordinary call.
-        // A recursive call (to the function's own start) or a call to one of its labels marks the invocation: once it
-        // has made one, its return to anything but one of those calls' return addresses goes through the dispatcher
-        // (the reference's: the frames below it are gone; bspVecTestIn, calllog match1p #17537437, #17538428,
-        // #17538329; texmActivateTextureAsm, #17538483).
-        std::set<uint32_t> selfReturns;
-        for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
-        {
-            const Insn i = decodeAt(p.read32(a), a);
-            if ((opFlags(i.op) & LNK) && i.op != Op::JALR &&
-                (i.op == Op::JAL ? i.jumpTarget() : i.branchTarget()) == f.start)
-                selfReturns.insert(a + 8);
-        }
-        auto callAt = [&](uint32_t target, uint32_t from) {
-            if (target > f.start && target < f.end && !isExternal(target, true))
-                return std::format("recursed = true; bozo::charge(ctx, {}); goto {};", kLeaveCycles, label(target));
-            const std::string mark = target == f.start && !selfReturns.empty() ? "recursed = true; " : "";
-            return mark + leave(hex(target)) + " " + callTo(target, true) +
-                   std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
+        // thread on from ctx->pc.
+        //
+        // Inner calls (kernel.md section 3): a call to a label of this same function is a goto, charged and counted
+        // as a call, and the invocation keeps the calls it made (a return stack of its own: innerDepth); a return to
+        // one of their return addresses goes back there. Until they have returned, guest code does not leave to the
+        // dispatcher (ctx->noStop): the events due are taken in place, at the inner call itself, at its return or at
+        // any checkpoint between, and stop guest code only when they call for it (bozo::innerCall,
+        // bozo::innerReturn; texmActivateTextureAsm, boot frame 2088, match1p #14757679; bspVecTestIn, match1p
+        // #18297743). An invocation that has made none (one the dispatcher resumed in the middle) returns as any
+        // function does (#17538427). A call to the function's own start is an inner call only when the function
+        // before it is a thunk that jumps to it (bspVecTest into bspVecTestIn: one function for the reference); else
+        // it is an ordinary recursive call (_M_erase, #17531044).
+        // An invocation that has made an inner or recursive call returns to anything but those calls' return
+        // addresses through the dispatcher (the frames below it are gone: #17537437, #17538428, #17538483).
+        bool thunked = false;
+        if (f.start >= 8)
+            if (const Function *g = a_.functionContaining(f.start - 4); g && g->end == f.start && g->end - g->start == 8)
+            {
+                const Insn j = decodeAt(p.read32(g->start), g->start);
+                thunked = j.op == Op::J && j.jumpTarget() == f.start;
+            }
+        auto isInner = [&](uint32_t target) {
+            return (target > f.start || (target == f.start && thunked)) && target < f.end && !isExternal(target, true);
         };
-        // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
-        // which runs the caller from there when its C++ frame is gone (a thread resumed after stopping).
-        // The return addresses of this function's calls to its own labels: a return to one of them goes back there
-        // (the reference's), at a point where the thread can stop (no cycles charged).
-        std::set<uint32_t> innerReturns;
+        std::set<uint32_t> selfReturns, innerReturns;
         for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
         {
             const Insn i = decodeAt(p.read32(a), a);
             if (!(opFlags(i.op) & LNK) || i.op == Op::JALR)
                 continue;
             const uint32_t target = i.op == Op::JAL ? i.jumpTarget() : i.branchTarget();
-            if (target > f.start && target < f.end && !isExternal(target, true) && labels.count(a + 8))
+            if (isInner(target) && labels.count(a + 8))
                 innerReturns.insert(a + 8);
+            else if (target == f.start)
+                selfReturns.insert(a + 8);
         }
+        auto callAt = [&](uint32_t target, uint32_t from) {
+            if (isInner(target))
+                return std::format("recursed = true; ++innerDepth; bozo::innerCall(rdram, ctx, rt, {}, {}); goto {};",
+                                   kLeaveCycles, hex(target), label(target));
+            const std::string mark = target == f.start && !selfReturns.empty() ? "recursed = true; " : "";
+            return mark + leave(hex(target)) + " " + callTo(target, true) +
+                   std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
+        };
+        // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
+        // which runs the caller from there when its C++ frame is gone (a thread resumed after stopping).
         auto ret = [&](uint32_t reg, const std::string &delay) {
             std::string inner;
             if (!innerReturns.empty())
             {
-                inner = "switch (target) { ";
+                inner = "if (innerDepth) switch (target) { ";
                 for (uint32_t r : innerReturns)
-                    inner += std::format("case {}: bozo::checkpoint(rdram, ctx, rt, 0, {}); --ctx->checkpoints; goto {}; ", hex(r),
-                                         hex(r), label(r));
+                    inner += std::format("case {}: --innerDepth; bozo::innerReturn(rdram, ctx, rt, {}); goto {}; ", hex(r), hex(r),
+                                         label(r));
                 inner += "default: break; } ";
             }
             if (!selfReturns.empty() || !innerReturns.empty())
@@ -670,6 +679,8 @@ namespace bozo
         out += std::format("    ctx->pc = entry ? entry : {};\n", hex(f.start));
         if (!selfReturns.empty() || !innerReturns.empty())
             out += "    bool recursed = false;\n";
+        if (!innerReturns.empty())
+            out += "    uint32_t innerDepth = 0;\n";
         // A jr through a register we could not resolve may be a return through a copy of ra: compare with the
         // return address the function was entered with.
         if (!f.unresolvedJr.empty())
