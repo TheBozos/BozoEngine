@@ -20,14 +20,20 @@ Any C++20 compiler with `<format>` works (GCC 13+, Clang 17+). The executables a
 ## Run
 
 ```sh
-bozo-recomp <elf> <out dir> [--prefix bozo] [--max-file-bytes 1048576] [--no-comments] [--verbose]
+bozo-recomp <elf> <out dir> [--prefix bozo] [--max-file-bytes 1048576 | --files n] [--externals file]
+            [--no-comments] [--verbose]
 bozo-recomp <elf> --census
 ```
 
 - `<out dir>` receives `<prefix>_functions.h` (every function declared, and the table), `<prefix>_table.cpp` (the
   function table: every function and extra entry by address, sorted) and `<prefix>_000.cpp`, `_001.cpp`, ... (the
-  functions, split at about `--max-file-bytes` each so they compile in parallel). Old `<prefix>_*` files in the
-  directory are removed first.
+  functions, split at about `--max-file-bytes` each so they compile in parallel; with `--files n`, exactly n files of
+  about the same size, so a build system can list them in advance). A file is rewritten only when its contents change
+  (unchanged files keep their date and are not recompiled); other `<prefix>_*` files in the directory are removed.
+- `--externals file`: guest addresses the runtime answers instead of the guest code there, one per line,
+  `stub 0xADDR` (a native library or kernel function: every transfer to it goes through `bozo_call_indirect`) or
+  `override 0xADDR` (a port function: calls go through `bozo_call_indirect`, a direct jump runs the guest code).
+  See [`docs/specs/replay.md`](../docs/specs/replay.md) section 2.
 - `--census` only decodes the code and prints how many times each instruction appears, and any word it cannot
   decode (exit code 1 if there is one).
 - `--verbose` lists the extra entry points and the `jr` instructions the analysis could not resolve.

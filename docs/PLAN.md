@@ -99,6 +99,15 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   function on both, compare registers and memory).
 - Exit: TMB's whole ELF recompiles; every function the reference runs during the scripted runs gives the same
   results under the old runtime with the new generated code.
+- **Status (2026-11-03): exit check passed.** Milestone 1: `bozo-recomp` translates TMB's whole `.text` (0 unknown
+  words, 0 untranslated instructions), 139 instruction tests. Milestone 2: `bozo-replay` (`specs/replay.md`) replays
+  the reference's per-function captures (`specs/capture.md`: boot, match1p, story, 8 passes each) through
+  BozoEngine's generated code on BozoEngine's own runtime core, every out-call answered from the log: **9,232 of
+  9,232 samples, 1,518 of 1,518 functions, bit for bit** (context and every byte of RAM, scratchpad and VU0 memory;
+  6,449 samples at the first run). The fixes settled the FPU and VU0 rounding, the VU0 flags and FCR31
+  (`specs/r5900.md` section 12: Q1, Q3, Q6 for VU0, Q7, Q9, Q10, Q11 settled; Q15 partly; the rest open or not
+  reached by TMB). The 46 functions the runs call without a replayable sample (thread entry points and calls that
+  block or are interrupted) are left to phase 2's whole-run comparison.
 
 **Phase 2: runtime core (3-4 weeks).**
 - Guest memory (RAM, scratchpad), the function table and overrides, the EE kernel services TMB uses (threads,
