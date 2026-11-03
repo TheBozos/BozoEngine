@@ -849,4 +849,81 @@ module's code on a MIPS interpreter, with libsd and the IOP answered by a model 
 depends on the mixer model: the best of the variants tried (silent at the sample's end, the SPU2 envelope's release, a
 silent first tick) gives 15 of the 26 play handles to frame 5770; the first difference is the shell's slot generations
 (#17541429: one asynchronous play's slot). With the mixer's behaviour known, 989SND's rules above give every reply; the
-native driver then takes them (handler and voice pools, the tick, the counter, stealing in 989SND's order).
+native driver then takes them (handler and voice pools, the tick, the counter, stealing in 989SND's order). The
+mixer's behaviour is now 15.14 (the mixer itself moved here), the IOP clock under it `iop-timing.md`.
+
+### 15.14 The mixer under libsd (`bozo/audio/`)
+
+The reference's mixer is the team's own code on the fork, so it moved here (PLAN.md section 7) instead of being
+reconstructed: `runtime/audio/` (`bozo_audio`: `bozo/audio/mixer.h`, the mixer; `bozo/audio/libsd.h`, libsd's exports on
+it, through a `LibsdHost` giving the IOP clock, its RAM and interrupt calls). `bozo-audio-tests` checks the rules below
+and a fixed scenario (`tests/audio/mixer_scenario.h`) whose output samples and ENVX, ENDX and NAX answers are the fork
+mixer's, digest for digest, free-running and clocked. It is not wired into `bozo-run` yet. What 989SND sees of it, which
+15.13 left open; the IOP clock it runs on is `iop-timing.md`.
+
+**Clock and granularity.**
+
+- One output sample per **768 IOP cycles** (48 kHz at 36.864 MHz; 6,144 EE cycles). Sample n is the one made when the
+  IOP clock reaches 768 n: the grid is the IOP clock's own, from its last reset.
+- In the reference's deterministic mode the mixer is brought up to sample floor(t / 768) at the start of every libsd
+  call, before the call acts or answers (t: the IOP clock at the call), and at the end of each IOP run
+  (`iop-timing.md` section 3). A read at clock t sees the state after sample floor(t / 768); a setting or KeyOn made at
+  t acts from sample floor(t / 768) + 1. Nothing else moves the mixer, so what a driver reads depends only on IOP time.
+- One bring-up mixes at most 16,384 samples (0.34 s); a longer gap advances the sample count without mixing the rest
+  (voices do not move for them). The first bring-up after the clock starts, or after it goes backwards (an IOP reset),
+  only sets the sample count.
+- Per sample, voice by voice: both volume sweeps step (every voice, playing or not); an off voice stops there; else the
+  output is interpolated at the voice's position, the envelope steps once, the output is scaled by the new level, the
+  position advances by the pitch (capped at 0x3FFF; 0x1000 is one source sample per output sample), and each 28-sample
+  block crossed is left (its end flags acted on, below) and the next decoded. The reverb steps every other sample.
+
+**The envelope step** (rate r, 0-127; shift s = r >> 2; step 7 - (r & 3), or -(8 - (r & 3)) decreasing): every
+2^max(0, s - 11) samples the level moves by step << max(0, 11 - s), clamped to 0..0x7FFF (a counter gains
+0x8000 >> (s - 11) a sample and the level moves when it reaches 0x8000, the counter then back to 0; s >= 27: never).
+Exponential and decreasing: the move is (step x level) >> 15, rounded down (so at least -1). Exponential and increasing,
+from level 0x6000: s < 10 a quarter of the move, s = 10 half the move at half the counter's speed, s >= 11 a quarter
+of the counter's speed. The phases: **attack** (ADSR1 bits 8-14, exponential bit 15) until the level reaches 0x7FFF;
+**decay** (rate (ADSR1 bits 4-7) x 4, exponential, decreasing) until the level is at most min(((ADSR1 & 0xF) + 1) x
+0x800, 0x7FFF); **sustain** (ADSR2 bits 6-12, decreasing bit 14, exponential bit 15) until KeyOff; **release** (rate
+(ADSR2 & 0x1F) x 4, decreasing, exponential bit 5) until the level is 0, then the voice is off. Each phase starts with
+the counter at 0. ENVX is the level.
+
+**ENVX at the first tick after KeyOn.** KeyOn puts the voice at its start address (SSA) with level 0 in attack,
+decodes its first block and clears its ENDX bit; ENVX read at the KeyOn's own clock is 0. After N samples of attack the
+level is non-zero from the first sample when s <= 11 (rate < 0x30: N x (7 - (r & 3)) << (11 - s) until it saturates),
+and stays 0 until sample 2^(s - 11) when s > 11. 989SND sends KON at the end of a tick and reads ENVX at the next one,
+N = 200 samples later (153,600 / 768; 199-201 depending on where in their ticks the two calls fall: `iop-timing.md`
+section 6). So ENVX is **already non-zero at the first tick** for every attack rate below 0x4C; from 0x4C (s = 19, 256
+samples before the first step) it is still 0 there, and 989SND counts that tick as silent (15.12). The test
+`testAttack`: rate 0x28 gives 14 after one sample and 2,800 after 200; rate 0x50 gives 0 at 200 and 511 samples, 7 at
+512.
+
+**A sample's end without repeat.** When the position leaves a block whose flags have bit 0 (end) set, the voice's ENDX
+bit is set and the position goes to the loop address; without bit 1 (repeat) the voice is off **at once**: level 0, so
+ENVX reads 0 from that sample on, with no release (the sample output in that step still had the old level). With
+repeat it plays on from the loop address, envelope unchanged. The loop address is LSAX when the driver set it after the
+KeyOn, else the last block with flag bit 2 (loop start) decoded since the KeyOn, else what it was (an LSAX set before the
+KeyOn holds until a loop-start block replaces it). NAX shows the loop address after an end; an off voice's position no
+longer moves. ENDX bits stay set until that voice's KeyOn, or a write to ENDX (any value) clears the core's 24. The same
+happens during a release: the voice is off at the end. (`testEnd`: two blocks at pitch 0x1000, ENDX and ENVX 0 at the
+56th sample, not the 55th.)
+
+**The release after KeyOff.** KeyOff of a voice that is not off starts its release from its current level (a KeyOff of
+an off voice does nothing; the voice keeps playing its samples meanwhile). Linear (ADSR2 bit 5 clear): the level falls
+by 8 << max(0, 11 - s) every 2^max(0, s - 11) samples, s = ADSR2 & 0x1F, so from level L it is off after
+ceil(L / (8 << max(0, 11 - s))) x 2^max(0, s - 11) samples. TMB's 0x5fcd (s = 13) from 0x7FFF: 4,096 steps of 8 every
+4 samples, **16,384 samples (0.3413 s, 81.92 ticks)**; 0x5fce (s = 14): 32,768. Exponential: each step is the linear
+step x level >> 15, at least 1, so it slows as it falls. A release never sets ENDX; while the level is not 0, ENVX is
+not 0 and 989SND keeps the voice (15.12). (`testRelease`: 7 after 16,383 samples, 0 after 16,384.)
+
+**Volumes.** A voice, master or effect volume with bit 15 clear is fixed (level = value << 1); with bit 15 a sweep
+(bit 14 exponential, 13 decreasing, 12 negative phase, rate bits 0-6) stepping each sample by the envelope step above.
+VOLXL/VOLXR (0x600, 0x700) answer the setting & 0x7FFF, not the swept level. The sound data input's volume is BVOL;
+AVOL is kept and answered as set, without effect.
+
+**libsd's other answers.** sceSdVoiceTrans copies at once and returns the size (mode 2: 0); the channel's transfer
+handler (or callback) runs as an interrupt handler 2,000 IOP cycles after the IOP takes the queued call;
+sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffer as the input (256 left samples then
+256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
+address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
+8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
