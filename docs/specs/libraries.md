@@ -873,7 +873,7 @@ ring and its end) do not run yet. The 141 movie positions left are the same G qu
 
 - *The oracle* (scratch, never committed: it runs 989SND.IRX's code): `D:\BozoScratch\irx\`.
   - `iop.py`: the MIPS I interpreter and IRX loader.
-  - `drv.py`: the IOP imports in Python. Through `D:\BozoScratchzaudio.dll` (built from `bzaudio.cpp` there, linking `build/runtime/libbozo_audio.a`, clocked mode), libsd goes to `bozo_audio`, except `sceSdNote2Pitch`, which is `n2p.py` from LIBSD.IRX's tables. It also has the heap, the threads' stacks (0x840 each after the module start), DMA-end handlers, `snd_StreamSafeCdRead`'s disc read, and the sreg and SIF stubs.
+  - `drv.py`: the IOP imports in Python. Through `D:\BozoScratch\bzaudio.dll` (built from `bzaudio.cpp` there, linking `build/runtime/libbozo_audio.a`, clocked mode), libsd goes to `bozo_audio`, except `sceSdNote2Pitch`, which is `n2p.py` from LIBSD.IRX's tables. It also has the heap, the threads' stacks (0x840 each after the module start), DMA-end handlers, `snd_StreamSafeCdRead`'s disc read, and the sreg and SIF stubs.
   - `run.py`: replays a command trace with the IOP clock of this section and compares every result.
   - The IRX modules are copies from the disc image (`/MOD/989SND.IRX`, `/MOD/LIBSD.IRX`): the user's data, never committed.
 - *The command traces* (`m1.snd`, `boot.snd` there):
