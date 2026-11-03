@@ -23,6 +23,7 @@ namespace bozo::libs
         uint8_t priority = 0, volume = 0, centerNote = 0, centerFine = 0;
         int16_t pan = 0;
         uint8_t mapLow = 0, mapHigh = 0;
+        uint8_t bendDown = 0, bendUp = 0; // the pitch bend's range, semitones
         uint16_t adsr1 = 0, adsr2 = 0, flags = 0;
         uint32_t vag = 0;        // the sample's offset in the bank's sample data (SPU ADPCM)
         uint32_t vagBlocks = 0;  // its 16-byte ADPCM blocks, to the one flagged as its end

@@ -30,7 +30,8 @@ namespace
                      "usage: bozo-run <log.clg> [--ref <run.ref>] [--out <out.ref>] [--frames n] [--elf <elf>]\n"
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
                      "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io,mpeg,sif,snd|all|none]\n"
-                     "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n");
+                     "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n"
+                     "                [--snd-log-replies on|off]\n");
         return 2;
     }
 
@@ -81,6 +82,13 @@ int main(int argc, char **argv)
             opt.quiet = true;
         else if (a == "--pinned")
             opt.pinned = true;
+        else if (a == "--snd-log-replies")
+        {
+            const std::string v = value();
+            if (v != "on" && v != "off")
+                return usage();
+            opt.sndLogReplies = v == "on";
+        }
         else if (a == "--pad-script")
         {
             // [port=]file: port 1 or 2 (1 when omitted)

@@ -586,7 +586,7 @@ namespace bozo::run
                 }
             }
         }
-        if (f.logReply && opt_.pinned)
+        if (f.logReply && opt_.pinned && opt_.sndLogReplies)
         {
             // The reference's reply words, for what its IOP time decided (libraries.md section 15.5): the log's runs,
             // else the memory as it was (the reference's call left those bytes as they were).

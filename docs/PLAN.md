@@ -159,6 +159,11 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
   phase 4's mixer (`specs/libraries.md` sections 14, 15). Boot and match1p still match every frame and record, 0
   divergences; 119,225 of match1p's 122,519 989SND replies are native, the other 3,294 (one-shot sounds' lifetimes and
   the handler slots they free) are the reference's IOP time, taken from the log in a pinned run.
+- **Sound timing (2026-11-03, partial).** The lifetime model (a one-shot's longest tone, its sample at its pitch and
+  bend, plus 1.166 s) gives every natural sound end of match1p; the handler pools' rules (lowest slot, generations,
+  asynchronous plays taking slots) are settled. Voice stealing, the asynchronous plays' slots and four failed plays
+  are not: `--snd-log-replies off` matches boot fully native but not match1p (`specs/libraries.md` 15.5, 15.11), so
+  pinned runs keep taking those 3,294 decisions from the log by default.
 
 **Phase 4: move TMB (1-2 weeks).**
 - TMB_Recomp builds against BozoEngine: its `runtime/` adapted (mechanical), the build kit and launcher pointed at

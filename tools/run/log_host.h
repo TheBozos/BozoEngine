@@ -32,6 +32,9 @@ namespace bozo::run
         // The native libraries answering their calls instead of the log (libs::Library bits), each call checked
         // against its record: result registers and every byte of memory written.
         uint32_t native = libs::kAllLibraries;
+        // Pinned mode: whether the 989SND driver takes the decisions the reference's IOP time made from the log's replies
+        // (libraries.md section 15.5); off, it answers them from its own models too.
+        bool sndLogReplies = true;
     };
 
     // Per library: calls answered natively, and the native state checked against calls answered from the log.

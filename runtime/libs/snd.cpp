@@ -89,6 +89,8 @@ namespace bozo::libs
                         tone.pan = static_cast<int16_t>(le16(t + 4));
                         tone.mapLow = t[6];
                         tone.mapHigh = t[7];
+                        tone.bendDown = t[8];
+                        tone.bendUp = t[9];
                         tone.adsr1 = le16(t + 10);
                         tone.adsr2 = le16(t + 12);
                         tone.flags = le16(t + 14);
@@ -115,17 +117,27 @@ namespace bozo::libs
 
         // The native estimate of a one-shot sound's life (free mode): its longest tone's sample at the note's pitch
         // (48 kHz at the tone's centre note).
-        double lifetime(const SndBank &b, const SndSound &s)
+        // A sound's native lifetime estimate (libraries.md section 15.5): the longest of its tones in the note's key
+        // range, its sample (ADPCM blocks to the end flag, 28 samples each) at 48 kHz shifted by the note's distance
+        // from the tone's centre note and the play's pitch bend (the tone's bend range, bytes 8-9, in semitones), then
+        // 1.166 s more (settled on the two natural ends match1p shows: sound 3 of bank 0xe8310 started at EE cycles
+        // 39,259,868,387 and 46,869,503,443, both ended 2.9002-2.9169 s later). -1: it plays until stopped (a looping tone).
+        double lifetime(const SndBank &b, const SndSound &s, int32_t bend)
         {
-            if (s.type != 1 || s.program >= b.programs.size())
+            if ((s.type != 1 && s.type != 2) || s.program >= b.programs.size())
                 return -1;
             double longest = 0;
             for (const SndTone &t : b.programs[s.program])
             {
-                const double rate = 48000.0 * std::pow(2.0, (int(s.note) - int(t.centerNote)) / 12.0);
-                longest = std::max(longest, t.vagBlocks * 28.0 / rate);
+                if (s.note < t.mapLow || s.note > t.mapHigh)
+                    continue;
+                if (t.loops)
+                    return -1;
+                const double semis = (int(t.centerNote) - int(s.note)) -
+                                     (bend >= 0 ? bend * t.bendUp : bend * t.bendDown) / 32767.0;
+                longest = std::max(longest, t.vagBlocks * 28.0 / 48000.0 * std::pow(2.0, semis / 12.0));
             }
-            return longest;
+            return longest + 1.166;
         }
 
         // Which commands return a result (the others leave the driver's last result in their reply slot).
@@ -386,7 +398,7 @@ namespace bozo::libs
                 }
                 if (handle && s)
                 {
-                    handles[handle] = Handle{handle, a[0], a[1], s->type, false, false, l.now(g), lifetime(b->second, *s)};
+                    handles[handle] = Handle{handle, a[0], a[1], s->type, false, false, l.now(g), lifetime(b->second, *s, static_cast<int32_t>(a[5]))};
                     occupy(handle);
                 }
             }
@@ -398,7 +410,7 @@ namespace bozo::libs
                     const uint32_t model = modelHandle(l, g, s->type == 4 ? 0x81u : 0x80u);
                     if (model)
                     {
-                        unseen_[model] = Handle{model, a[0], a[1], s->type, false, false, l.now(g), lifetime(b->second, *s)};
+                        unseen_[model] = Handle{model, a[0], a[1], s->type, false, false, l.now(g), lifetime(b->second, *s, static_cast<int32_t>(a[5]))};
                         occupy(model);
                     }
                 }
@@ -494,6 +506,7 @@ namespace bozo::libs
             return 0;
         }
     }
+
 
     void SndDriver::call(Libraries &l, Guest &g, uint32_t fno, const std::vector<uint32_t> &request, uint32_t recv, uint32_t rsize,
                          std::vector<uint32_t> &reply, const LogWord *log, bool follow)

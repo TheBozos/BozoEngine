@@ -701,9 +701,38 @@ Whether a sound still plays (0x19, 0x21) is decided:
   ends: it is pinned too (the native model's handle is compared with it and counted).
 
 Pinned decisions in match1p: 776 play handles, 1,284 SoundIsStillPlaying and 1,232 SetSoundParams results, 2 stream
-handles (3,294 of 122,519 replies; boot: 1, the shell music's handle, which the model gives). The native lifetime
-estimate (a one-shot's longest tone at 48 kHz at its centre note, shifted by the sound's note) disagrees with 570 of
-the 2,516 pinned lifetimes, and the handle model gives 302 of the 778 pinned handles: free mode needs better (15.8).
+handles (3,294 of 122,519 replies; boot: 1, the shell music's handle, which the model gives). `bozo-run
+--snd-log-replies off` makes the driver answer these from its models as well (15.11).
+
+**The lifetime model** (the native estimate, used in free mode and compared in pinned runs): a one-shot sound (types 1
+and 2, no tone looping) lives as long as its longest tone in the note's key range (tone bytes 6-7), that tone's sample
+(ADPCM blocks to the end flag, 28 samples each) at 48 kHz shifted by the distance from the tone's centre note (byte 2)
+to the sound's note and by the play's pitch bend (argument 5, over the tone's bend range: bytes 8 and 9, semitones
+down and up), **plus 1.166 s**. The constant is settled on the only natural ends match1p shows: two handles of sound 3
+of bank 0xe8310 (no bend; tones of 941 blocks at centre notes 78 and 79, note 59: 1.743 s of sample), started at EE
+cycles 39,259,868,387 and 46,869,503,443, alive 2.9002 s later and ended 2.9169 s later: the constant lies in
+(1.1575, 1.1742]. It is not the tones' ADSR release (0x5fcd: linear rate 13, 0.341 s on the SPU2's envelope; 0x5fce
+in other banks would double it, which the shell's plays exclude), nor a pitch factor (sound 0x1d of bank 0xe5284 is
+still alive at 0.934 s where a factor fitted on 0xe8310's would end it). With it, the estimate gives every liveness
+answer of match1p's pinned one-shots but 6 (it was wrong on 570 with the sample alone).
+
+**The 6 it misses** are ends earlier than the model's: handles of the same sound (0xe8310/3) that ended 0.017 to 1.6 s
+after they started, each right after other sounds started (ended by match1p frames 6841, 9976, 10740, 11426, 12250
+and 13083; the first dead answers at EE cycles 35,696,201,907, 51,106,909,307, 54,862,243,331, 58,234,405,851,
+62,284,900,179 and 66,379,689,835): 989SND giving their voices to newer sounds (voice stealing by priority: the tones'
+byte 0, 0x58 here against 0x63-0x64 for most others).
+
+**Handler slots.** Settled: one pool per kind, the generation counts a slot's uses and starts at 2, and after
+StopAllSounds the next plays take slots 0, 1, 2... in order (match1p #17536092, then the level's first plays: 0x8000000d,
+0x80010007, 0x80020004, 0x80030003, 0x80040003); a stopped handle's slot is the next one given when no lower slot is
+free (#18051947 stops 0x800a0002, the next play gets 0x800a0003). Asynchronous plays (0x12) take slots too: the
+generations of the slots the game sees skip 619 uses between two of its handles, against 763 asynchronous plays. Which
+slot a play gets then depends on which of those sounds (never queried, their handles never seen) have ended: the
+lowest-free model with the lifetime model gives 372 of the 778 pinned handles (302 with the sample alone). Two things
+are not settled (15.11): the shell's generations at the level start need one of its 21 plays not to take a slot (the
+model gives slot 1 generation 6 where the reference gives 7: #17541429, the first divergence of `--snd-log-replies
+off`), and the asynchronous plays' lifetimes in the first seconds of the level (frames 5612-5722) do not fit the
+lifetime model for any pitch scale or constant, so either the allocation rule or their lifetimes differ from it.
 
 Never time-dependent, and native: the empty sound (match1p: sound 7 of bank 0xe8694, 1,161 plays, every one 0).
 
@@ -734,9 +763,9 @@ needed later. `sceSifCallRpc` answered from the log (`--native` without `sif`) i
 In both logs every reply lands inside its `sceSifCallRpc` (no IOP change outside a call: `calllog.md` section 7), so the
 RPC never waits. What the reference's IOP time decided, which free mode needs natively:
 
-- **sound lifetimes**: a one-shot ends when its voices do (its samples' length, the pitch history through 0x20 and
-  0x21, the ADSR release) at 989SND's tick; free mode estimates it today (15.5) and gets 23% of match1p's wrong;
-- **handler slots**, which follow from those ends (the model gives 39% of match1p's play handles);
+- **sound lifetimes**: the lifetime model (15.5) gives every natural end; voice stealing is not modelled (6 answers);
+- **handler slots**, which follow from every sound's end, the asynchronous plays' included (the model gives 48% of
+  match1p's play handles);
 - **voice allocation**: a non-empty sound that could not play (0x11 returning 0: match1p #21696667, #32014550,
   #51184025, #51299223): 989SND's voice priorities and stealing, not modelled;
 - **the movie sound's position** (0x40) and the streams' ends.
@@ -754,6 +783,25 @@ A free run answers these from the models (a different reply then ends a log-chec
 
 ### 15.10 Open
 
-- Sound lifetimes, handler slots and voice allocation natively (15.8): match1p's 3,294 pinned replies.
+- Voice allocation and stealing, the handler slots that follow from them, and the four failed plays (15.5, 15.11):
+  match1p's 3,294 pinned replies.
 - The results of the commands TMB does not send (15.3); an RPC end function (14.1).
 - 0x2a's IOP memory (streams x bytes + 0x6200) and the movie buffer's 0x6010 rest on TMB's single sizes.
+
+### 15.11 Without the log's replies (`--snd-log-replies off`)
+
+Every reply is the driver's own: boot matches every frame and record (3,592 replies, the shell music's handle from the
+handle model). match1p does not: its first divergence is the level's second play (#17541429, slot 1 generation 6 for
+the reference's 7, 15.5), and since a wrong handle leaves the driver's state apart from the game's, 82,841 replies
+differ (the log's effect replacing each, every frame still matches). What would close it, from the records:
+
+- the voice model: 989SND's voice count and its stealing rule (by tone priority, then age), the voices the MIDI music
+  and the VAG streams hold, so that the 6 early ends and the 4 failed plays come out;
+- the asynchronous plays' lifetimes and the allocation rule tested on them (15.5), which the generations of the game's
+  handles constrain (619 hidden uses);
+- the shell's 21 plays against its slot generations (one play without a slot).
+
+In the reference, 989SND runs as recompiled IOP code whose voice search is native code of the fork, over the fork's
+native libsd mixer (TMB_Recomp's `docs/RECOMP_NOTES.md`, "IOP modules recompiled" and "native libsd"): its exact rules
+are that code's, outside the clean room; they can only be inferred from the records, which show voice behaviour only
+through the replies above.
