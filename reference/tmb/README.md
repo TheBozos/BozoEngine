@@ -67,12 +67,14 @@ The whole run as BozoEngine's phase 2 needs it (`docs/specs/calllog.md`, format 
 `tools/capture/calllog_read.py` lists and checks them): every out-call in order with its point and effects, and every
 change made outside guest code (the dispatcher's, the libraries' continuations', the IOP's) with the point it was made,
 the thread switches, handlers and kernel operations. Recorded 2026-11-03 on TMB_Recomp `harness/reference` (c83a924)
-with the fork's `harness/calllog` (6dc3de9; code generated with `capture_hooks`), deterministic mode, fresh user
+with the fork's `harness/calllog` (recorded with 6dc3de9, replayed with 4e5ef52; code generated with
+`capture_hooks`), deterministic mode, fresh user
 folder. They hold game memory, so they are kept outside the repository, in `D:\BozoCaptures\tmb\calllog\`.
 
 | Run | Script | Frames | Records | Calls | Size | SHA-256 |
 |---|---|---|---|---|---|---|
 | `boot` | `ref_boot.env` | 3000 | 4,650,558 | 2,432,936 | 194 MB | `b7745379...b6ab1f3aea` |
+| `match1p` | `det1p.env` | 16000 | 74,615,923 | 63,675,806 | 3.46 GB | `3c0baeb8...73698f11` |
 
 Checked on the reference build (`calllog.md` section 9): a second recording is the same file (but for the run name);
 the strict recording is the same; the substitution check matches all 4,650,558 records with every window's effects
@@ -80,4 +82,7 @@ taken from the log, its reference record identical to `boot.ref` on every field;
 EE kernel's answered from the log, the IOP stopped, only guest code, the kernel and the scheduler running) makes the
 same 4,650,556 records as the log (the last two: the frame-3000 call the run ends inside) and its reference record
 equals `boot.ref` on `ram`, `scratchpad`, `calls`, `threads` and `eeCycle` for all 3000 frames (`draws` and `sound`
-are not fed in a replay). In the boot run the IOP never changes EE state outside a call.
+are not fed in a replay). match1p (recorded once, 79 min at about 3.3 frames a second: each of its ~4,000 out-calls a
+frame compares the written pages): its reference record equals `match1p.ref` on every field, and its full replay
+makes the same 74,615,921 records with the reference record equal to `match1p.ref` on the same fields for all 16000
+frames. In both runs the IOP never changes EE state outside a call.

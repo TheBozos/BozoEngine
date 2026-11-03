@@ -329,6 +329,12 @@ their `i` and `_` forms), alarms (`SetAlarm`, `ReleaseAlarm`), `SetVSyncFlag`, `
 are what to check BozoEngine's results against (context words, memory, and the operations they made, nested at depth
 0 under origin 1).
 
+One kernel decision depends on hardware state the log answers: `EnableDmac` (cause enable, operation 34, on a DMAC
+channel) raises an interrupt that arrived while the channel was masked only if the channel's `D_STAT` bit is still set,
+and `D_STAT` is written by the game's hardware stores, which are answered from the log. A replaying kernel takes that
+decision from the log: the interrupt is raised exactly when an irq operation for that channel follows (depth 1) inside
+the kernel call's records.
+
 **Answered from the log**: every other stub (the C library and libm, SIF and RPC, `sceSifSetDma` and the SIF
 registers, the IOP heap and module loading, the pad, the memory card, CD and CD streaming, libmpeg and the IPU, the GS
 library), every port override, every VU0 microprogram (kind 4), every hardware register load and store (kinds 5 and
@@ -351,7 +357,7 @@ the audio device only drains a queue; the disc's read-ahead worker fills host bu
   before the guest code they precede; their point is the cycle at which the dispatcher took control (a checkpoint).
 - **Out-calls** happen where guest code makes them.
 
-TMB's boot run: the IOP never changes EE state outside an out-call (no MEM record of source 2 or 3, no OP of origin
+TMB's boot and match1p runs: the IOP never changes EE state outside an out-call (no MEM record of source 2 or 3, no OP of origin
 2): every SIF/RPC reply lands inside `sceSifCallRpc` or another call. The changes outside calls are the vblank's
 (interrupts 2 and 3 raised, their handlers stacked; the vsync flag), the CD library's and libmpeg's continuations (24
 MEM records, 12.9 MB: sectors and pictures copied into the game's buffers as its threads resume) and libmpeg's
@@ -424,6 +430,7 @@ codes; runs stay in the flat space; context masks match their counts; the END ch
 | Run | Frames | Records | Calls | Size |
 |---|---|---|---|---|
 | `boot` (`ref_boot.env`) | 3000 | 4,650,558 | 2,432,936 | 194 MB (203,677,655 bytes) |
+| `match1p` (`det1p.env`) | 16000 | 74,615,923 | 63,675,806 | 3.46 GB (3,714,443,336 bytes) |
 
 Boot's calls: 743,918 to 25 overrides (708,818 of them libmpeg's `switchThread` replacement, which rotates the ready
 queue), 374,583 VU0 microprograms (3), 500,969 hardware stores and 354,129 loads (DMA channel and GS registers),
