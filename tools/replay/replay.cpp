@@ -242,6 +242,7 @@ namespace bozo::replay
         if (size < 4)
             got[0] &= (1u << (8 * size)) - 1u;
         checkArgs(o, got, static_cast<int>(words), "io-store");
+        trackDma(address, got[0]);
         apply(o, ctx);
     }
 
@@ -292,10 +293,32 @@ namespace bozo::replay
     {
         result_->notes.push_back(std::format("mtc0 {} = 0x{:x} at 0x{:x} ignored", reg, value, ctx->pc));
     }
-    bool Replayer::cop0Condition(R5900Context *ctx, Runtime *)
+    // CPCOND0 (bc0f / bc0t) is not an out-call: the capture does not log it. On the console it is set when every DMA
+    // channel enabled in D_PCR's CPC bits has its D_STAT bit set. The reference answers it from its DMA state; the
+    // replay rebuilds that from the sample's own register stores (Q15): a channel started (a CHCR store with STR set)
+    // counts as finished at once, a D_STAT store clears what it acknowledges, nothing is finished at entry.
+    void Replayer::trackDma(uint32_t address, uint32_t value)
     {
-        result_->notes.push_back(std::format("bc0 condition at 0x{:x} read as true", ctx->pc));
-        return true;
+        static const uint32_t chcr[10] = {0x10008000u, 0x10009000u, 0x1000A000u, 0x1000B000u, 0x1000B400u,
+                                          0x1000C000u, 0x1000C400u, 0x1000C800u, 0x1000D000u, 0x1000D400u};
+        const uint32_t a = address & 0x1FFFFFFFu;
+        if (a == 0x1000E010u) // D_STAT: writing 1 clears a channel's interrupt status
+            dmaDone_ &= ~(value & 0x3FFu);
+        else if (a == 0x1000E020u) // D_PCR: the channels CPCOND0 watches
+        {
+            dmaPcr_ = value & 0x3FFu;
+            dmaPcrKnown_ = true;
+        }
+        else
+            for (uint32_t c = 0; c < 10; ++c)
+                if (a == chcr[c] && (value & 0x100u))
+                    dmaDone_ |= 1u << c;
+    }
+    bool Replayer::cop0Condition(R5900Context *, Runtime *)
+    {
+        if (dmaPcrKnown_)
+            return dmaPcr_ != 0 && (dmaDone_ & dmaPcr_) == dmaPcr_;
+        return dmaDone_ != 0;
     }
     uint32_t Replayer::vu0ControlRead(R5900Context *ctx, Runtime *, uint32_t reg)
     {
@@ -314,6 +337,9 @@ namespace bozo::replay
         result_ = &res;
         next_ = 0;
         trace_ = trace;
+        dmaDone_ = 0;
+        dmaPcr_ = 0;
+        dmaPcrKnown_ = false;
 
         R5900Context ctx;
         for (uint32_t w = 0; w < kContextWords; ++w)

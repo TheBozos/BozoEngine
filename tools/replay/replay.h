@@ -106,5 +106,9 @@ namespace bozo::replay
         SampleResult *result_ = nullptr;
         size_t next_ = 0;
         bool trace_ = false;
+        // The DMA status CPCOND0 is answered from (see cop0Condition).
+        void trackDma(uint32_t address, uint32_t value);
+        uint32_t dmaDone_ = 0, dmaPcr_ = 0;
+        bool dmaPcrKnown_ = false;
     };
 }

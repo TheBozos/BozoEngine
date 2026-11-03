@@ -35,3 +35,11 @@ add_test(NAME instructions COMMAND bozo-instr-tests)
 if(BOZO_TEST_ELF)
   add_test(NAME elf_decodes COMMAND bozo-recomp ${BOZO_TEST_ELF} --census)
 endif()
+
+# The runtime core (runtime/): guest memory views, the function table and overrides, COP0 Status.
+add_executable(bozo-runtime-tests runtime/runtime_tests.cpp)
+target_link_libraries(bozo-runtime-tests PRIVATE bozo_runtime_core)
+if(MINGW)
+  target_link_options(bozo-runtime-tests PRIVATE -static)
+endif()
+add_test(NAME runtime COMMAND bozo-runtime-tests)
