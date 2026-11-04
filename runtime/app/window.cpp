@@ -363,6 +363,9 @@ namespace bozo::app
                     runFirstFrames = game.framesEnded();
                 }
             }
+            // The frames ended before this present: its picture is at least the last of them (a frame publishes its
+            // picture before it counts as ended). The captures by frame use this count, read before the present.
+            const uint64_t framesBefore = game.framesEnded();
             int pw = 0, ph = 0;
             SDL_GetWindowSizeInPixels(window, &pw, &ph);
             pw = std::max(pw, 1);
@@ -372,13 +375,15 @@ namespace bozo::app
             g.Disable(render::gl::kScissorTest);
             g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             g.Clear(render::gl::kColorBufferBit | render::gl::kDepthBufferBit);
-            // The picture letterboxed to its shape.
+            // The picture letterboxed to its shape, at the exact (fractional) place and size, as the fork's window put it:
+            // in a 640x448 window its 4:3 picture covers columns 21-618 (x 21.33, width 597.33), not 22-618 as a rounded
+            // one did (milestone M5's pixel comparison).
             float rw = static_cast<float>(pw), rh = static_cast<float>(ph);
             if (rw > rh * options.aspect)
-                rw = std::round(rh * options.aspect);
+                rw = rh * options.aspect;
             else
-                rh = std::round(rw / options.aspect);
-            renderer.present(std::round((static_cast<float>(pw) - rw) * 0.5f), std::round((static_cast<float>(ph) - rh) * 0.5f), rw, rh);
+                rh = rw / options.aspect;
+            renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
             ++presents;
             ++ratesPresents;
 
@@ -387,7 +392,7 @@ namespace bozo::app
             const unsigned long long ms = static_cast<unsigned long long>(elapsed * 1000.0);
             // The game's picture alone (before the panel).
             bool captureFrame = false;
-            while (nextCapture < captureFrames.size() && frames >= captureFrames[nextCapture])
+            while (nextCapture < captureFrames.size() && framesBefore >= captureFrames[nextCapture])
             {
                 captureFrame = true;
                 ++nextCapture;
@@ -395,8 +400,10 @@ namespace bozo::app
             if (captureFrame)
             {
                 char name[64];
-                std::snprintf(name, sizeof(name), "frame_%06llu.png", static_cast<unsigned long long>(frames));
+                std::snprintf(name, sizeof(name), "frame_%06llu.png", static_cast<unsigned long long>(framesBefore));
                 writer.capture(captureDir + "/" + name, pw, ph);
+                if (options.onCaptured)
+                    options.onCaptured(framesBefore);
             }
             if (interval > 0.0 && seconds(lastInterval, now) >= interval)
             {

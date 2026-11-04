@@ -20,11 +20,27 @@
 #include "bozo/render/renderer.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+namespace
+{
+    // Material::sampleTarget (TMB's heat haze: the frame drawn so far, sampled): off by default, as the fork's native
+    // renderer drew those batches (untextured, their vertex colours and blend: it never sampled the target), so the
+    // picture is the fork's (milestone M5: every match explosion differed). BOZO_HEAT_HAZE=1 samples the target.
+    bool sampleTargetEnabled()
+    {
+        static const bool on = [] {
+            const char *v = std::getenv("BOZO_HEAT_HAZE");
+            return v && *v == '1';
+        }();
+        return on;
+    }
+}
 
 namespace bozo::render
 {
@@ -1241,7 +1257,7 @@ void main()
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
-            if (m.sampleTarget)
+            if (m.sampleTarget && sampleTargetEnabled())
             {
                 // The frame drawn so far, as the texture: u, v in its GS pixels from the screen's top left.
                 if (gpu.targetCopy == 0 || gpu.copyWidth != w || gpu.copyHeight != h)

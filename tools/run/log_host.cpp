@@ -1,5 +1,6 @@
 // bozo-run's log-backed host. See log_host.h and docs/specs/calllog.md section 8.
 #include "log_host.h"
+#include "run_main.h"
 
 #include "bozo/app/determinism.h"
 #include "bozo/hash.h"
@@ -9,6 +10,7 @@
 #include <array>
 #include <cstring>
 #include <format>
+#include <functional>
 
 #include "bozo/audio/wav.h"
 
@@ -16,6 +18,17 @@
 
 namespace bozo::run
 {
+    namespace
+    {
+        std::function<void(uint64_t)> &frameHook()
+        {
+            static std::function<void(uint64_t)> s_hook;
+            return s_hook;
+        }
+    }
+
+    void setFrameHook(std::function<void(uint64_t framesEnded)> hook) { frameHook() = std::move(hook); }
+
     namespace
     {
         // FNV-1a 64 of `samples` silent stereo samples (the sound record of a silent frame).
@@ -1869,6 +1882,8 @@ namespace bozo::run
         ++frame_;
         libs_.framesEnded = frame_;
         det::frameCounter().store(frame_, std::memory_order_relaxed);
+        if (frameHook())
+            frameHook()(frame_);
         const uint32_t limit = opt_.frames ? opt_.frames : log_.header().frameLimit;
         if (limit && frame_ >= limit)
         {

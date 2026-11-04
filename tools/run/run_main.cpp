@@ -405,8 +405,8 @@ int bozo::run::main(int argc, char **argv)
         std::printf("\n");
     }
     if (!refFrames.empty() && opt.overrides)
-        std::printf("draws (reported, not checked): %u/%u frames match the reference's draw lists, %u/%u their batch and vertex "
-                    "counts; first differing frame %lld\n",
+        std::printf("draws (checked on every frame but the log's last): %u/%u frames match the reference's draw lists, %u/%u "
+                    "their batch and vertex counts; first differing frame %lld\n",
                     s.draws, s.frames, s.drawCounts, s.frames, static_cast<long long>(s.firstDraws));
     if (!refFrames.empty() && opt.native & libs::kSnd)
         std::printf("sound (reported, not checked): %u/%u frames match the reference's mixed samples (%u of them silent), "
@@ -444,8 +444,12 @@ int bozo::run::main(int argc, char **argv)
             std::printf("\n");
         }
     }
-    // Pinned mode checks every record and ram, scratchpad, calls, threads; eeCycle is reported only.
-    const bool ok = host.errors() == 0 && host.completed() &&
+    // Pinned mode checks every record and ram, scratchpad, calls, threads; eeCycle is reported only. With a port's
+    // renderer (its overrides native), the draws too (milestone M5), but on the log's last frame: the log's final FRAME
+    // record comes inside a library call, before the port's frame end publishes that frame's lists, so it has none.
+    const bool drawsOk = refFrames.empty() || !opt.overrides || s.frames == 0 || s.firstDraws < 0 ||
+                         (s.firstDraws == static_cast<int64_t>(s.frames) - 1 && s.draws + 1 == s.frames);
+    const bool ok = host.errors() == 0 && host.completed() && drawsOk &&
                     (refFrames.empty() || (s.ram == s.frames && s.scratchpad == s.frames && s.calls == s.frames &&
                                            s.threads == s.frames && (opt.pinned || s.eeCycle == s.frames)));
     std::printf("%s\n", ok ? "MATCH" : "DIFFERS");

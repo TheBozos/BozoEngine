@@ -30,6 +30,10 @@ namespace bozo::app
         float renderScale = 1.0f;            // the 3D's resolution against the picture's (Renderer::setRenderScale)
         std::string captureDir;              // where F8 and captureFrames write (empty: the current folder)
         std::vector<uint64_t> captureFrames; // the window saved at the first present after each of these game frames
+        // Called on the window's thread once a captureFrames picture is read back (frames: the game frames ended when
+        // that present began, so its picture is at least that frame's). A host that holds its game at a capture frame
+        // until then (tmb-check --window: the pinned run) gets exactly that frame's picture.
+        std::function<void(uint64_t frames)> onCaptured;
         uint64_t quitAfterFrames = 0;        // close once the game ended this many frames (0: never)
         bool stats = true;                   // every 2 s on stderr: game frames and presents a second, frame times
         // The window's size, mode and render scale from video::edited() (the port called video::loadAtStartup and
