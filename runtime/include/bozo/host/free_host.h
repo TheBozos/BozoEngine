@@ -18,6 +18,8 @@
 #include <map>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bozo::host
@@ -128,8 +130,10 @@ namespace bozo::host
         FreeOptions opt_;
         ee::Dispatcher *d_ = nullptr;
         libs::Libraries libs_;
-        std::map<uint32_t, port::Function> portAt_;
-        std::map<uint32_t, const libs::Function *> nativeAt_;
+        // Looked up at every out-call (a few thousand a frame in a match): hashed.
+        std::unordered_map<uint32_t, port::Function> portAt_;
+        std::unordered_map<uint32_t, const libs::Function *> nativeAt_;
+        std::unordered_set<uint32_t> flushCacheAt_; // the kernel's FlushCache entries (kernelCallEnd)
         std::map<uint32_t, std::string> names_;
         std::map<uint32_t, uint64_t> perOverride_;
         uint32_t insideDepth_ = 0;

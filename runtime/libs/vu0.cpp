@@ -12,6 +12,7 @@
 #include "bozo/libs/libraries.h"
 
 #include <cfenv>
+#include <xmmintrin.h>
 #include <cmath>
 #include <cstring>
 
@@ -21,11 +22,14 @@ namespace bozo::libs
     {
         // ---- VU0 arithmetic --------------------------------------------------------------------------------------
 
+        // The host's float arithmetic is SSE's (x86-64): its rounding control, MXCSR bits 13-14 (11: toward zero), set
+        // directly. std::fesetround did the same plus the x87 control word, through the C runtime's calls: ~2% of the
+        // game thread in a 1P match (a few thousand programs a frame).
         struct TowardZero
         {
-            int saved = std::fegetround();
-            TowardZero() { std::fesetround(FE_TOWARDZERO); }
-            ~TowardZero() { std::fesetround(saved); }
+            unsigned saved = _mm_getcsr();
+            TowardZero() { _mm_setcsr(saved | 0x6000u); }
+            ~TowardZero() { _mm_setcsr(saved); }
         };
 
         uint32_t bits(float f)

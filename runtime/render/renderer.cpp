@@ -72,8 +72,48 @@ namespace bozo::render
         return renderer;
     }
 
+    Renderer::FramePool::~FramePool()
+    {
+        for (Frame *f : free)
+            delete f;
+    }
+
+    std::shared_ptr<Renderer::Frame> Renderer::takeBuilt(Frame &building)
+    {
+        Frame *out = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_pool->mutex);
+            if (!m_pool->free.empty())
+            {
+                out = m_pool->free.back();
+                m_pool->free.pop_back();
+            }
+        }
+        if (!out)
+            out = new Frame;
+        std::swap(*out, building); // building now holds the recycled frame's old content (emptied by startBuilding)
+        std::shared_ptr<FramePool> pool = m_pool;
+        return std::shared_ptr<Frame>(out, [pool](Frame *f)
+        {
+            // Emptied here, by whichever thread let go last (as the frame's destruction was); the capacity stays.
+            f->vertices.clear();
+            f->batches.clear();
+            f->triangleIds.clear();
+            f->keys.clear();
+            f->bases.clear();
+            f->tracked.clear();
+            std::lock_guard<std::mutex> lock(pool->mutex);
+            if (pool->free.size() < 8u)
+                pool->free.push_back(f);
+            else
+                delete f;
+        });
+    }
+
     void Renderer::noteDrawList(const Frame &frame, uint64_t kind)
     {
+        if (!m_digestDraws)
+            return;
         static_assert(sizeof(Vertex) == 32u, "Vertex: eight 4-byte fields, no padding");
         uint64_t h = hash::xxh64(&kind, sizeof(kind), 0);
         for (const Batch &batch : frame.batches)
@@ -114,12 +154,15 @@ namespace bozo::render
     {
         std::vector<Vertex> vertices = std::move(m_building.vertices);
         std::vector<Batch> batches = std::move(m_building.batches);
+        std::vector<uint64_t> triangleIds = std::move(m_building.triangleIds);
         vertices.clear();
         batches.clear();
+        triangleIds.clear();
         m_building = Frame{};
         m_building.screen = screen;
         m_building.vertices = std::move(vertices);
         m_building.batches = std::move(batches);
+        m_building.triangleIds = std::move(triangleIds);
     }
 
     void Renderer::draw(const Material &material, const float matrix[16], const Vertex *vertices, uint32_t count)
@@ -246,7 +289,7 @@ namespace bozo::render
     void Renderer::endFrame()
     {
         noteDrawList(m_building, 1u);
-        auto frame = std::make_shared<Frame>(std::move(m_building));
+        std::shared_ptr<Frame> frame = takeBuilt(m_building);
         startBuilding(Screen{});
         m_key = 0;
         frame->time = secondsNow();

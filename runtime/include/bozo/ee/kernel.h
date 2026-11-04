@@ -332,6 +332,8 @@ namespace bozo::ee
 
         std::map<int32_t, std::unique_ptr<Thread>> threads_;
         std::array<std::deque<int32_t>, kPriorities> ready_;
+        uint64_t readyMask_[2] = {0, 0}; // bit p: ready_[p] not empty (kept by noteQueue after every change)
+        void noteQueue(uint32_t p);
         int32_t running_ = 0;
         bool switchRequested_ = false;
         uint64_t picks_ = 0; // a rotation of the running thread's queue: the next transfer gives way

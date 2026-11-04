@@ -149,6 +149,8 @@ namespace bozo::ee
     {
         ctx->pc = pc;
         ++stops;
+        if (stopJump_)
+            __builtin_longjmp(stopJump_, 1);
         throw StopGuest{};
     }
 
@@ -618,6 +620,27 @@ namespace bozo::ee
         host_.fault(*this, ctx, std::format("no code at 0x{:x}", pc));
     }
 
+    // Its own function, not inlined: after the jump back nothing of runFrame's locals is relied on (only what was set
+    // before the __builtin_setjmp and not changed since: this and ctx).
+    __attribute__((noinline)) bool Dispatcher::enterCatchingStops(R5900Context *ctx)
+    {
+        void *buf[5];
+        if (__builtin_setjmp(buf))
+        {
+            stopJump_ = nullptr;
+            return false;
+        }
+        stopJump_ = buf;
+        struct Clear // an exception passing through (a host ending the run) leaves no jump target behind
+        {
+            void **&p;
+            ~Clear() { p = nullptr; }
+        } clear{stopJump_};
+        updateLimit(ctx);
+        enter(ctx);
+        return ctx->pc == 0;
+    }
+
     void Dispatcher::runFrame(Thread &t, Frame &f)
     {
         current_ = &t;
@@ -629,17 +652,21 @@ namespace bozo::ee
         inGuest_ = true;
         lastHandlerEnded_ = false;
         bool ended = false;
-        try
-        {
-            updateLimit(ctx);
-            // Guest code runs until it stops or the bottom function returns: then into a function whose frame is gone
-            // (the dispatcher goes on there, at ctx->pc, as after any stop), or to 0 (the thread or handler ends).
-            enter(ctx);
-            ended = ctx->pc == 0;
-        }
-        catch (const StopGuest &)
-        {
-        }
+        if (jumpStops)
+            ended = enterCatchingStops(ctx);
+        else
+            try
+            {
+                updateLimit(ctx);
+                // Guest code runs until it stops or the bottom function returns: then into a function whose frame is
+                // gone (the dispatcher goes on there, at ctx->pc, as after any stop), or to 0 (the thread or handler
+                // ends).
+                enter(ctx);
+                ended = ctx->pc == 0;
+            }
+            catch (const StopGuest &)
+            {
+            }
         inGuest_ = false;
         ctx->noStop = 0; // a stop or a return to the dispatcher ends every inner call (their return stack is gone)
         ctx->inPlace = 0;
@@ -648,7 +675,8 @@ namespace bozo::ee
         checkpoints_ = ctx->checkpoints;
         f.status = rt_.cop0Status;
         f.ran = true;
-        toWords(f.ctx, f.status, f.last);
+        if (keepStopWords)
+            toWords(f.ctx, f.status, f.last);
         lastThread_ = t.id;
         lastDepth_ = t.depth();
         current_ = nullptr;

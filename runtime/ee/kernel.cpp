@@ -1,6 +1,8 @@
 // BozoEngine's EE kernel. See bozo/ee/kernel.h and docs/specs/kernel.md.
 #include "bozo/ee/kernel.h"
 
+#include <bit>
+
 #include <algorithm>
 
 namespace bozo::ee
@@ -60,11 +62,23 @@ namespace bozo::ee
 
     // The ready queues hold the ready threads; the running thread is outside them (calllog: a thread that gives way
     // goes to the tail of its queue, behind the threads already there).
+    void Kernel::noteQueue(uint32_t p)
+    {
+        const uint64_t bit = 1ull << (p & 63u);
+        if (ready_[p].empty())
+            readyMask_[p >> 6] &= ~bit;
+        else
+            readyMask_[p >> 6] |= bit;
+    }
+
     int32_t Kernel::firstReady() const
     {
-        for (const auto &q : ready_)
-            if (!q.empty())
-                return q.front();
+        // The lowest non-empty queue, by the mask of non-empty queues (the dispatcher asks at every pick, and at every
+        // transfer: scanning 128 queues was ~2.5% of a 1P match's game thread).
+        if (readyMask_[0])
+            return ready_[std::countr_zero(readyMask_[0])].front();
+        if (readyMask_[1])
+            return ready_[64 + std::countr_zero(readyMask_[1])].front();
         return 0;
     }
 
@@ -86,11 +100,10 @@ namespace bozo::ee
         auto it = threads_.find(running_);
         if (running_ <= 0 || it == threads_.end() || it->second->state != ThreadState::Running)
             return false;
-        const uint32_t p = it->second->priority % kPriorities;
-        for (uint32_t q = 0; q <= p; ++q)
-            if (!ready_[q].empty())
-                return true;
-        return false;
+        const uint32_t p = it->second->priority % kPriorities; // any non-empty queue at p or below
+        if (p < 64)
+            return (readyMask_[0] & (p == 63 ? ~0ull : (2ull << p) - 1u)) != 0;
+        return readyMask_[0] != 0 || (readyMask_[1] & (p == 127 ? ~0ull : (2ull << (p - 64)) - 1u)) != 0;
     }
 
     void Kernel::runOrder(std::vector<int32_t> &out) const
@@ -134,12 +147,14 @@ namespace bozo::ee
     {
         t.state = ThreadState::Ready;
         ready_[t.priority % kPriorities].push_back(t.id);
+        noteQueue(t.priority % kPriorities);
     }
 
     void Kernel::removeFromQueue(Thread &t)
     {
         auto &q = ready_[t.priority % kPriorities];
         q.erase(std::remove(q.begin(), q.end(), t.id), q.end());
+        noteQueue(t.priority % kPriorities);
     }
 
     void Kernel::deschedule(bool toTail)
@@ -156,6 +171,7 @@ namespace bozo::ee
                     q.push_back(t->id);
                 else
                     q.push_front(t->id);
+                noteQueue(t->priority % kPriorities);
             }
         }
         running_ = 0;
@@ -275,6 +291,7 @@ namespace bozo::ee
             removeFromQueue(*t);
             t->priority = priority;
             ready_[priority % kPriorities].push_back(t->id);
+            noteQueue(priority % kPriorities);
         }
         else
             t->priority = priority;

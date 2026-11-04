@@ -203,6 +203,16 @@ namespace bozo::ee
         // Pinned mode (kernel.md section 4): asynchronous events are taken where the host says (the reference's
         // points), not when the EE clock reaches them; everything else is decided as in free mode.
         bool pinned = false;
+        // How a stop leaves guest code. Off: by throwing StopGuest, which unwinds every C++ frame between the stop and
+        // the dispatcher (each one's destructors run). On: by a jump straight back to the dispatcher (__builtin_longjmp),
+        // no frame unwound: a host may set it only when nothing between holds anything to destroy (the generated code,
+        // the runtime's entries and its own out-call paths; a port's overrides never see a stop, it is deferred there:
+        // kernel.md section 3b). The free host does: an exception's unwinding cost ~20 us a stop (the 1P match's
+        // jumps through registers, dbsTraverse's table, stop a few hundred times a second).
+        bool jumpStops = false;
+        // Whether each frame keeps the context it stopped with (Frame::last, the CTX record's words: calllog.md 4.4).
+        // Only the call-log host reads them.
+        bool keepStopWords = true;
 
         // Statistics.
         uint64_t dispatches = 0, stops = 0, handlersRun = 0, jumps = 0;
@@ -214,6 +224,9 @@ namespace bozo::ee
         bool kernelCall(KernelCall call, R5900Context *ctx);
         Thread *choose();
         void runFrame(Thread &t, Frame &f);
+        // Runs guest code at ctx->pc (enter) with a stop's jump target set (jumpStops): true when the bottom function
+        // returned, false when guest code stopped.
+        bool enterCatchingStops(R5900Context *ctx);
         // Runs guest code at ctx->pc until the bottom function returns.
         void enter(R5900Context *ctx);
         bool mustStop(const R5900Context *ctx, uint64_t cycle);
@@ -245,5 +258,6 @@ namespace bozo::ee
         bool started_ = false;
         uint32_t outcallDepth_ = 0;
         uint32_t deferredPc_ = 0;
+        void **stopJump_ = nullptr; // enterCatchingStops' __builtin_setjmp buffer while guest code runs (jumpStops)
     };
 }

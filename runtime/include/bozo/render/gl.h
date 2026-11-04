@@ -29,6 +29,8 @@ namespace bozo::render::gl
     using GLubyte = unsigned char;
     using GLintptr = std::ptrdiff_t;
     using GLsizeiptr = std::ptrdiff_t;
+    using GLuint64 = uint64_t;
+    using GLsync = struct __GLsync *;
 
     // ---- Constants (OpenGL 3.3 core) ----
     constexpr GLenum kFalse = 0, kTrue = 1;
@@ -47,6 +49,8 @@ namespace bozo::render::gl
     constexpr GLenum kArrayBuffer = 0x8892, kPixelPackBuffer = 0x88EB;
     constexpr GLenum kStreamDraw = 0x88E0, kStreamRead = 0x88E1, kDynamicDraw = 0x88E8;
     constexpr GLbitfield kMapReadBit = 0x0001;
+    constexpr GLenum kSyncGpuCommandsComplete = 0x9117, kAlreadySignaled = 0x911A, kConditionSatisfied = 0x911C;
+    constexpr GLenum kDepthStencil = 0x84F9, kUnsignedInt248 = 0x84FA, kDepth24Stencil8 = 0x88F0, kDepthStencilAttachment = 0x821A;
     constexpr GLenum kFramebuffer = 0x8D40, kReadFramebuffer = 0x8CA8, kDrawFramebuffer = 0x8CA9, kRenderbuffer = 0x8D41;
     constexpr GLenum kColorAttachment0 = 0x8CE0, kDepthAttachment = 0x8D00, kFramebufferComplete = 0x8CD5;
     constexpr GLenum kVertexShader = 0x8B31, kFragmentShader = 0x8B30;
@@ -76,6 +80,9 @@ namespace bozo::render::gl
     X(void, ReadPixels, (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels))    \
     X(void, GetIntegerv, (GLenum name, GLint *data))                                                                   \
     X(void, Finish, (void))                                                                                          \
+    X(GLsync, FenceSync, (GLenum condition, GLbitfield flags))                                                       \
+    X(GLenum, ClientWaitSync, (GLsync sync, GLbitfield flags, GLuint64 timeout))                                     \
+    X(void, DeleteSync, (GLsync sync))                                                                               \
     X(GLuint, CreateShader, (GLenum type))                                                                             \
     X(void, ShaderSource, (GLuint shader, GLsizei count, const GLchar *const *strings, const GLint *lengths))          \
     X(void, CompileShader, (GLuint shader))                                                                            \
