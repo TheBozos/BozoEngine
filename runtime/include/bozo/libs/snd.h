@@ -121,6 +121,19 @@ namespace bozo::libs
         // log (bit 0 0x11, 1 0x19, 2 0x21, 3 0x2c: `--snd-log-replies`); the others come from the 989SND model.
         uint32_t fromLog = 0;
         std::unique_ptr<snd989::Engine> engine; // 989SND's behaviour on the native mixer (made at the first call)
+        // The IOP's time the engine runs on (snd989.h): the pinned points by default; a free run sets freeRun's, the
+        // IOP reset then taken where the game reboots the IOP (iopReset).
+        snd989::Timing timing;
+        bool freeTiming = false;
+
+        // sceSifRebootIop at EE cycle `ee`: free mode's IOP reset (P counts from it).
+        void iopReset(uint64_t ee);
+        // The engine (made if needed) brought up to EE cycle `ee`: its mixer's output so far (snd989::Engine::advanceTo).
+        void advanceAudio(Libraries &l, uint64_t ee);
+        // sceSifSetDma's data for the IOP's RAM (the movie's PCM): to the engine's RAM at EE cycle `ee`.
+        void iopWrite(Libraries &l, uint64_t ee, uint32_t address, const uint8_t *data, uint32_t bytes);
+        // The engine's mixer (null before the engine is made).
+        audio::Mixer *mixer() { return engine ? &engine->mixer() : nullptr; }
 
         // ---- State (libraries.md section 15.3) ----
         struct Handle
@@ -161,10 +174,14 @@ namespace bozo::libs
         std::deque<std::pair<uint64_t, uint32_t>> recentPlays_; // (EE cycle, handle) of the latest plays // a handle the log gave -> the model's, where they differ
         bool engineValid_ = false;              // the model answered the current command
         uint32_t engineGame_ = 0;               // its answer, in the game's handles
+        uint32_t movieAlloc_ = 0;               // InitMovieSound's buffer, allocated before the engine takes the command
+        void makeEngine(Libraries &l);
         bool fromLogFor(uint32_t id) const
         {
+            // GetTransStatus (0x40, the movie sound's position) always: the game's movie code paces itself on it, and
+            // the reference's IOP time it follows is not modelled to the sample (libraries.md 15.13c).
             return (id == 0x11 && (fromLog & 1)) || (id == 0x19 && (fromLog & 2)) || (id == 0x21 && (fromLog & 4)) ||
-                   (id == 0x2C && (fromLog & 8));
+                   (id == 0x2C && (fromLog & 8)) || id == 0x40;
         }
         void noteEngine(Libraries &l, Guest &g, uint32_t id, uint32_t logValue, uint32_t engineValue, uint32_t arg);
     };

@@ -1009,7 +1009,80 @@ difference at frame 10827 (15.13b) does not occur in the model: the replay itsel
 
 Open: the movie positions (0x40) stay followed from the log; free mode uses the same model with these pinned points
 (G, the level-start phase) and needs them from elsewhere; the cost model's last few-cycle errors (5% of the call
-times) have not mattered in either log.
+times) have not mattered in either log. (Free mode: 15.13d.)
+
+### 15.13d The engine's output and free mode (phase 4, milestone M3, 2026-11-04)
+
+What 989SND does that only the output hears (no reply depends on it) was left out of 15.13c; the engine now does it, read
+from `989SND.IRX`, so that its mixer plays what the reference's did. A libsd call log of the engine
+(`BOZO_SND989_SDLOG=<file>`: the IOP clock, the export, its arguments and result) equals the analysis replay's (15.13b,
+989SND.IRX's own code on the same mixer) call for call over boot, every call within a sample of the replay's time.
+
+- **StartSoundSystem** (command 0x00, 0x4828): sceSdInit; the mixes (MMIX core 0 0xf00: the voices only, the sound
+  data input off; core 1 0xf0c: the voices and core 0's output); core 0's master volume 0x3fff; the effect volumes 0;
+  core 1's external input volume (AVOL) 0x7fff; the effect off; the volume groups 0, 1, 2 and 7 at 1024.
+- **SetMasterVolume** (0x09, 0x7cf0): the volume clamped to 0..1024; group 7 is core 1's master volume (MVOL =
+  (v << 14) - v, / 1024 truncated); another group's playing voices (state 1 or 4) get their VOLL / VOLR again through
+  `groupScale` (0x819c), one batch a voice.
+- **SetReverbType** (0x0e, 0x83b0) per core: the effect off, EVOL 0, the old area freed and the new one allocated
+  (15.13c's model), EEA, sceSdSetEffectAttr (mode, depth 0, delay 0, feedback 0), then (type not 0) the area cleared
+  through a DMA channel (the first free: core 0 gets 0, core 1 1) and a countdown of 10 ticks; at its end (the tick's
+  last step, 0x86ac, after the KeyOn flush) EVOL takes the depth set meanwhile and the effect comes on.
+  **SetReverbDepth** (0x0f, 0x85b0): the depth kept; EVOL set now unless that countdown runs.
+- **The movie's sound** (0x3b-0x40, 0x104c0-0x109b0). InitMovieSound(bytes, volume 0..1024, pan, group): the buffer
+  (the driver's IOP heap block, 15.3), a DMA channel (the first free: 0), the volume as (v x 127) >> 10, 1 KB of the
+  buffer played once through sceSdBlockTrans. StartMovieSound(address, bytes, start): the buffer as the channel's
+  core's sound data input, looping (mode 0x13), BVOL from `voiceVolPan(127, volume, pan, 127, 0, 127, 0)` then
+  `groupScale` << 1, capped at 0x7fff (TMB: 0x7efa), and MMIX | 0xc0 (the input to the output, not the reverb).
+  Reset (0x3d) and Close (0x3c): BVOL 0, MMIX & 0xff3f, the input stopped (Close also frees the channel). Pause (0x3f):
+  BVOL 0, the input stopped, its position & 0xffffff. GetTransStatus (0x40): sceSdBlockTransStatus. The game's PCM
+  reaches the buffer through `sceSifSetDma` (libsd sees IOP RAM: the engine keeps 2 MB of it, the uploads' staging
+  area above), the mixer brought up to the transfer's EE cycle first. A pinned run still takes 0x40's reply from the
+  log (the movie code paces itself on it); the engine's agrees on 926 of boot's 932 (the 6 others one sample apart).
+  libmpeg's `MovieSoundSink` keeps counting the demuxed PCM (`bozo-run`'s summary) but is not a second source for the
+  mixer: the game's own path (pcmCallback, audioDecSendToIOP, 989SND's input) is what the reference played, paced by
+  the game.
+
+**The sound records** (`harness.md` section 6). The engine's clock and mixer are brought up to each frame's end on the
+EE clock (`Engine::advanceTo`: ticks and stream KeyOns up to then, the mixer to the IOP clock; nothing a later command
+sees changes), the samples made since the last frame are the record's `sound` and `soundSamples`. Long gaps between the
+engine's libsd calls are mixed in steps (the reference's mixer is brought up at every IOP payment and never skips;
+15.14's one-call limit would drop samples and the reverb's every-other-sample phase with them). In a pinned run the
+frame's samples end 192 EE cycles (24 IOP cycles) before the frame's end: the reference's last payment, fitted on the
+records' sample counts (every frame of boot and match1p's shell but the movie start's pair, frames 608-609). The first
+frame has none (the reference's output starts with frame 1).
+
+| Run (`--pinned`, every library native) | Sound records equal to the reference's | Sample counts | Result |
+|---|---|---|---|
+| boot | 1,659 of 3,000: every silent frame (632), both movies (every frame but two where a frame boundary falls a sample apart), 47 of the title music's | 2,998 of 3,000 | MATCH |
+| match1p (`ch1p_frames.txt`) | 3,926 of 16,000 (2,900 silent; the movies; the same title frames) | 14,673 of 16,000 (from the level start, frame 5591, the IOP clock gained unpaid time: the grid moved by a fraction of a sample) | MATCH |
+
+What differs is the music and effects from the title on (boot frame 1614: the title music starts with a MIDI sound and
+SetReverbDepth). The libsd calls are 989SND's (the call log above), so what is left is time: which 768-cycle sample a
+KeyOn, a volume or the reverb's enable falls on, set by the phase of the 240 Hz tick against the EE (S0 and the
+unpaid IOP time G of `iop-timing.md`, which the replies settle only to within a tick) and by the parity of the reverb's
+every-other-sample step since its enable. The tick's phase is now a pinned point of its own (`Timing::firstTickPhase`,
+27,776 IOP cycles: the first tick due 153,600 + 27,776 after 989SND's start), found by a search over the phase in
+768-cycle then 8-cycle steps against boot's title frames (none of 86 frames matches with the phase 0; 27,752-27,792 give
+47 of them, 28,416 only 8): it changes no reply (boot and match1p MATCH with it). What still differs is single calls a
+sample apart: the cost model's few-cycle errors (15.13c) now decide which side of a 768-cycle boundary a KeyOff or a
+volume falls (boot frames 1625-1642 differ, 1643-1675 equal again, from 1690 on differ), and the level's G (from match1p
+frame 5591 the records' sample counts follow another grid; neither the jump nor its effect on the ticks is modelled).
+Closing it needs 989SND's instruction counts per call, not a mean per step: the analysis replay (989SND's own code)
+gives them, and is the tool to fit a finer cost model with these records as the check.
+
+**Free mode** (`FreeHost`, `SndDriver::freeTiming`). The four points a pinned run takes from the reference's logs:
+
+| Pinned (`Timing{}`) | Free mode (`Timing::freeRun`) | Why |
+|---|---|---|
+| G = 0 against the IOP reset at EE cycle 4,927,984 (boot #27) | the reset at the EE cycle the game calls `sceSifRebootIop` (`SndDriver::iopReset`), G = 0 | no IOP runs ahead of the EE: P = (EE - reset) / 8 is the IOP clock |
+| the level start: the next tick 55,296 IOP cycles (1.5 ms) after 0x2a | the tick keeps its grid (`streamInitRephase` off) | the reference's phase came from its IOP's inline work (the bank loads' disc waits); nothing natively is inline |
+| a stream's KeyOn 1,280 (mono) / 2,470 (stereo) IOP cycles after its 0x2c | at the command's end (0, 0) | the streaming threads' run time; the disc reads complete at once |
+| a lost call (a request overwritten before a call answered from the log ended) taken as StopSound of the last play | not needed | free mode answers every call natively, so no request is lost |
+
+The free host brings the engine up at each frame's end and hands the frame's samples to `FreeHost::onAudio` (the
+window's device, `tmb-headless --wav`); in real time the EE clock follows the host's (the FramePacer), so the samples
+come at the field's rate, and `bozo::app::AudioDevice` absorbs the drift (`bozo/app/audio_device.h`).
 
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 

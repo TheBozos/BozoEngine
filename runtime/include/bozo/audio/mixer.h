@@ -105,6 +105,10 @@ namespace bozo::audio
         // Clocked (setClocked(true)): render() only takes the samples advanceTo made from a queue (silence when it
         // runs dry, the oldest dropped when the device falls behind by more than the queue holds).
         void render(int16_t *out, size_t frames);
+        // Clocked: takes up to `frames` of the queued samples (no silence added); the count taken. For a host that
+        // pushes what the clock made to its device (or a file) instead of letting the device pull.
+        size_t take(int16_t *out, size_t frames);
+        size_t queuedFrames();
 
         // Clocked by the IOP: sample n is made when the IOP clock reaches n * 768 (advanceTo(the IOP's cycle) mixes
         // samples up to floor(cycle / 768)), so what the drivers read back (envelopes, ended voices, input positions

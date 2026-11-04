@@ -32,6 +32,9 @@ namespace bozo::host
         libs_.attach(d);
         libs_.printOutput = opt_.printGameOutput;
         libs_.sndNative = true;
+        // Free mode's IOP time (libraries.md 15.13c): the IOP reset where the game makes it, nothing pinned.
+        libs_.snd.freeTiming = true;
+        libs_.snd.timing = libs::snd989::Timing::freeRun(0);
         libs_.cd.imagePath = opt_.iso;
         libs_.mc.hostDirectory = opt_.cardDir;
         for (int player = 0; player < 4; ++player)
@@ -342,6 +345,25 @@ namespace bozo::host
         return 0;
     }
 
+    // The frame's sound: the engine brought up to the frame's end on the EE clock, its samples since the last frame to
+    // onAudio, their digest for the record.
+    void FreeHost::frameSound(uint64_t &hash, uint32_t &count)
+    {
+        hash = 0;
+        count = 0;
+        if (!opt_.sound)
+            return;
+        libs_.snd.advanceAudio(libs_, d_->now());
+        audio::Mixer *mixer = libs_.snd.mixer();
+        if (!mixer)
+            return;
+        mixer->takeMixed(hash, count);
+        audio_.resize(2u * audio::Mixer::kQueueFrames);
+        const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        if (onAudio && n)
+            onAudio(stats_.frames, audio_.data(), n);
+    }
+
     void FreeHost::endFrame(const R5900Context *ctx)
     {
         const uint64_t frame = stats_.frames;
@@ -362,10 +384,16 @@ namespace bozo::host
             fr.draws = draws.hash;
             fr.drawBatches = draws.batches;
             fr.drawVertices = draws.vertices;
+            frameSound(fr.sound, fr.soundSamples);
             writer_.write(fr);
         }
         else
+        {
             render::Renderer::instance().takeFrameDraws();
+            uint64_t hash = 0;
+            uint32_t count = 0;
+            frameSound(hash, count);
+        }
         ++stats_.frames;
         framesEnded_.store(stats_.frames, std::memory_order_relaxed);
         libs_.framesEnded = static_cast<uint32_t>(stats_.frames);

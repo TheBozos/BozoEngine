@@ -408,6 +408,11 @@ int bozo::run::main(int argc, char **argv)
         std::printf("draws (reported, not checked): %u/%u frames match the reference's draw lists, %u/%u their batch and vertex "
                     "counts; first differing frame %lld\n",
                     s.draws, s.frames, s.drawCounts, s.frames, static_cast<long long>(s.firstDraws));
+    if (!refFrames.empty() && opt.native & libs::kSnd)
+        std::printf("sound (reported, not checked): %u/%u frames match the reference's mixed samples (%u of them silent), "
+                    "%u/%u their sample count; first differing frame %lld (count %lld)\n",
+                    s.sound, s.frames, s.soundSilent, s.soundSamples, s.frames, static_cast<long long>(s.firstSound),
+                    static_cast<long long>(s.firstSoundSamples));
     if (opt.overrides)
     {
         const run::OverrideStats &o = host.overrideStats();

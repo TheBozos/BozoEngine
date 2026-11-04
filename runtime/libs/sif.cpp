@@ -186,6 +186,7 @@ namespace bozo::libs
         void rebootIop(Libraries &l, Guest &g)
         {
             l.sif.modules = 0;
+            l.snd.iopReset(l.now(g));
             g.ret(1);
         }
         void syncIop(Libraries &, Guest &g) { g.ret(1); }
@@ -194,8 +195,21 @@ namespace bozo::libs
         // DMAC interrupt of channel 5 (SIF0) is raised as the call returns (boot #2157635: inside TMB's
         // audioDecSendToIOP override, at sceSifSetDma's return address, one per call).
         // sceSifDmaStat(id): -1, finished.
+        // The transfers (16 bytes each: EE source, IOP destination, bytes, attributes) go to the sound driver's IOP RAM
+        // (TMB's only transfers: the movie's PCM into 989SND's movie buffer).
         void setDma(Libraries &l, Guest &g)
         {
+            if (l.sndNative)
+            {
+                const uint32_t transfers = g.arg(0), count = g.arg(1);
+                for (uint32_t i = 0; i < count && i < 32; ++i)
+                {
+                    const uint32_t t = transfers + 16u * i;
+                    const uint32_t source = g.read32(t), dest = g.read32(t + 4), bytes = g.read32(t + 8);
+                    if (bytes && bytes <= 0x200000u)
+                        l.snd.iopWrite(l, l.now(g), dest, g.in(source, bytes), bytes);
+                }
+            }
             g.retU(++l.sif.dmaId);
             l.io.stat |= 1u << 5;
             l.dispatcher()->kernel().irq(true, 5);

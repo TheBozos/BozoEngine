@@ -79,6 +79,9 @@ namespace bozo::run
         int64_t firstRam = -1, firstScratchpad = -1, firstCalls = -1, firstThreads = -1, firstEeCycle = -1;
         uint32_t draws = 0, drawCounts = 0; // frames whose draw-list hash (and batch and vertex counts) match: reported
         int64_t firstDraws = -1;
+        // The sound records (the 989SND engine's mixer, brought up to each frame end): reported, not checked.
+        uint32_t sound = 0, soundSamples = 0, soundSilent = 0; // frames whose hash, sample count match; of the hash matches, silent ones
+        int64_t firstSound = -1, firstSoundSamples = -1;
     };
 
     class LogHost final : public ee::Host, public ee::KernelObserver, public port::Host
