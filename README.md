@@ -7,34 +7,35 @@ runtime that answers the game's calls with native PC code. **No PS2 hardware at 
 no DMA controller, no IOP, no SPU2. What the game draws goes to a native renderer; what it plays goes to a native
 mixer; what it reads, saves and polls comes from native implementations of the libraries it calls.
 
-Status: **planning**. Nothing here runs yet. See [docs/PLAN.md](docs/PLAN.md).
+Status: **Twisted Metal: Black runs on it**, in a window (SDL3, OpenGL 3.3) at 60 fps, with pads for 1 to 4 players
+and sound, from the boot through the menus, matches and the story. Its menus and settings panel are being finished;
+the release moves to BozoEngine once the comparison with the current build is clean. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Why
 
-Our ports (Twisted Metal: Black first) run today on a fork of [PS2Recomp](https://github.com/ran-j/PS2Recomp). That
-fork carries a full PS2 emulation stack (GS rasterizers, VU interpreters and JIT, VIF/GIF, the IOP interpreter, SPU2)
-which the native ports have spent months routing around, and most of its core is someone else's code under GPL-3.0.
-BozoEngine is the native path only, written by us, under our licence:
+- **Own it.** Code written by The Bozos, MIT-licensed, nothing copied from other projects (see "Clean room" in the
+  plan).
+- **Native by construction.** There are no emulation layers to route around: the runtime implements Sony's libraries
+  at the call the game makes (read the pad, open a file, play a movie), not the chips below them.
+- **Proved against what works.** Every step is checked against recordings of the current build: the same game state,
+  calls, threads and draw lists, frame by frame (boot and a full match, 74 million recorded calls, 0 differences).
 
-- **Own it.** Code written by The Bozos, MIT-licensed. Nothing copied from PS2Recomp or any other project (see
-  "Clean room" in the plan).
-- **Native by construction.** The emulation layers are not rewritten; they do not exist. The runtime implements Sony's
-  libraries at the call the game makes (read the pad, open a file, play a movie), not the chips below them.
-- **Proved against what works.** Each step is checked against the current TMB_Recomp build: same game state, same
-  picture, same sound, frame by frame.
-
-## Layout (planned)
+## Layout
 
 | Folder | What |
 |---|---|
-| `recompiler/` | ELF loader, function discovery, R5900 (EE) to C++ translation |
-| `runtime/` | Guest memory, the EE kernel's services (threads, semaphores, alarms), the scheduler |
-| `libs/` | Native implementations of the Sony libraries games call (pad, memory card, CD/DVD files, sound, movies, display) |
-| `render/`, `audio/` | The native renderer and mixer (moved from our PS2Recomp fork, where we wrote them) |
-| `app/` | Window, input, settings, launcher hooks |
-| `tests/` | Our own tests |
-| `docs/` | The plan, the specs the code is written from, the branding (`docs/branding/`) |
-| `tools/branding/` | `make_logo.py`: The Bozos' logos for any port (`python make_logo.py port <name> "<TITLE>" "<SUBTITLE>" [fire]`; `--help`) |
+| `recompiler/` | `bozo-recomp`: ELF loader, function discovery, R5900 (EE) to C++ translation |
+| `runtime/ee/` | The EE kernel (threads, semaphores, interrupt handlers) and the dispatcher |
+| `runtime/libs/` | Native Sony libraries: libc/libm, pad (multitap), memory card, CD/DVD, libmpeg (FFmpeg), GS library, VU0 programs, SIF, the 989SND sound driver |
+| `runtime/render/`, `runtime/audio/` | The native renderer (OpenGL 3.3) and mixer |
+| `runtime/app/`, `runtime/host/`, `runtime/port/` | Window, input and settings (SDL3); the real-time host; the API a port's own code uses |
+| `tools/` | The checkers (`run`, `replay`), the pack writers (`native_pack`), `externals`, capture and IRX readers, `branding` |
+| `tests/` | Instruction, library, audio and runtime tests |
+| `reference/` | Hashes of the reference runs the checks compare against (no game data) |
+| `docs/` | The plan, the specs the code is written from, the branding |
+
+`tools/branding/make_logo.py` makes The Bozos' logos for any port: `python make_logo.py port <name> "<TITLE>"
+"<SUBTITLE>" [fire]` (`--help`).
 
 ## Licence
 
