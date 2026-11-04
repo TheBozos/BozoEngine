@@ -93,6 +93,7 @@ namespace bozo::libs
             {
                 g.write32(client + 0x24, SifState::kServerData);
                 g.write32(SifState::kServerData, service);
+                s.bound[client] = service;
             }
             g.ret(0);
         }
@@ -125,7 +126,10 @@ namespace bozo::libs
                 g.write32(server + 0x28, recv);
                 g.write32(server + 0x2C, rsize);
             }
-            if (server == SifState::kServerData && g.read32(server) == k989snd)
+            // 989SND's client (bound at sceSifBindRpc): not the server data's first word, which the game's own data can
+            // overwrite (the story's second level loads over 0x1f10000; the call then went unanswered and the client
+            // waited for its reply for ever).
+            if (auto b = l.sif.bound.find(client); b != l.sif.bound.end() && b->second == k989snd)
             {
                 SndDriver &snd = l.snd;
                 snd.noteBuffers(send, recv);

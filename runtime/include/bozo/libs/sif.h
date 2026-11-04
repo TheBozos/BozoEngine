@@ -37,6 +37,9 @@ namespace bozo::libs
         static constexpr uint32_t kServerData = 0x1F10000u;
         uint32_t rpcId = 0;                       // the client headers' rpc_id: one more at each bind attempt
         std::map<uint32_t, uint32_t> bindAttempts; // per service id
+        // The service each bound client header calls (by the client's address). The server data in EE RAM is the game's
+        // memory as much as ours (a level's heap reaches 0x1f10000 and overwrites it), so a call finds its server here.
+        std::map<uint32_t, uint32_t> bound;
         uint32_t sreg[32] = {};
         uint32_t dmaId = 0;  // the last SIF DMA transfer's id (sceSifSetDma: 1, 2, ...)
         uint32_t modules = 0; // modules loaded since the IOP's reboot (their ids are 1, 2, ...)

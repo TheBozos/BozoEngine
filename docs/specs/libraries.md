@@ -595,7 +595,7 @@ reference's IOP answered every RPC inside the call, so nothing is ever in flight
 |---|---|
 | `sceSifInitRpc(mode)` | 0, nothing written (boot #25, #29, #150; 14 calls in match1p, the movie code's too) |
 | `sceSifBindRpc(client, service, mode)` | the client header's `rpc_id` (`client + 4`) the next one (1, 2...) and its semaphore (`+ 8`) -1; once the service has a server, `client + 0x24` = its server data (0x1f10000) and the server data's first word the service id; 0. The reference's 989SND registered its server between the game's first and second attempts (boot #151: `rpc_id` 1, no server; #152: `rpc_id` 2, bound), so a service binds at the second attempt |
-| `sceSifCallRpc(client, fno, mode, send, ssize, recv, rsize, end, param)` | `client + 0x0c` = mode, `+ 0x10` = fno; in the server data `+ 0x0c` ssize, `+ 0x1c` client, `+ 0x24` fno, `+ 0x28` recv, `+ 0x2c` rsize (boot #156, #159, #210987); the server's reply in `recv` (section 15); 0 |
+| `sceSifCallRpc(client, fno, mode, send, ssize, recv, rsize, end, param)` | `client + 0x0c` = mode, `+ 0x10` = fno; in the server data `+ 0x0c` ssize, `+ 0x1c` client, `+ 0x24` fno, `+ 0x28` recv, `+ 0x2c` rsize (boot #156, #159, #210987); the server's reply in `recv` (section 15); 0. The server is the one the client was bound to (kept host-side): the server data's first word is EE RAM the game may reuse (the story's second level, the Suburbs, loads over 0x1f10000; reading the service from it left StopAllSounds unanswered and `snd_GotReturns` waiting for good) |
 | `sceSifCheckStatRpc(client)` | 0 (never busy) |
 | `sceSifGetSreg(reg)`, `sceSifSetSreg(reg, value)` | the 32 software registers; Set returns the old value (boot #153, #154; match1p #17536116: GetSreg(8) 0) |
 | `sceSifInitIopHeap()` | 0 |
