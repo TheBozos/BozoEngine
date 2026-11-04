@@ -9,6 +9,7 @@
 #include "bozo/hash.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 namespace bozo::render
@@ -249,9 +250,55 @@ namespace bozo::render
         startBuilding(Screen{});
         m_key = 0;
         frame->time = secondsNow();
+        // The keys only serve the frames drawn between the game's (present's matchFrames): a map entry per object each
+        // frame otherwise. Moved from the fork's native_renderer.cpp, as the clock below.
+        const bool interpolate = frameRate() != 0;
+        if (interpolate)
+        {
+            for (uint32_t i = 0; i < frame->batches.size(); ++i)
+                if (frame->batches[i].key != 0u)
+                    frame->keys.emplace(frame->batches[i].key, i);
+            for (const auto &[key, index] : frame->keys)
+                frame->bases[frame->batches[index].base].push_back(index);
+            for (const Batch &batch : frame->batches)
+                if (batch.idFirst >= 0)
+                    for (uint32_t i = 0; i < batch.count / 3u; ++i)
+                        if (const uint64_t id = frame->triangleIds[static_cast<size_t>(batch.idFirst) + i]; id != 0u)
+                            frame->tracked.emplace(id, batch.first + 3u * i);
+        }
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             frame->serial = ++m_serial;
+            if (interpolate)
+            {
+                // Its place on the window's clock: the publishing times smoothed (the game publishes a frame when its
+                // work is done, a few milliseconds early or late against its 60 Hz), so the frames shown between are
+                // evenly spaced. After a pause (a load) or a hitch the clock starts again from this frame.
+                const double t = frame->time;
+                const std::shared_ptr<const Frame> last = m_history.empty() ? nullptr : m_history.back();
+                if (last && t > last->time && t - last->time < 0.25)
+                {
+                    m_interval += (std::clamp(t - last->time, 1.0 / 250.0, 1.0 / 15.0) - m_interval) * 0.05;
+                    const double predicted = last->pts + m_interval;
+                    double pts = predicted + (t - predicted) * 0.1;
+                    if (std::fabs(t - pts) > 4.0 * m_interval)
+                        pts = t;
+                    frame->pts = std::max(pts, last->pts + 0.25 * m_interval);
+                    frame->continuous = true;
+                    m_late = std::max(t - frame->pts, m_late - 0.0001);
+                }
+                else
+                {
+                    frame->pts = t;
+                    frame->continuous = false;
+                    m_late = 0.0;
+                }
+                m_history.push_back(frame);
+                while (m_history.size() > 6u)
+                    m_history.pop_front();
+            }
+            else if (!m_history.empty())
+                m_history.clear();
             m_published = std::move(frame);
             ++m_publishes;
         }

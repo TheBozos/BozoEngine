@@ -20,6 +20,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -158,10 +159,25 @@ namespace bozo::render
         // Screen-space triangles whose vertices move from frame to frame: triangle i is ids[i] (0: none).
         void drawTracked(const Material &material, const Vertex *vertices, uint32_t count, std::shared_ptr<const Texture> texture,
                          const uint64_t *ids);
-        // The window's frame rate: 0 the game's (the default), -1 the monitor's, n > 0 that many a second.
+        // The window's frame rate: 0 the game's (each published frame shown once, as it comes: the default), -1 the
+        // monitor's (vsync; frames between the game's drawn interpolated), n > 0 that many a second (no vsync).
+        // Interpolation needs the port's own frame (presentsAlone); otherwise frames are shown as they come whatever
+        // the rate. present() then draws the window's clock one game frame behind the newest frame: each keyed object
+        // found in the older frame too with its matrix between the two (setKey, setParts), each tracked triangle with
+        // its corners between (drawTracked). Moved from the fork's native_renderer (phase 4, M4b).
         void setFrameRate(int rate) { m_frameRate.store(rate, std::memory_order_relaxed); }
         int frameRate() const { return m_frameRate.load(std::memory_order_relaxed); }
-        bool interpolating() const { return frameRate() != 0 && m_presentsAlone && m_enabled; }
+        bool interpolating() const { return frameRate() != 0 && m_presentsAlone && !m_streamDraws && m_enabled; }
+        // What the last present() drew: when, the two published frames (their serials, from = 0: none) and how far
+        // between them (1: the newer as it is).
+        struct PresentInfo
+        {
+            double time = 0.0;
+            uint64_t from = 0, to = 0;
+            float alpha = 1.0f;
+            uint32_t interpolatedBatches = 0, keyedBatches = 0, trackedTriangles = 0, trackedInterpolated = 0;
+        };
+        PresentInfo lastPresent() const { return m_lastPresent; }
         bool enabled() const { return m_enabled; }
         void setEnabled(bool on) { m_enabled = on; }
 
@@ -188,6 +204,15 @@ namespace bozo::render
             std::vector<uint64_t> triangleIds;
             uint64_t serial = 0;
             double time = 0.0; // when it was published (seconds, the host's steady clock); a held backdrop: 1e300
+            // Interpolation, built at publishing while the frame rate is not the game's: key -> its first batch, base ->
+            // each object's first batch, a tracked triangle's id -> its first vertex; the frame's time on the smoothed
+            // clock the window follows, and whether it follows the one before it (false after a pause in publishing: a
+            // load, nothing to interpolate across).
+            std::unordered_map<uint64_t, uint32_t> keys;
+            std::unordered_map<uint64_t, std::vector<uint32_t>> bases;
+            std::unordered_map<uint64_t, uint32_t> tracked;
+            double pts = 0.0;
+            bool continuous = false;
         };
 
         // ---- Present thread ----
@@ -241,6 +266,33 @@ namespace bozo::render
         std::condition_variable m_publishedChanged;
         FrameDraws m_draws;
         std::atomic<float> m_renderScale{1.0f};
+
+        // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.
+        std::deque<std::shared_ptr<const Frame>> m_history;
+        double m_interval = 1.0 / 60.0; // the publishing interval, smoothed
+        double m_late = 0.0;            // how late frames come against their place on the clock, recent worst (decaying)
+        // Present thread: picks the two frames to draw between and how far; false: none yet.
+        bool pickInterpolated(std::shared_ptr<const Frame> &from, std::shared_ptr<const Frame> &to, float &alpha, double now);
+        // Present thread: which of the older frame's objects each keyed batch of the newer one is, once per pair of
+        // frames, and how it is drawn between them.
+        enum : uint8_t
+        {
+            kUnmatched = 0,
+            kLerp = 1,     // between the two
+            kSpin = 2,     // turned over 90 degrees (a wheel): its place between, its turn the newer frame's
+            kTeleport = 3, // moved too far (a respawn): as the newer frame has it
+        };
+        struct Match
+        {
+            uint64_t from = 0, to = 0;     // the frames' serials
+            std::vector<int32_t> previous; // per batch of the newer: the older's batch with its matrix (-1: none)
+            std::vector<uint8_t> kind;
+            std::vector<uint8_t> cut;      // its view cut away (the camera): as the newer frame has it
+            std::unordered_map<uint64_t, bool> cutViews;
+        } m_match;
+        void matchFrames(const Frame &from, const Frame &to);
+        std::vector<Vertex> m_trackedScratch; // present thread: a tracked batch's vertices as drawn
+        PresentInfo m_lastPresent;            // present thread
 
         // Present thread.
         std::shared_ptr<Gpu> m_gpu;

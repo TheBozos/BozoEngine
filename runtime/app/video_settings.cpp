@@ -5,7 +5,7 @@
 // 4, milestone M4): the file's format, the environment, the sizes offered and the F11 switch are the fork's; the
 // window and monitor calls are SDL3's (SDL_SetWindowFullscreenMode with a display mode for exclusive full screen, with
 // none for the borderless one, which SDL3 calls desktop full screen); the GS scale and the frame rate are kept for the
-// file only (no GS; no interpolation yet).
+// file only (no GS); the frame rate goes to the renderer (frames between the game's, phase 4 M4b).
 #include "bozo/app/video_settings.h"
 
 #include "bozo/app/app.h"
@@ -217,10 +217,10 @@ namespace bozo::app::video
         if (target.mode != WindowMode::Windowed)
             applyWindow(g_current, target);
         render::Renderer::instance().setRenderScale(target.renderScale);
+        render::Renderer::instance().setFrameRate(target.frameRate);
         g_current = target;
-        std::fprintf(stderr, "[video] %dx%d %s, render scale %.2f%s (%s)\n", g_current.width, g_current.height, modeName(g_current.mode),
-                     g_current.renderScale, g_current.frameRate != 0 ? ", frame rate 60 (frame_rate kept, not applied)" : "",
-                     configPath().c_str());
+        std::fprintf(stderr, "[video] %dx%d %s, render scale %.2f, frame rate %s (%s)\n", g_current.width, g_current.height,
+                     modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), configPath().c_str());
     }
 
     void detach() { g_window = nullptr; }
@@ -304,10 +304,11 @@ namespace bozo::app::video
         if (g_edited.mode != g_current.mode || g_edited.width != g_current.width || g_edited.height != g_current.height)
             applyWindow(g_current, g_edited);
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
+        render::Renderer::instance().setFrameRate(g_edited.frameRate);
         g_current = g_edited;
         const auto [w, h] = windowSize();
-        std::fprintf(stderr, "[video] applied %dx%d %s, render scale %.2f (window %dx%d)\n", g_current.width, g_current.height,
-                     modeName(g_current.mode), g_current.renderScale, w, h);
+        std::fprintf(stderr, "[video] applied %dx%d %s, render scale %.2f, frame rate %s (window %dx%d)\n", g_current.width,
+                     g_current.height, modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), w, h);
     }
 
     bool save()
@@ -323,8 +324,8 @@ namespace bozo::app::video
                 "# mode: windowed, fullscreen (exclusive) or borderless (the monitor's size). render_scale: the 3D drawn at\n"
                 "# that many times the window's size each way (0.25 to 4). gs_scale: the PS2Recomp build's GS renderer scale\n"
                 "# (1 to 4; BozoEngine has no GS and keeps it as it is). frame_rate: game (60, each game frame shown once),\n"
-                "# monitor or a number (the PS2Recomp build's frames between the game's; BozoEngine shows the game's 60 and\n"
-                "# keeps it as it is).\n"
+                "# monitor (the monitor's refresh with vsync, the frames between the game's drawn interpolated, one game frame\n"
+                "# later) or a number (that many a second, interpolated, without vsync).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"

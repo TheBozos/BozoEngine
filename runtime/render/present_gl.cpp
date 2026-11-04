@@ -9,14 +9,17 @@
 // the vertex colour) and the same quad split (a, b, e / a, e, c), under raylib's blend modes (alpha: SRC_ALPHA,
 // ONE_MINUS_SRC_ALPHA; additive: SRC_ALPHA, ONE; premultiplied: ONE, ONE_MINUS_SRC_ALPHA).
 //
-// Not moved (the GS front end's and the interpolation's, which BozoEngine does not have yet): the GS-stream groups and
-// their clips, frames drawn between the game's (the Video settings' frame rate), the texture cache's lookups.
+// Frames drawn between the game's (the Video settings' frame rate above 60: matchFrames, pickInterpolated, the keyed
+// batches' matrices and the tracked triangles between two frames) moved from the same file in phase 4 M4b, without its
+// statistics and trace logs. Not moved (the GS front end's): the GS-stream groups and their clips, the texture
+// cache's lookups.
 // Written fresh for BozoEngine: the depth readback (a pixel-pack buffer per present, mapped one present later: the
 // fork read it in its GS-side file) and Material::sampleTarget (the frame drawn so far copied, then sampled).
 #include "bozo/render/gl.h"
 #include "bozo/render/movie.h"
 #include "bozo/render/renderer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -418,6 +421,186 @@ void main()
         }
     };
 
+    namespace
+    {
+        // Interpolation's maths (moved from the fork's native_renderer.cpp). Matrices are columns (m[4c + r]), as
+        // draw() takes them.
+        void lerpMatrix(const float *a, const float *b, float t, float *out)
+        {
+            for (int i = 0; i < 16; ++i)
+                out[i] = a[i] + (b[i] - a[i]) * t;
+        }
+
+        void multiply(const float *a, const float *b, float *out) // out = a x b
+        {
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r)
+                    out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+        }
+
+        // The upper 3 x 3 as a rotation (unit quaternion w, x, y, z) times a scale per column; false when it is not
+        // one (a shear, a mirror, a degenerate scale): such a matrix is interpolated element by element.
+        bool rotationOf(const float *m, float q[4], float scale[3])
+        {
+            float r[3][3]; // r[column][row]
+            for (int c = 0; c < 3; ++c)
+            {
+                const float *col = m + c * 4;
+                scale[c] = std::sqrt(col[0] * col[0] + col[1] * col[1] + col[2] * col[2]);
+                if (!(scale[c] > 1e-6f))
+                    return false;
+                for (int k = 0; k < 3; ++k)
+                    r[c][k] = col[k] / scale[c];
+            }
+            const auto dot = [&](int a, int b) { return r[a][0] * r[b][0] + r[a][1] * r[b][1] + r[a][2] * r[b][2]; };
+            if (std::fabs(dot(0, 1)) > 0.02f || std::fabs(dot(0, 2)) > 0.02f || std::fabs(dot(1, 2)) > 0.02f)
+                return false;
+            const float det = r[2][0] * (r[0][1] * r[1][2] - r[0][2] * r[1][1]) + r[2][1] * (r[0][2] * r[1][0] - r[0][0] * r[1][2]) +
+                              r[2][2] * (r[0][0] * r[1][1] - r[0][1] * r[1][0]);
+            if (det < 0.9f)
+                return false;
+            const float m00 = r[0][0], m11 = r[1][1], m22 = r[2][2];
+            const float trace = m00 + m11 + m22;
+            if (trace > 0.0f)
+            {
+                const float s = std::sqrt(trace + 1.0f) * 2.0f;
+                q[0] = 0.25f * s;
+                q[1] = (r[1][2] - r[2][1]) / s;
+                q[2] = (r[2][0] - r[0][2]) / s;
+                q[3] = (r[0][1] - r[1][0]) / s;
+            }
+            else if (m00 > m11 && m00 > m22)
+            {
+                const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+                q[0] = (r[1][2] - r[2][1]) / s;
+                q[1] = 0.25f * s;
+                q[2] = (r[1][0] + r[0][1]) / s;
+                q[3] = (r[2][0] + r[0][2]) / s;
+            }
+            else if (m11 > m22)
+            {
+                const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+                q[0] = (r[2][0] - r[0][2]) / s;
+                q[1] = (r[1][0] + r[0][1]) / s;
+                q[2] = 0.25f * s;
+                q[3] = (r[2][1] + r[1][2]) / s;
+            }
+            else
+            {
+                const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+                q[0] = (r[0][1] - r[1][0]) / s;
+                q[1] = (r[2][0] + r[0][2]) / s;
+                q[2] = (r[2][1] + r[1][2]) / s;
+                q[3] = 0.25f * s;
+            }
+            return true;
+        }
+
+        // An object's matrix between a and b: its rotation along the arc (slerp), its scale and translation
+        // linearly; element by element when either is not a rotation and scale.
+        void interpolateObject(const float *a, const float *b, float t, float *out)
+        {
+            float qa[4], qb[4], sa[3], sb[3];
+            if (!rotationOf(a, qa, sa) || !rotationOf(b, qb, sb))
+            {
+                lerpMatrix(a, b, t, out);
+                return;
+            }
+            float d = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3];
+            if (d < 0.0f)
+            {
+                d = -d;
+                for (float &v : qb)
+                    v = -v;
+            }
+            d = std::min(d, 1.0f);
+            const float theta = std::acos(d);
+            float q[4];
+            if (theta < 1e-3f)
+                for (int i = 0; i < 4; ++i)
+                    q[i] = qa[i] + (qb[i] - qa[i]) * t;
+            else
+            {
+                const float s = std::sin(theta), wa = std::sin((1.0f - t) * theta) / s, wb = std::sin(t * theta) / s;
+                for (int i = 0; i < 4; ++i)
+                    q[i] = qa[i] * wa + qb[i] * wb;
+            }
+            const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+            for (float &v : q)
+                v /= n;
+            const float w = q[0], x = q[1], y = q[2], z = q[3];
+            const float rot[3][3] = {// rot[column][row]
+                                     {1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)},
+                                     {2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)},
+                                     {2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)}};
+            lerpMatrix(a, b, t, out); // the translation and the fourth row, linearly
+            for (int c = 0; c < 3; ++c)
+            {
+                const float scale = sa[c] + (sb[c] - sa[c]) * t;
+                for (int k = 0; k < 3; ++k)
+                    out[c * 4 + k] = rot[c][k] * scale;
+            }
+        }
+
+        // The turn between two matrices' rotations (degrees; 0 when either is not a rotation and scale).
+        float turnBetween(const float *a, const float *b)
+        {
+            float qa[4], qb[4], sa[3], sb[3];
+            if (!rotationOf(a, qa, sa) || !rotationOf(b, qb, sb))
+                return 0.0f;
+            const float d = std::min(std::fabs(qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3]), 1.0f);
+            return std::acos(d) * 2.0f * 57.29578f;
+        }
+
+        // An affine matrix's inverse (its fourth row 0, 0, 0, 1); false when singular.
+        bool invertAffine(const float *m, float *out)
+        {
+            const float a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], k = m[10];
+            const float det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+            if (std::fabs(det) < 1e-12f)
+                return false;
+            const float r = 1.0f / det;
+            const float inv[9] = {(e * k - f * h) * r, (c * h - b * k) * r, (b * f - c * e) * r,
+                                  (f * g - d * k) * r, (a * k - c * g) * r, (c * d - a * f) * r,
+                                  (d * h - e * g) * r, (b * g - a * h) * r, (a * e - b * d) * r}; // rows
+            for (int row = 0; row < 3; ++row)
+                for (int col = 0; col < 3; ++col)
+                    out[col * 4 + row] = inv[row * 3 + col];
+            for (int row = 0; row < 3; ++row)
+                out[12 + row] = -(inv[row * 3] * m[12] + inv[row * 3 + 1] * m[13] + inv[row * 3 + 2] * m[14]);
+            out[3] = out[7] = out[11] = 0.0f;
+            out[15] = 1.0f;
+            return true;
+        }
+
+        void transformPoint(const float *m, const float *p, float *out)
+        {
+            for (int r = 0; r < 3; ++r)
+                out[r] = m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r];
+        }
+
+        // Where a matrix puts the object's origin on the screen (GS coordinates); false behind the camera.
+        bool originOnScreen(const float *m, float &x, float &y)
+        {
+            if (!(m[15] > 1e-3f))
+                return false;
+            x = m[12] / m[15];
+            y = m[13] / m[15];
+            return true;
+        }
+
+        // A view: the batches sharing a clip (a split screen's).
+        uint64_t viewOf(const float clip[4])
+        {
+            uint64_t h = 1469598103934665603ull;
+            uint32_t words[4];
+            std::memcpy(words, clip, sizeof(words));
+            for (uint32_t w : words)
+                h = (h ^ w) * 1099511628211ull;
+            return h;
+        }
+    }
+
     void Renderer::releaseGpu()
     {
         if (m_gpu)
@@ -523,6 +706,266 @@ void main()
         return true;
     }
 
+    bool Renderer::pickInterpolated(std::shared_ptr<const Frame> &from, std::shared_ptr<const Frame> &to, float &alpha, double now)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_history.empty())
+            return false;
+        // The window is a game frame (and the frames' recent lateness) behind the newest: the clock's time now lies
+        // between two published frames, drawn that far between them.
+        const double delay = m_interval + std::clamp(m_late, 0.0, 0.025) + 0.002;
+        const double t = now - delay;
+        const size_t n = m_history.size();
+        alpha = 1.0f;
+        from = nullptr;
+        if (t >= m_history[n - 1]->pts)
+        {
+            to = m_history[n - 1];
+            if (n >= 2 && to->continuous)
+                from = m_history[n - 2];
+            return true;
+        }
+        size_t i = n - 1;
+        while (i > 0 && m_history[i - 1]->pts > t)
+            --i;
+        to = m_history[i];
+        if (i == 0 || !to->continuous)
+            return true;
+        from = m_history[i - 1];
+        const double span = to->pts - from->pts;
+        alpha = span > 0.0 ? static_cast<float>(std::clamp((t - from->pts) / span, 0.0, 1.0)) : 1.0f;
+        return true;
+    }
+
+    void Renderer::matchFrames(const Frame &from, const Frame &to)
+    {
+        Match &m = m_match;
+        m.from = from.serial;
+        m.to = to.serial;
+        const size_t n = to.batches.size();
+        m.previous.assign(n, -1);
+        m.kind.assign(n, kUnmatched);
+        m.cut.assign(n, 0u);
+        m.cutViews.clear();
+        // A teleport: the origin moved more than 30% of the screen's width, or, in the camera's space, by more than half
+        // its distance (a respawn, the next of several alike objects). A cut: in a view (a split screen's: its clip),
+        // 60% or more of the matched objects teleported or moved over 7.5% of the width (the camera cut away).
+        const float jumpPixels = 0.3f * to.screen.width, cutPixels = 0.075f * to.screen.width;
+        struct View
+        {
+            uint32_t matched = 0, moved = 0;
+        };
+        std::unordered_map<uint64_t, View> views;
+        std::unordered_map<uint32_t, bool> used; // the older frame's objects (first batches) taken
+        const auto translation = [](const Batch &batch, float t[3])
+        {
+            if (batch.hasParts)
+                for (int k = 0; k < 3; ++k)
+                    t[k] = batch.object[12 + k];
+            else // the origin on the screen and its depth
+            {
+                const float w = std::fabs(batch.matrix[15]) > 1e-3f ? batch.matrix[15] : 1e-3f;
+                t[0] = batch.matrix[12] / w;
+                t[1] = batch.matrix[13] / w;
+                t[2] = batch.matrix[15];
+            }
+        };
+        // How a matched object is drawn between the two frames (teleport, spin or between), counted for its view.
+        const auto classify = [&](size_t i, int32_t match)
+        {
+            const Batch &b = to.batches[i];
+            used[static_cast<uint32_t>(match)] = true;
+            const Batch &p = from.batches[static_cast<size_t>(match)];
+            const bool parts = b.hasParts && p.hasParts;
+            // The origin's move on the screen, where it says something: in front of the camera, not near its plane (a
+            // large object's origin beside the camera projects anywhere).
+            float moved = 0.0f, ax, ay, bx, by, step = 0.0f, distance = 0.0f;
+            if (parts)
+            {
+                float ta[3], tb[3];
+                translation(p, ta);
+                translation(b, tb);
+                step = std::hypot(ta[0] - tb[0], ta[1] - tb[1], ta[2] - tb[2]);
+                distance = std::max(std::hypot(ta[0], ta[1], ta[2]), std::hypot(tb[0], tb[1], tb[2]));
+            }
+            const float nearPlane = parts ? 0.2f * distance : 1e-3f;
+            if (p.matrix[15] > nearPlane && b.matrix[15] > nearPlane && originOnScreen(p.matrix, ax, ay) && originOnScreen(b.matrix, bx, by))
+                moved = std::hypot(bx - ax, by - ay);
+            // With the parts, a teleport is told in the camera's space (a step over half the distance); without, on the
+            // screen.
+            const bool teleport = parts ? step > 0.5f * distance + 1.0f : moved > jumpPixels;
+            uint8_t kind = kLerp;
+            if (parts && turnBetween(p.object, b.object) > 90.0f)
+                kind = kSpin;
+            if (teleport)
+                kind = kTeleport;
+            m.previous[i] = match;
+            m.kind[i] = kind;
+            View &view = views[viewOf(b.clip)];
+            ++view.matched;
+            view.moved += teleport || moved > cutPixels ? 1u : 0u;
+        };
+        // First the objects alone of their kind in their view (a split screen's: its clip): matched as they are. The
+        // alike ones (the same model placed several times, no instance of its own) wait for the camera's move.
+        std::vector<size_t> alike;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const Batch &b = to.batches[i];
+            if (b.key == 0u)
+                continue;
+            if (const auto own = to.keys.find(b.key); own != to.keys.end() && own->second != i)
+                continue; // the object's next batch (below)
+            const auto group = from.bases.find(b.base);
+            if (group == from.bases.end())
+                continue; // new: where it is now
+            const uint64_t view = viewOf(b.clip);
+            int32_t only = -1;
+            uint32_t count = 0;
+            for (const uint32_t candidate : group->second)
+                if (viewOf(from.batches[candidate].clip) == view)
+                {
+                    only = static_cast<int32_t>(candidate);
+                    ++count;
+                }
+            if (count == 1u)
+                classify(i, only);
+            else if (count > 1u)
+                alike.push_back(i);
+        }
+        // The camera's move in each view, from the objects alone of their kind: an object fixed in the world goes from
+        // A to A' = D A in the camera's space (D: the camera's move); D taken from the object most others agree with
+        // (the scenery), none when too few do (a cut, a view of moving cars).
+        struct Move
+        {
+            bool known = false;
+            float d[16];
+        };
+        std::unordered_map<uint64_t, Move> moves;
+        if (!alike.empty())
+        {
+            std::unordered_map<uint64_t, std::vector<size_t>> unique; // view -> objects matched alone, between
+            for (size_t i = 0; i < n; ++i)
+                if (m.kind[i] == kLerp && to.batches[i].hasParts && from.batches[static_cast<size_t>(m.previous[i])].hasParts &&
+                    to.keys.find(to.batches[i].key)->second == i)
+                    unique[viewOf(to.batches[i].clip)].push_back(i);
+            for (auto &[view, list] : unique)
+            {
+                if (list.size() < 4u)
+                    continue;
+                const size_t tries = std::min<size_t>(list.size(), 12u), checks = std::min<size_t>(list.size(), 40u);
+                uint32_t bestScore = 0;
+                Move &move = moves[view];
+                for (size_t t = 0; t < tries; ++t)
+                {
+                    const size_t i = list[t * list.size() / tries];
+                    const Batch &b = to.batches[i], &p = from.batches[static_cast<size_t>(m.previous[i])];
+                    float inverse[16], d[16];
+                    if (!invertAffine(p.object, inverse))
+                        continue;
+                    multiply(b.object, inverse, d);
+                    uint32_t score = 0;
+                    for (size_t c = 0; c < checks; ++c)
+                    {
+                        const size_t j = list[c * list.size() / checks];
+                        const Batch &bj = to.batches[j], &pj = from.batches[static_cast<size_t>(m.previous[j])];
+                        float predicted[3];
+                        transformPoint(d, pj.object + 12, predicted);
+                        const float error = std::hypot(predicted[0] - bj.object[12], predicted[1] - bj.object[13], predicted[2] - bj.object[14]);
+                        score += error < 0.02f * std::hypot(bj.object[12], bj.object[13], bj.object[14]) + 0.5f ? 1u : 0u;
+                    }
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        std::memcpy(move.d, d, sizeof(d));
+                    }
+                }
+                move.known = bestScore >= 3u && bestScore * 2u >= checks;
+            }
+        }
+        // The alike ones: the nearest of the older frame's in the same view, where it was either moved by the camera's
+        // move (the scenery) or not (riding with the camera: a car's parts under a chase camera), whichever tells them
+        // apart better. Ambiguous when another one lies within twice that distance (a row of alike objects passing
+        // about one spacing a frame: the nearest is the wrong one, the row would seem to run backwards): drawn where it
+        // is now, as an unmatched one.
+        for (const size_t i : alike)
+        {
+            const Batch &b = to.batches[i];
+            float tb[3];
+            translation(b, tb);
+            const uint64_t view = viewOf(b.clip);
+            const auto group = from.bases.find(b.base);
+            const auto found = moves.find(view);
+            const Move *move = found != moves.end() && found->second.known && b.hasParts ? &found->second : nullptr;
+            int32_t choice = -1;
+            float choiceRatio = 0.0f;
+            for (int way = 0; way < (move ? 2 : 1); ++way)
+            {
+                int32_t match = -1;
+                float best = 0.0f, second = -1.0f;
+                for (const uint32_t candidate : group->second)
+                {
+                    const Batch &c = from.batches[candidate];
+                    if (viewOf(c.clip) != view)
+                        continue;
+                    float ta[3];
+                    translation(c, ta);
+                    if (way == 1 && c.hasParts)
+                    {
+                        float moved[3];
+                        transformPoint(move->d, c.object + 12, moved);
+                        std::memcpy(ta, moved, sizeof(ta));
+                    }
+                    const float d = std::hypot(ta[0] - tb[0], ta[1] - tb[1], ta[2] - tb[2]);
+                    if (used.count(candidate))
+                    {
+                        if (second < 0.0f || d < second)
+                            second = d;
+                        continue;
+                    }
+                    if (match < 0 || d < best)
+                    {
+                        if (match >= 0 && (second < 0.0f || best < second))
+                            second = best;
+                        best = d;
+                        match = static_cast<int32_t>(candidate);
+                    }
+                    else if (second < 0.0f || d < second)
+                        second = d;
+                }
+                if (match < 0)
+                    continue;
+                const float ratio = second < 0.0f ? 1e30f : second / std::max(best, 1e-6f);
+                if (ratio > choiceRatio)
+                {
+                    choiceRatio = ratio;
+                    choice = match;
+                }
+            }
+            if (choice < 0)
+                continue; // new: where it is now
+            if (choiceRatio < 2.0f)
+            {
+                used[static_cast<uint32_t>(choice)] = true;
+                continue;
+            }
+            classify(i, choice);
+        }
+        // Each object's other batches as its first.
+        for (size_t i = 0; i < n; ++i)
+            if (to.batches[i].key != 0u)
+                if (const auto own = to.keys.find(to.batches[i].key); own != to.keys.end() && own->second != i)
+                {
+                    m.previous[i] = m.previous[own->second];
+                    m.kind[i] = m.kind[own->second];
+                }
+        for (const auto &[id, view] : views)
+            if (view.matched >= 6u && view.moved * 10u >= view.matched * 6u)
+                m.cutViews[id] = true;
+        if (!m.cutViews.empty())
+            for (size_t i = 0; i < n; ++i)
+                m.cut[i] = m.cutViews.count(viewOf(to.batches[i].clip)) != 0u ? 1u : 0u;
+    }
+
     bool Renderer::present(float x, float y, float width, float height)
     {
         if (!gl::loaded())
@@ -535,7 +978,19 @@ void main()
             overlay = m_overlayPublished;
             backdrop = m_backdrop;
         }
-        if (published && published != m_shown && (!m_shown || published->time > m_shown->time))
+        // Interpolating: the two frames the window's clock lies between (pickInterpolated), the newer drawn with its
+        // keyed objects and tracked triangles that far back toward the older. Otherwise the newest, once.
+        const double presentNow = secondsNow();
+        const bool interpolate = interpolating();
+        std::shared_ptr<const Frame> previous;
+        float alpha = 1.0f;
+        if (interpolate)
+        {
+            std::shared_ptr<const Frame> to;
+            if (pickInterpolated(previous, to, alpha, presentNow))
+                m_shown = std::move(to);
+        }
+        else if (published && published != m_shown && (!m_shown || published->time > m_shown->time))
             m_shown = published;
         if (backdrop && secondsNow() - backdrop->time > 0.2)
             backdrop = nullptr;
@@ -603,6 +1058,106 @@ void main()
             g.BufferSubData(gl::kArrayBuffer, 0, static_cast<gl::GLsizeiptr>(bytes), frame->vertices.data());
         }
 
+        // Interpolating: the keyed batches' matrices between the two frames, and the tracked triangles' corners.
+        const bool lerping = interpolate && previous && alpha < 1.0f;
+        struct Lerped
+        {
+            float matrix[16];
+            bool use = false;
+        };
+        static thread_local std::vector<Lerped> s_lerped;
+        s_lerped.assign(lerping ? frame->batches.size() : 0u, Lerped{});
+        PresentInfo info;
+        info.time = presentNow;
+        info.from = previous ? previous->serial : 0u;
+        info.to = frame->serial;
+        info.alpha = lerping ? alpha : 1.0f;
+        if (lerping)
+        {
+            if (m_match.from != previous->serial || m_match.to != frame->serial)
+                matchFrames(*previous, *frame); // once per pair of frames
+            const size_t n = frame->batches.size();
+            size_t last = SIZE_MAX;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const Batch &b = frame->batches[i];
+                if (b.key == 0u)
+                    continue;
+                ++info.keyedBatches;
+                const int32_t from = m_match.previous[i];
+                const uint8_t kind = m_match.kind[i];
+                if (from < 0 || kind == kTeleport || m_match.cut[i])
+                    continue;
+                if (last != SIZE_MAX && frame->batches[last].key == b.key && m_match.previous[last] == from) // the object's next batch
+                {
+                    s_lerped[i] = s_lerped[last];
+                    info.interpolatedBatches += s_lerped[i].use ? 1u : 0u;
+                    continue;
+                }
+                last = i;
+                const Batch &p = previous->batches[static_cast<size_t>(from)];
+                if (b.hasParts && p.hasParts)
+                {
+                    float camera[16], object[16];
+                    lerpMatrix(p.camera, b.camera, alpha, camera);
+                    if (kind == kSpin)
+                    {
+                        std::memcpy(object, b.object, sizeof(object));
+                        for (int k = 12; k < 16; ++k)
+                            object[k] = p.object[k] + (b.object[k] - p.object[k]) * alpha;
+                    }
+                    else
+                        interpolateObject(p.object, b.object, alpha, object);
+                    multiply(camera, object, s_lerped[i].matrix);
+                }
+                else if (kind == kLerp)
+                    lerpMatrix(p.matrix, b.matrix, alpha, s_lerped[i].matrix);
+                else
+                    continue;
+                s_lerped[i].use = true;
+                ++info.interpolatedBatches;
+            }
+            // Tracked triangles: each corner between where the older frame had it and where the newer has it.
+            const float jumpPixels = 0.3f * frame->screen.width;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const Batch &b = frame->batches[i];
+                if (b.idFirst < 0)
+                    continue;
+                const bool viewCut = m_match.cutViews.count(viewOf(b.clip)) != 0u;
+                m_trackedScratch.assign(frame->vertices.begin() + b.first, frame->vertices.begin() + b.first + b.count);
+                bool moved = false;
+                for (uint32_t t = 0; t < b.count / 3u; ++t)
+                {
+                    const uint64_t id = frame->triangleIds[static_cast<size_t>(b.idFirst) + t];
+                    if (id == 0u)
+                        continue;
+                    ++info.trackedTriangles;
+                    const auto found = previous->tracked.find(id);
+                    if (viewCut || found == previous->tracked.end() || found->second + 3u > previous->vertices.size())
+                        continue;
+                    const Vertex *pv = &previous->vertices[found->second];
+                    Vertex *cv = &m_trackedScratch[3u * t];
+                    const float dx = (cv[0].x + cv[1].x + cv[2].x - pv[0].x - pv[1].x - pv[2].x) / 3.0f;
+                    const float dy = (cv[0].y + cv[1].y + cv[2].y - pv[0].y - pv[1].y - pv[2].y) / 3.0f;
+                    if (std::hypot(dx, dy) > jumpPixels)
+                        continue;
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        cv[k].x = pv[k].x + (cv[k].x - pv[k].x) * alpha;
+                        cv[k].y = pv[k].y + (cv[k].y - pv[k].y) * alpha;
+                        cv[k].z = pv[k].z + (cv[k].z - pv[k].z) * alpha;
+                    }
+                    moved = true;
+                    ++info.trackedInterpolated;
+                }
+                if (moved)
+                    g.BufferSubData(gl::kArrayBuffer, static_cast<gl::GLintptr>(b.first * sizeof(Vertex)),
+                                    static_cast<gl::GLsizeiptr>(b.count * sizeof(Vertex)), m_trackedScratch.data());
+            }
+        }
+        m_lastPresent = info;
+
         const Screen &screen = frame->screen;
         g.BindFramebuffer(gl::kFramebuffer, gpu.fbo);
         g.Viewport(0, 0, w, h);
@@ -651,8 +1206,10 @@ void main()
             return rect;
         };
         bool scissored = false;
-        for (const Batch &batch : frame->batches)
+        for (size_t index = 0; index < frame->batches.size(); ++index)
         {
+            const Batch &batch = frame->batches[index];
+            const float *matrix = !s_lerped.empty() && s_lerped[index].use ? s_lerped[index].matrix : batch.matrix;
             const Material &m = batch.material;
             const Rect clip = clipOf(batch);
             if (clip.y1 < 0)
@@ -673,7 +1230,7 @@ void main()
                 g.Enable(gl::kDepthTest);
             else
                 g.Disable(gl::kDepthTest);
-            g.Uniform4fv(gpu.locM, 4, batch.matrix);
+            g.Uniform4fv(gpu.locM, 4, matrix);
             const std::shared_ptr<const Texture> &texture = batch.texture;
             const int textured = m.textured && texture ? 1 : 0, alphaTest = m.alphaTest ? 1 : 0;
             const int opaque = m.blend == Material::Blend::Opaque ? 1 : 0, fog = m.fog ? 1 : 0;

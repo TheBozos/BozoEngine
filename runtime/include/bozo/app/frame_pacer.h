@@ -64,12 +64,18 @@ public:
             while ((now = Clock::now()) < due)
                 std::this_thread::yield();
         }
-        const double step = bozo::det::enabled() ? 1.0 / static_cast<double>(cap != 0u ? cap : 60u)
-                                                 : std::min(std::chrono::duration<double>(now - m_previous).count(), kMaxStepSeconds);
         // The next frame is due a period after this one was: frames on time keep the cap's own schedule (taking the
         // time the wait woke at instead loses the spin's overshoot every frame: 59.4 frames a second at a cap of 60);
         // a late one starts it again from now.
-        m_previous = due != Clock::time_point{} && now - due < std::chrono::milliseconds(2) ? due : now;
+        const Clock::time_point next = due != Clock::time_point{} && now - due < std::chrono::milliseconds(2) ? due : now;
+        // The step is the frame's span on that schedule (from the previous frame's place on it to this one's): a frame
+        // on time is one period. Measured to `now` instead, each wake-up's overshoot past `due` was counted twice (in
+        // this step and, the schedule kept at `due`, again in the next): the steps summed about 1 % more than the real
+        // time at a cap of 60, and the EE clock charged from them ran that much fast (TMB_TRACE_CLOCK, phase 4 M4b).
+        // Unpaced (no due), next is now: the step as before.
+        const double step = bozo::det::enabled() ? 1.0 / static_cast<double>(cap != 0u ? cap : 60u)
+                                                 : std::min(std::chrono::duration<double>(next - m_previous).count(), kMaxStepSeconds);
+        m_previous = next;
         m_lastReturn = Clock::now();
         m_lastStep.store(step, std::memory_order_relaxed);
         m_frames.fetch_add(1u, std::memory_order_relaxed);

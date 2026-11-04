@@ -142,19 +142,10 @@ the backdrop / display picture (M0/M1). Checked in the window:
 - Each movie's start stalls the game 400-560 ms, as in M3. The sound is dropped there (3,282-8,067 frames), but
   pictures and sound restart together.
 
-**Clock drift (M1 / M3, not changed here).** `TMB_TRACE_CLOCK=1` shows the EE clock running about **1.0 % faster than
-the PC's** between stalls (frames 1500 to 1800: EE 5.052 s for PC 5.000 s; 2400 to 3000: 10.096 s for 10.000 s).
-- **Why:** `nativeFrameEnd` charges `max(real, accounted)` each frame. A frame whose guest code waits past a vblank
-  (59.94 Hz fields against 60.0 presents) keeps its extra field, and nothing pays it back.
-- **Effect:** the sound is made 1 % faster than it plays. The device's ratio sits at its +1 % limit, the queue climbs
-  to 64 ms, and then 33-68 ms chunks are dropped every few seconds (menus, title). They are audible as small skips,
-  and the A/V offset saw-tooths between ~40 and ~75 ms.
-- **Choice for the lead:**
-  - pace frames by the EE clock (hold a two-field frame for two periods);
-  - or carry the over-accounted time in real-time mode (only when paced: headless and pinned runs unchanged);
-  - or widen the device ratio.
-
-  Not done here, because it changes the game's timing in real time.
+**Clock drift: fixed in M4b** (below). M4 measured the EE clock running about 1.0 % faster than the PC's between
+stalls (frames 1500 to 1800: EE 5.052 s for PC 5.000 s), so the sound was made 1 % faster than it played and was
+dropped in 33-68 ms chunks every few seconds. The movie numbers above are M4's; with M4b the queue holds its 32 ms
+target through the movie, so the sound trails the picture by a steady ~35-42 ms.
 
 ## Menus, options, pause
 
@@ -200,14 +191,108 @@ Screenshots and logs are in `D:\BozoScratch\m4\`. The sheets are `movies1_sheet`
 - **Video options applied live** with Apply (resolution, render scale), and Apply and save, then restart.
 - **Cheats by clicking:** each checkbox in a match, and Story: start at a level, then a new story.
 - **The panel's size** on a high-DPI monitor (scaled by the window's display scale).
-- **The movie's sound against its picture by eye**, and the small skips the clock drift causes (see above).
+- **The movie's sound against its picture by eye.**
 
 ## Not done
 
-- **Frame rates above 60** (the fork's "Match the monitor" interpolation): BozoEngine's present has no interpolation
-  yet. The fork renderer's interpolation is in `native_renderer.cpp`, which this task could not read. `frame_rate` is
-  kept in `video.ini` and the Video tab shows it disabled. `Renderer::setFrameRate` is never called with a nonzero
-  rate, because it would change the mesh submitter's tracked draws.
 - **The GS scale:** no GS.
 - **Crash reports:** already in M2 (`app.cpp`); nothing new.
-- **The EE / PC clock drift** above.
+
+## M4b: the clock drift and frame rates above 60
+
+BozoEngine `phase4/m4b` (from main e20a4c5), TMB `bozo/m4b` (from `bozo/m0` 79f0f76).
+
+### The clock drift
+
+The cause was the frame pacer, not the guest's accounting:
+- `FramePacer::frameEnd` kept the cap's schedule (`m_previous = due` for a frame on time), but returned the step
+  measured to the time the wait woke at (`now - m_previous`).
+- Every wake-up's overshoot past `due` was therefore counted twice: in this frame's step, and again in the next one,
+  measured from `due`.
+- The steps summed about 1 % more than the real time. `nativeFrameEnd` charges the EE the step, so the EE ran 1 % fast.
+- The step is now the frame's span on the schedule: one period for a frame on time, as before for a late one.
+- Unpaced (headless, checked) the schedule is `now`, so the step is unchanged. Deterministic mode returns one period,
+  as before.
+
+The coordinator's decision is in too: `nativeFrameEnd` carries a debt in paced mode only. A frame whose guest code
+accounted more than its real time leaves the EE that far ahead, and later frames that come in under pay it back from
+what they would charge.
+- Alone it did not move the drift: its run still showed EE/PC 1.010-1.016 per 300 frames and debt 0, because frames
+  rarely over-account.
+- It stays as the guard for that case.
+
+`TMB_TRACE_CLOCK=1` reports, every 300 frames: EE against PC since the first frame end, the last 300 frames' EE/PC,
+and the debt. Run: `ch1p_frames.txt` to frame 8000 (title, menus, the match from 5591).
+
+| | Steady EE/PC per 300 frames | Audio queue (target 32 ms) | Device ratio | Drop events (8000 frames) |
+|---|---|---|---|---|
+| Before (M4, and M4b's debt alone) | 1.0096-1.0162 | climbs 30 to 65 ms, then drops | at its +1 % limit | 15, through the menus and the match |
+| After (pacer step + debt) | **0.9998-1.0002** | 31.3-32.7 ms | 0.9994-1.0006 | **7, all at the game's stalls** (240-580 ms: boot, the movie's start, the level load) |
+
+- **Stalls:** the EE still falls behind the PC by the stalls (each frame's step is capped at 0.1 s:
+  `FramePacer::kMaxStepSeconds`). That is a constant offset, not a drift.
+- **Movie (the Prologue, `movies2.txt`):** the queue is 32.1 ms with ratio 1.0000 throughout, with no drop or
+  underrun. So the sound trails the picture by a steady ~35-42 ms: the queue, plus the device's 10 ms, less the
+  present's 0-17 ms.
+
+### Frame rates above 60
+
+Moved from the fork's `native_renderer.cpp` / `.h` (team code):
+- **At publishing** (`renderer.cpp`): the frame's keys, bases and tracked-triangle map, and its place on the smoothed
+  clock (`pts`, `continuous`, `m_history`, `m_interval`, `m_late`).
+- **In `present_gl.cpp`:**
+  - `pickInterpolated`: the two frames the window's clock lies between, one game frame behind;
+  - `matchFrames`: the older frame's batch for each keyed batch of the newer, including the alike objects matched by
+    the camera's move; teleports, spins and cut views;
+  - the keyed batches drawn with matrices between the two (the camera linearly, the object's rotation by slerp), and
+    the tracked triangles with their corners between;
+  - the maths: `lerpMatrix`, `rotationOf`, `interpolateObject`, `invertAffine`.
+- **Left out:** the fork's statistics, trace and check logs (`PS2X_PRESENT_STATS`, `PS2X_INTERP_LOG` / `_CHECK` /
+  `_TRACE`).
+- **Upload:** the vertex buffer is uploaded at every present, and the moved tracked triangles over it. The fork
+  uploaded once per frame.
+- **`Renderer::lastPresent()`:** what the last present drew.
+
+Wired:
+- `video.ini`'s `frame_rate` and `PS2X_FRAME_RATE` go to `Renderer::setFrameRate`, live.
+- The Video tab has the fork's combo back: 60 (the game's); Match the monitor (refresh, vsync); a set rate.
+- The window's loop, while interpolating, presents at each vsync (`monitor`) or on its own schedule of n a second
+  without vsync (sleep, then spin). It no longer waits for the game's frames.
+- F8's `seq<k>.txt` lines add, while interpolating, the two frames drawn between, how far, and how many batches and
+  triangles moved.
+
+Measured in real time, the 1P match (`ch1p_frames.txt`, frames ~5200-6040), on a 60 Hz monitor (so without vsync):
+
+| `PS2X_FRAME_RATE` | Presents/s | Game frames/s | Game work (`PS2X_FRAME_STATS`) |
+|---|---|---|---|
+| 120 | 119.1-120.0 | 59.8-60.3 | 4.8-6.3 ms avg, p95 5.8-7.8, max 11.8 |
+| 144 | 138.9-144.1 (two 2 s windows at 139 and 143) | 59.8-60.3 | 5.0-6.6 ms avg, p95 6.0-9.5, max 10.2 |
+
+- **In-between frames:** `D:\BozoScratch\m4b\fr120\seq1_*.png` and `fr144\seq1_*.png` (sheet `fr144_sheet.png`) are
+  8 consecutive presents.
+- Each one is drawn between two game frames, at alpha 0.08-0.92: 198 of 198 keyed batches and 230 of 230 tracked
+  triangles moved.
+- Every consecutive pair of captures differs, and the camera turns a step at each present.
+
+**Draws:** interpolation is present-side and off when the frame rate is the game's, so the pinned runs (frame rate 0)
+are unaffected.
+- **The draw lists do change while interpolating, by design (as on the fork):** the mesh submitter sends keyed
+  screen-space draws through `drawTracked`.
+- A real-time `draws` comparison at a rate above 60 would therefore differ from the reference; the pinned checks never
+  run that way.
+
+### M4b checks
+
+| Check | Result |
+|---|---|
+| `tmb-check boot.clg --pinned` | **MATCH**, 0 divergences; draws 2999/3000 (the log's last frame, as before) |
+| `tmb-check match1p.clg --pinned --pad-script ch1p_frames.txt` | **MATCH**, 0 divergences; draws 15999/16000 (as before) |
+| Free 1P (16000 frames) and story (12000, `TMB_PLAYER_GOD=1`) | records **byte-identical** to the pre-M4 build's (the pacer change does not touch unpaced runs) |
+
+### For the user to test (M4b)
+
+- **Video, Frame rate "Match the monitor"** on a 120 / 144 / 165 / 240 Hz monitor: smoothness in a match. Known: rain,
+  snow, lens flares and some trails still move at 60, as on the fork.
+- A set rate above the monitor's (`PS2X_FRAME_RATE=144` on 60 Hz: tearing, no vsync).
+- Switching the rate live in the Video tab, then Apply.
+- **Menus, title, a match and a movie by ear:** no small sound skips now. Skips at loads (the game's stalls) remain.

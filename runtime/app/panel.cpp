@@ -6,8 +6,7 @@
 //   fork's panel host lived in a file that cannot move (phase4-inventory.md section 2.2).
 // - The Settings window's Video and Controls tabs are moved from the team's lines of the fork's ps2_debug_panel.cpp
 //   (2230-2519, phase4-inventory.md section 2.1): raylib's key reads replaced by SDL3 events
-//   (input::bindingFromEvent), four players instead of two, the GS scale and the frame rate shown as what they are on
-//   BozoEngine (kept in video.ini, not applied).
+//   (input::bindingFromEvent), four players instead of two, no GS scale (kept in video.ini, not applied).
 #include "bozo/app/panel.h"
 
 #include "bozo/app/app.h"
@@ -324,23 +323,37 @@ namespace bozo::app
         envNote("PS2X_RENDER_SCALE");
         ImGui::TextDisabled("The 3D against the window's resolution (applies at once).");
 
-        // The frame rate: the game's 60. The frames between the game's (the PS2Recomp build's "Match the monitor") have
-        // not moved to BozoEngine: a rate video.ini sets is kept there and shown, not applied.
-        ImGui::BeginDisabled(true);
+        // The window's frame rate: the game's 60, or the monitor's with the frames between the game's interpolated (a set
+        // rate, from video.ini or PS2X_FRAME_RATE, is offered as it is).
+        const int refresh = video::monitorRefresh();
+        std::vector<std::pair<int, std::string>> rates = {{0, "60 (the game's)"},
+                                                          {-1, "Match the monitor (" + std::to_string(refresh) + " Hz), smoothed (experimental)"}};
+        for (const int set : {current.frameRate, edited.frameRate})
+            if (set > 0 && std::none_of(rates.begin(), rates.end(), [&](const auto &r) { return r.first == set; }))
+                rates.emplace_back(set, std::to_string(set) + " a second, smoothed (no vsync, experimental)");
+        int rateIndex = 0;
+        for (size_t i = 0; i < rates.size(); ++i)
+            if (rates[i].first == edited.frameRate)
+                rateIndex = static_cast<int>(i);
         ImGui::SetNextItemWidth(240.0f * unit);
-        const std::string rate = edited.frameRate == 0 ? std::string("60 (the game's)")
-                                                       : video::frameRateName(edited.frameRate) + " (kept in video.ini, shown at 60)";
-        if (ImGui::BeginCombo("Frame rate", rate.c_str()))
+        if (ImGui::BeginCombo("Frame rate", rates[static_cast<size_t>(rateIndex)].second.c_str()))
+        {
+            for (size_t i = 0; i < rates.size(); ++i)
+                if (ImGui::Selectable(rates[i].second.c_str(), static_cast<int>(i) == rateIndex))
+                    edited.frameRate = rates[i].first;
             ImGui::EndCombo();
-        ImGui::EndDisabled();
+        }
         envNote("PS2X_FRAME_RATE");
-        ImGui::TextDisabled("The game runs and is shown at 60 (%d Hz monitor). Frames between the game's: not yet.", video::monitorRefresh());
+        ImGui::TextDisabled("The game runs at 60. Above that, each frame is drawn between the game's two latest:");
+        ImGui::TextDisabled("smoother on a high-refresh monitor, one game frame (17 ms) more input lag. Applies at once.");
+        ImGui::TextDisabled("Experimental: a few effects (rain, lens flares, some trails) still move at 60.");
         ImGui::TextDisabled("The picture keeps its 4:3, centred with bars, whatever the window's shape.");
 
         ImGui::Separator();
         const auto [windowWidth, windowHeight] = video::windowSize();
-        ImGui::Text("Now: %d x %d, %s, render scale %d%%; window %d x %d", current.width, current.height, video::modeName(current.mode),
-                    static_cast<int>(std::lround(current.renderScale * 100.0f)), windowWidth, windowHeight);
+        ImGui::Text("Now: %d x %d, %s, render scale %d%%, frame rate %s; window %d x %d", current.width, current.height,
+                    video::modeName(current.mode), static_cast<int>(std::lround(current.renderScale * 100.0f)),
+                    video::frameRateName(current.frameRate).c_str(), windowWidth, windowHeight);
         static std::string s_status;
         if (ImGui::Button("Apply"))
         {

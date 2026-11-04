@@ -268,6 +268,8 @@ namespace bozo::app
         uint64_t runFirstFrames = 0;
         Clock::time_point runFirst{};
         uint64_t seen = 0;
+        int swapRate = 0; // the frame rate the swap interval was set for
+        Clock::time_point nextPresent{};
         while (!quit)
         {
             SDL_Event event;
@@ -306,8 +308,40 @@ namespace bozo::app
             if (thread.done.load(std::memory_order_acquire))
                 break;
 
-            // The next frame the game publishes (a 30th of a second at most: the window stays responsive).
-            const bool isFresh = renderer.waitForFrame(seen, 1.0 / 30.0);
+            // The frame rate (Renderer::setFrameRate, the Video settings): the game's, each frame the game publishes
+            // shown once as it comes (waiting a 30th of a second at most: the window stays responsive); the monitor's,
+            // presented at each vsync; n a second, presented on that schedule without vsync. Above the game's, the
+            // renderer draws the frames between the game's (interpolation).
+            const int rate = renderer.interpolating() ? renderer.frameRate() : 0;
+            if (rate != swapRate)
+            {
+                SDL_GL_SetSwapInterval(rate > 0 ? 0 : rate < 0 ? 1 : (options.vsync ? 1 : 0));
+                swapRate = rate;
+                nextPresent = Clock::now();
+            }
+            bool isFresh;
+            if (rate == 0)
+                isFresh = renderer.waitForFrame(seen, 1.0 / 30.0);
+            else
+            {
+                if (rate > 0)
+                {
+                    // Sleep most of the wait, then spin the last stretch (as the frame pacer); a late present starts the
+                    // schedule again from now.
+                    const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / rate));
+                    nextPresent += period;
+                    Clock::time_point t = Clock::now();
+                    if (t > nextPresent + period)
+                        nextPresent = t;
+                    if (nextPresent - t > std::chrono::milliseconds(2))
+                        std::this_thread::sleep_until(nextPresent - std::chrono::milliseconds(1));
+                    while (Clock::now() < nextPresent)
+                        std::this_thread::yield();
+                }
+                const uint64_t publishes = renderer.publishes();
+                isFresh = publishes != seen;
+                seen = publishes;
+            }
             const Clock::time_point now = Clock::now();
             if (isFresh)
             {
@@ -409,7 +443,18 @@ namespace bozo::app
                 std::snprintf(name, sizeof(name), "seq%d_%03d.png", sequences, sequenceIndex);
                 writer.capture(sequenceDir + "/" + name, pw, ph);
                 if (sequenceLog)
-                    sequenceLog << name << " t=" << elapsed << " s, game frame " << frames << (isFresh ? "" : " (held)") << "\n";
+                {
+                    sequenceLog << name << " t=" << elapsed << " s, game frame " << frames << (isFresh ? "" : " (held)");
+                    // Interpolating: the two published frames drawn between and how far (1: the newer as it is).
+                    if (renderer.interpolating())
+                    {
+                        const render::Renderer::PresentInfo info = renderer.lastPresent();
+                        sequenceLog << ", drawn between frames " << info.from << " and " << info.to << " at " << info.alpha << " ("
+                                    << info.interpolatedBatches << " of " << info.keyedBatches << " keyed batches, "
+                                    << info.trackedInterpolated << " of " << info.trackedTriangles << " tracked triangles moved)";
+                    }
+                    sequenceLog << "\n";
+                }
                 ++sequenceIndex;
                 if (--sequenceLeft == 0)
                     sequenceLog.close();

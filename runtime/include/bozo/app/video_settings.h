@@ -11,8 +11,9 @@
 //
 // The file is the fork's, line for line: a video.ini the fork wrote reads the same, and the fork reads ours.
 // - gs_scale (the fork's GS renderer's internal scale) is kept and written back as read: BozoEngine has no GS.
-// - frame_rate is kept and written back as read, but not applied: the frames between the game's (the fork renderer's
-//   interpolation) have not moved to BozoEngine yet, so the window shows the game's 60.
+// - frame_rate (game, monitor or a number): the window's frame rate, live (Renderer::setFrameRate: above the game's
+//   60, the frames between the game's drawn interpolated; the window's loop presents at the monitor's refresh with
+//   vsync, or that many a second without).
 //
 // Everything here runs on the window's thread.
 #pragma once
@@ -39,8 +40,8 @@ namespace bozo::app::video
         WindowMode mode = WindowMode::Windowed;
         float renderScale = 1.0f; // the renderer's 3D against the window's size (live)
         int gsScale = 1;          // the fork's GS renderer's scale: kept for the file, unused
-        // The fork's window frame rate: 0 the game's 60 (the default), -1 the monitor's refresh, n that many a second.
-        // Kept for the file; not applied (see above).
+        // The window's frame rate (live): 0 the game's 60 (the default), -1 the monitor's refresh with vsync, n that many
+        // a second without vsync; above the game's, the renderer draws frames between the game's.
         int frameRate = 0;
     };
 
