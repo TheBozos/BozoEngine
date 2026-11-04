@@ -157,6 +157,13 @@ namespace bozo::ee
         void beginOutcall(R5900Context *ctx);
         void endOutcall(R5900Context *ctx);
         bool insideOutcall() const { return outcallDepth_ != 0; }
+        // Guest code an override runs on a context of its own (a copy: TMB's TMB_KILL_ENEMIES calls the game's
+        // vehicleTakeHit on one) is not the thread's: it cannot stop or leave (nothing would run it on from its pc),
+        // so it runs to its return, no event taken and no stop made there (kernel.md section 3b).
+        bool ownContext(const R5900Context *ctx) const
+        {
+            return outcallDepth_ && inGuest_ && currentFrame_ && ctx != &currentFrame_->ctx;
+        }
         // Leave guest code at `pc`: inside an out-call deferred (returns), else stop (does not return).
         void leave(R5900Context *ctx, uint32_t pc);
         // The deferred stop, if any (taken: cleared).
@@ -169,7 +176,13 @@ namespace bozo::ee
         void unknownTarget(uint8_t *, R5900Context *, Runtime *, uint32_t target) override;
         void resumeFailed(uint8_t *, R5900Context *, Runtime *, uint32_t pc) override;
         void yield(uint8_t *, R5900Context *, Runtime *) override;
-        void leaveAt(uint8_t *, R5900Context *ctx, Runtime *, uint32_t pc) override { leave(ctx, pc); }
+        // A recursive call's or an inner call's return inside an override: guest code leaves there, but not on a
+        // context of the override's own (kernel.md section 3b, "Guest code on an override's own context").
+        void leaveAt(uint8_t *, R5900Context *ctx, Runtime *, uint32_t pc) override
+        {
+            if (!ownContext(ctx))
+                leave(ctx, pc);
+        }
         bool jump(uint8_t *, R5900Context *, Runtime *, uint32_t target) override;
         void syscall(uint8_t *, R5900Context *, Runtime *, uint32_t code) override;
         void breakpoint(uint8_t *, R5900Context *, Runtime *, uint32_t code) override;

@@ -170,6 +170,9 @@ namespace bozo::ee
     {
         if (!outcallDepth_)
             stop(ctx, pc);
+        if (ownContext(ctx))
+            host_.fault(*this, ctx, std::format("guest code an override runs on a context of its own blocked at 0x{:x} "
+                                                "(only the thread's own context can leave)", pc));
         ctx->pc = pc;
         ctx->leaving = 1;
         ctx->cycleLimit = 0; // every checkpoint returns from here on
@@ -259,7 +262,7 @@ namespace bozo::ee
     void Dispatcher::libraryEntry(uint8_t *, R5900Context *ctx, Runtime *rt)
     {
         Dispatcher &d = self(rt);
-        if (d.outcallDepth_ && rt->stopDeferred)
+        if (d.outcallDepth_ && rt->stopDeferred && !d.ownContext(ctx))
             d.host_.fault(d, ctx, std::format("an out-call at 0x{:x} after a stop deferred inside a native out-call (depth {}, "
                                               "deferred pc 0x{:x})",
                                               ctx->pc, d.outcallDepth_, d.deferredPc_));
@@ -377,6 +380,13 @@ namespace bozo::ee
         // Inside a native out-call (kernel.md section 3b): guest code leaves it (the stop deferred to its end, the
         // checkpoints returning) where the reference's left: pinned, at the host's point; free, when an event is due or
         // a switch or handler waits (as a stop anywhere else). Events are not taken in place there.
+        if (ownContext(ctx))
+        {
+            // Guest code on an override's own context (kernel.md section 3b): it runs on to its return; the events
+            // due wait for the thread's own code (its next checkpoint, or the override's end).
+            ctx->cycleLimit = ~0ull;
+            return;
+        }
         if (outcallDepth_)
         {
             if (rt_.stopDeferred)
@@ -449,8 +459,8 @@ namespace bozo::ee
         // (hierTraverseAsm's, inside TMB's hier override).
         if (outcallDepth_)
         {
-            if (target == ctx->r[31].uw[0])
-                return false;
+            if (target == ctx->r[31].uw[0] || ownContext(ctx))
+                return false; // an override's own context: the generated code makes the jump (it cannot leave)
             ++jumps;
             leave(ctx, target);
             return true;

@@ -192,6 +192,21 @@ return address is not the pc, or `leaving` is set) to the override, whose own co
 reference's did; when it returns the host stops the thread at the pc (`Dispatcher::takeDeferredStop`, then `stop`).
 The override's C++ is never unwound by an exception.
 
+**Guest code on an override's own context.** An override may run guest code on a context other than the thread's:
+TMB's `TMB_KILL_ENEMIES` cheat calls the game's `vehicleTakeHit` on a copy of the context, once per opponent, inside
+its `TheGame::Update` override. Nothing can run such code on from a pc (the dispatcher only resumes the thread's own
+frames), so it never leaves: the dispatcher (`Dispatcher::ownContext`: inside an out-call, a context that is not the
+running frame's) takes no event and makes no stop for it at a checkpoint (its limit is lifted; the events due wait
+for the thread's own code), an inner call's or a recursive call's return there is a plain return (`bozo_leave` does
+nothing, so `bozo::innerReturn` and the generated recursion check go on when `ctx->leaving` stays 0), and a jump
+through a register is made by the generated code. A call there that blocks cannot be honoured and faults. Before
+this rule the copy left: `vehicleTakeHit` reached bspVecTestIn's inner return 0x2014f0 (an inner return leaves an
+override, above), the stop was deferred on the copy, and the guest code run next (the next copy, or the update on
+the thread's context: `leaving` 0, a cycle limit set before) ran on to cosf's or sinf's call to
+`__ieee754_rem_pio2f` (0x215268): the free story run with `TMB_PLAYER_GOD=1 TMB_KILL_ENEMIES=15` faulted at frame
+5458 ("an out-call at 0x215268 after a stop deferred inside a native out-call"). Pinned runs never use the cheat and
+are unchanged. The EE time such code charges stays on the copy (the thread's clock does not move).
+
 In a pinned run (section 4) the host says where guest code leaves: the reference's record has the transfer flag, its
 pc and its end cycle; guest code leaves at the first checkpoint at that pc once every traced call of the record was
 made and the clock reached the record's end (`Host::outcallDeadline`, `outcallLeave`), or at the first such

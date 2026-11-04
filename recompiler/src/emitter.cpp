@@ -658,7 +658,7 @@ namespace bozo
             // A recursive call's return inside a port's native override leaves the override there (kernel.md section
             // 3b: match1p #17531043, texmInit's _M_erase).
             const std::string recursion =
-                target == f.start ? std::format(" if (BOZO_UNLIKELY(ctx->outcall)) {{ bozo_leave(rdram, ctx, rt, {}); return; }}", hex(from + 8))
+                target == f.start ? std::format(" if (BOZO_UNLIKELY(ctx->outcall)) {{ bozo_leave(rdram, ctx, rt, {}); if (ctx->leaving) return; }}", hex(from + 8))
                                   : std::string();
             return mark + leave(hex(target)) + " " + callTo(target, true) +
                    std::format(" if (BOZO_UNLIKELY(ctx->pc != {} || ctx->leaving)) return;", hex(from + 8)) + recursion;
