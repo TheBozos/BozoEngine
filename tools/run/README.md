@@ -22,6 +22,23 @@ NAME and OVRD chunks, merged with the captures' list when `BOZO_CAPTURES` is set
 with them into `build/tmb_gen` (cached, never committed); `bozo-run` links it with the runtime (`runtime/`) and the
 log-backed host (`log_host.cpp`).
 
+### With a port's overrides (phase 4)
+
+The run is a library (`bozo_run`, `run_main.h`: `bozo::run::main`). A port's checker links it with its own generated
+code and its overrides (`bozo/port.h`, `BOZO_PORT`): TMB_Recomp's `tmb-check` (its `cmake/bozo.cmake`, `-DTMB_BOZO=ON
+-DBOZO_ENGINE_DIR=<this tree>`). Its overrides then run natively instead of being answered from the log, each call
+checked against its record: the context words it changed, its memory runs, its traced calls, the operations and the
+frame end inside it, and whether it returned or left to the dispatcher ([`kernel.md`](../../docs/specs/kernel.md)
+section 3b). Its code is generated with the externals `bozo-externals` writes from the ELF and the port's override list
+(`tools/externals`); at startup every registered override must be one of them. `--overrides log` answers them from the
+log as before. The summary adds `port overrides:` (calls, the out-calls made inside them, divergences) and `draws`
+(the renderer's draw lists against the reference's, reported only).
+
+```sh
+build/bozo/tmb-check D:/BozoCaptures/tmb/calllog/boot.clg --ref <BozoEngine>/reference/tmb/records/boot.ref --pinned \
+      --iso "D:/TMB_Recomp/Twisted Metal - Black (USA).iso"
+```
+
 ## Run
 
 ```sh
@@ -44,6 +61,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
 | `--snd-log-replies on\|off\|<ids>` | pinned mode: whether the 989SND replies the reference's IOP time decided (0x11, 0x19, 0x21, 0x2c) come from 989SND's native model (`off`, the default: `libraries.md` section 15.13c), from the log (`on`), or from the log for the listed command ids only (hex, comma-separated, e.g. `11,2c`); the model is compared with the log's replies either way |
+| `--overrides native\|log` | with a port linked in (`tmb-check`): its overrides run natively (the default) or are answered from the log |
 | `--quiet` | only the summary |
 
 The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference: on

@@ -160,9 +160,14 @@ calls of the SIF: native since batch B3 (section 14).
 ## 5. The GS library (`gs`)
 
 Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
-`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`.
-(`sceGsExecLoadImage` and `sceGsExecStoreImage` are not called in TMB's runs; the reference had `sceGsSyncV` and
+`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`,
+`sceGsExecLoadImage`. (`sceGsExecStoreImage` is not called in TMB's runs; the reference had `sceGsSyncV` and
 `sceGsSetDefLoadImage` as port overrides, kind 2 in the logs, the others as library stubs.)
+
+Phase 4 (TMB's overrides native, `kernel.md` section 3b) reached what only ran inside overrides before:
+`sceGsExecLoadImage(lp, src)` returns 0 and uploads nothing (boot: 86 calls, all inside `texmResInit` /
+`texmLoadResTexture`); `sceGsSetDefLoadImage`'s image tag counts T8H, T4HL and T4HH (0x1b, 0x24, 0x2c) as 32-bit
+texels (match1p #16897863).
 
 There is no GS. The SetDef functions build, in guest memory, the packets the game sends later (the sends themselves are
 DMA and GIF stores, answered from the log until the native renderer takes the draws); the native library writes them
@@ -492,6 +497,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 |---|---|---|
 | 0x10000000 | T0_COUNT | the count written last plus the periods since (T0_MODE 0x82: BUSCLK/256, a count every 512 EE cycles); a load that reads the same count as the previous one (a poll) leaves the period, 512 cycles, pending (charged at the next checkpoint: `calllog.md` section 2) |
 | 0x10000010 | T0_MODE | kept (0x82) |
+| 0x12001000 | GS CSR (loads) | FIELD (bit 13) the vblank count's parity, nothing else (TMB's vblankHandler reads it inside its override: boot #729700 on). A port's own access (`bozo::port::ioRead32` / `ioWrite32`) is not the game's: a store of its does not complete channel 4's transfer (match1p #14450438); a T0 read of its is a poll as the game's, a T0 write of its keeps the last read (#34736003), and the EE time the port charges (`bozo::port::accountCycles`, TMB's frame end) takes the poll's pending cycles as a checkpoint would (#17538393, #17541951) |
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
 | 0x10009000-30 | VIF1 | as VIF0 (D_STAT bit 1): TMB's 3D packets, 2.5M kicks in match1p |
 | 0x1000a000-30 | GIF | as VIF0 (bit 2), except a chain whose first packet draws (its GIF tag sets PRIM: the sprite TMB sends from 0x4fe180 before `sceGsSyncV` on its loading screens, 2,269 kicks in match1p): the reference drops it, no completion and no interrupt |
@@ -500,7 +506,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 | any channel | MADR, QWC, TADR loads | 0 (the reference's answer: TMB reads channel 4's MADR, 0 in every record, also before any transfer) |
 | 0x1000e000 | D_CTRL | kept (TMB writes 3; reads 0 before) |
 | 0x1000e010 | D_STAT | bits 0-9 set by completions, written 1 clear them; bits 16-25 written 1 toggle |
-| 0x1000e020 | D_PCR | kept; CPCOND0 (BC0F/BC0T) is every channel it names completed (any channel before the first write: phase 2's rule) |
+| 0x1000e020 | D_PCR | kept; CPCOND0 (BC0F/BC0T) is every channel it names completed (any channel before the first write: phase 2's rule), the completions counting from the last FlushCache on (phase 4: TMB's hierCheckVifComplete, right after hier__Fi's FlushCache, reads it false although VIF1's last transfer completed: match1p #17540836, every one of its calls) |
 | 0x1000e030-60 | D_SQWC, D_RBSR, D_RBOR, D_STADR | kept |
 | 0x1000f520 | D_ENABLER | 0: no transfer is ever suspended (none runs) |
 | 0x1000f590 | D_ENABLEW | kept |
@@ -579,7 +585,7 @@ reference's IOP answered every RPC inside the call, so nothing is ever in flight
 | `sceSifAllocIopHeap(bytes)`, `sceSifFreeIopHeap(address)` | a block of the IOP heap (14.2); 0 (match1p: 11 of each, every block at 0x8b6c0) |
 | `sceSifLoadModule(path, argc, argv)` | the module id: 1 for the first since the IOP's reboot, then 2... (boot #119-#127: TMB's nine modules, ids 1-9) |
 | `sceSifRebootIop(image)`, `sceSifSyncIop()` | 1 (`v0` is already 1 in the records: #27, #28) |
-| `sceSifSetDma(transfers, n)`, `sceSifDmaStat(id)` | the transfer's id (1, 2, ...); -1 (finished). TMB calls them only inside a port override (the movie's PCM, traced: boot #2157634 id 1, then 2...), so they are never checked against a record of their own; the native ids follow the traced ones |
+| `sceSifSetDma(transfers, n)`, `sceSifDmaStat(id)` | the transfer's id (1, 2, ...), and the DMAC interrupt of channel 5 (SIF0) raised as it returns (boot #2157635, an OP inside the override's record at SetDma's return address); -1 (finished). TMB calls them only inside a port override (the movie's PCM, traced: boot #2157634 id 1, then 2...), so they are never checked against a record of their own; the native ids follow the traced ones |
 
 The reference keeps the IOP side of the bound server (its `SifRpcServerData`) in EE RAM at 0x1f10000, so the game's
 memory holds those words and the native call writes them exactly. A call with an end function (none in TMB) would need

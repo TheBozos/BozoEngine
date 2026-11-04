@@ -35,6 +35,28 @@ add_library(bozo_libs STATIC
   libs/snd989.cpp)
 target_link_libraries(bozo_libs PUBLIC bozo_runtime_core bozo_audio)
 target_compile_options(bozo_libs PRIVATE -Wall -Wextra)
+
+# The native renderer's game side and the offline packs' loaders (bozo/render/: moved from the team's fork code, phase 4).
+# M0: no GPU, the published draw lists recorded and hashed; M1 brings the present thread (SDL3, OpenGL 3.3).
+add_library(bozo_render STATIC
+  render/renderer.cpp
+  render/texture_pack.cpp
+  render/mesh_pack.cpp
+  render/mesh_draw.cpp)
+target_link_libraries(bozo_render PUBLIC bozo_runtime_headers)
+target_compile_options(bozo_render PRIVATE -Wall -Wextra)
+
+# The port API (bozo/port.h): what a game port's overrides build on (phase 4).
+add_library(bozo_port STATIC
+  port/port.cpp)
+target_link_libraries(bozo_port PUBLIC bozo_libs)
+target_compile_options(bozo_port PRIVATE -Wall -Wextra)
+
+# The free host (bozo/host/free_host.h): the game with no call log, every out-call answered by BozoEngine.
+add_library(bozo_host STATIC
+  host/free_host.cpp)
+target_link_libraries(bozo_host PUBLIC bozo_port bozo_render bozo_libs bozo_runtime_core bozo_recomp_lib)
+target_compile_options(bozo_host PRIVATE -Wall -Wextra)
 # The VU0 programs compute in single precision rounded toward zero, as the reference does: the host's float operations
 # under that rounding mode, never folded or fused (libs/vu0.cpp).
 set_source_files_properties(libs/vu0.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math;-ffp-contract=off")

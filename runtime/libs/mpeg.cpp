@@ -2,6 +2,7 @@
 // sceMpegAddStrCallback, sceMpegDemuxPssRing, sceMpegGetPicture, sceMpegIsEnd, and the reference's stub of the game's
 // own videoCallback. Every rule here was settled on the call logs (the records are named in libraries.md).
 #include "bozo/libs/libraries.h"
+#include "bozo/render/movie.h"
 
 #include "bozo/ee/dispatcher.h"
 
@@ -420,6 +421,19 @@ namespace bozo::libs
                 const YuvPicture &p = s.decoded.front();
                 const std::vector<uint8_t> pixels = toGame(p);
                 g.write(rgb, pixels.data(), static_cast<uint32_t>(pixels.size()));
+                // A port that shows the movie itself (bozo/render/movie.h) gets the picture in rows.
+                if (const bozo::render::MoviePictureHook hook = bozo::render::moviePictureHook())
+                {
+                    const int w = p.width, h = p.height, mbh = h / 16;
+                    std::vector<uint8_t> rows(pixels.size());
+                    for (int y = 0; y < h; ++y)
+                        for (int x = 0; x < w; ++x)
+                        {
+                            const size_t from = ((static_cast<size_t>(x / 16) * mbh + y / 16) * 256 + (y % 16) * 16 + x % 16) * 4;
+                            std::memcpy(&rows[(static_cast<size_t>(y) * w + x) * 4], &pixels[from], 4);
+                        }
+                    hook(rgb, static_cast<uint32_t>(w), static_cast<uint32_t>(h), rows.data());
+                }
                 g.write32(s.mp, static_cast<uint32_t>(p.width));
                 g.write32(s.mp + 4, static_cast<uint32_t>(p.height));
                 s.decoded.pop_front();

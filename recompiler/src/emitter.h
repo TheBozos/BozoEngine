@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,10 @@ namespace bozo
     constexpr uint32_t kLeaveCycles = 8;     // a call or jump that leaves the function
 
     // Reads an externals file: one address per line, "stub 0x1234" or "override 0x1234"; '#' starts a comment.
-    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error);
+    // "store 0x1234" names a store instruction the generated code sets ctx->pc before (a port's patch of its game's
+    // register stores tells the stores apart by their instruction: bozo/port.h, setStorePatch).
+    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error,
+                       std::set<uint32_t> *storePcs = nullptr);
 
     struct EmitOptions
     {
@@ -37,6 +41,8 @@ namespace bozo
         // Guest addresses the runtime answers instead of the guest code there (abi.md section 5, replay.md): every
         // transfer to one goes through bozo_call_indirect, where the runtime's override table answers it.
         std::map<uint32_t, ExternalKind> externals;
+        // Store instructions that set ctx->pc to their own address first ("store" lines of the externals file).
+        std::set<uint32_t> storePcs;
     };
 
     struct EmitStats
@@ -68,6 +74,7 @@ namespace bozo
 
     private:
         std::string translate(const Insn &i);
+        std::string translateBody(const Insn &i);
         // A transfer to `target` leaving the function: a C++ call of its entry, or the runtime for an external address
         // or an address that is not an entry. `call`: reached by jal/jalr/bal (else a jump, branch or fall-through).
         std::string callTo(uint32_t target, bool call);

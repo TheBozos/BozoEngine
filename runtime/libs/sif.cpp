@@ -3,6 +3,7 @@
 // sceSifSetSreg, sceSifInitIopHeap, sceSifAllocIopHeap, sceSifFreeIopHeap, sceSifLoadModule, sceSifRebootIop,
 // sceSifSyncIop (and, inside port overrides only, sceSifSetDma and sceSifDmaStat).
 #include "bozo/libs/libraries.h"
+#include "bozo/ee/dispatcher.h"
 
 #include <algorithm>
 
@@ -189,9 +190,16 @@ namespace bozo::libs
         }
         void syncIop(Libraries &, Guest &g) { g.ret(1); }
 
-        // sceSifSetDma(transfers, count): the transfer's id (1, 2, ...): the data reaches the IOP at once.
+        // sceSifSetDma(transfers, count): the transfer's id (1, 2, ...): the data reaches the IOP at once, and the
+        // DMAC interrupt of channel 5 (SIF0) is raised as the call returns (boot #2157635: inside TMB's
+        // audioDecSendToIOP override, at sceSifSetDma's return address, one per call).
         // sceSifDmaStat(id): -1, finished.
-        void setDma(Libraries &l, Guest &g) { g.retU(++l.sif.dmaId); }
+        void setDma(Libraries &l, Guest &g)
+        {
+            g.retU(++l.sif.dmaId);
+            l.io.stat |= 1u << 5;
+            l.dispatcher()->kernel().irq(true, 5);
+        }
         void dmaStat(Libraries &, Guest &g) { g.ret(-1); }
     }
 

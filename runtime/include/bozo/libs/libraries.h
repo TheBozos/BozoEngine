@@ -94,6 +94,9 @@ namespace bozo::libs
     {
         bool active = false;
         uint64_t cycles = 0;
+        // The call's EE time is the library's own (a call made inside a port's override: the log has no record of its
+        // own for it, only the wait it made: kernel.md section 3b).
+        bool nativeCycles = false;
         bool waits = false;
         uint64_t token = 0; // the wait's token (a vblank wait: the vblank count it waits past)
         // The end (flat address + 1) of the memory the log's call wrote, 0 if it wrote none: how much of a stream read
@@ -161,7 +164,7 @@ namespace bozo::libs
         // The EE clock of the call being made (the dispatcher's).
         uint64_t now(Guest &g) const;
         // The EE cycles a timed call takes: the pinned point, else the library's own `native` answer.
-        uint64_t callCycles(uint64_t native) const { return pin.active ? pin.cycles : native; }
+        uint64_t callCycles(uint64_t native) const { return pin.active && !pin.nativeCycles ? pin.cycles : native; }
         // Whether a timed call makes its thread wait, and the wait's token: the pinned point, else the library's own.
         bool waitPoint(bool nativeWaits, uint64_t nativeToken, uint64_t &token) const
         {

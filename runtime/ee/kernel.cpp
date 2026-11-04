@@ -294,7 +294,9 @@ namespace bozo::ee
             q.push_back(q.front());
             q.pop_front();
         }
-        return static_cast<int32_t>(priority);
+        // 0 (KE_OK), as the reference answers it (boot #228421: v0 0 after the rotations TMB makes, all through its
+        // switchThread override; none has v0 the priority).
+        return 0;
     }
 
     void Kernel::block(int32_t id, uint32_t reason, uint32_t object, uint32_t bits, uint32_t mode, bool completion,

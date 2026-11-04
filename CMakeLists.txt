@@ -13,12 +13,19 @@ endif()
 add_library(bozo_runtime_headers INTERFACE)
 target_include_directories(bozo_runtime_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include)
 
+# The checkers and log readers (tools/replay, tools/run) need zlib; a port building BozoEngine as part of its own tree
+# without zlib (the build kit) turns them off. The recompiler and the runtime have no dependency.
+option(BOZO_BUILD_TOOLS "Build the call-log and capture tools (bozo-run, bozo-replay; need zlib)" ON)
+
 add_subdirectory(recompiler)
 add_subdirectory(runtime)
-add_subdirectory(tools/replay)
-add_subdirectory(tools/run)
+if(BOZO_BUILD_TOOLS)
+  add_subdirectory(tools/replay)
+  add_subdirectory(tools/run)
+endif()
+add_subdirectory(tools/externals)
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND PROJECT_IS_TOP_LEVEL)
   add_subdirectory(tests)
 endif()

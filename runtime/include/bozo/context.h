@@ -85,6 +85,8 @@ struct R5900Context
     uint32_t noStop = 0;      // inner calls in progress: events are taken in place until they have returned
     uint32_t inPlace = 0;     // the runtime is asked at an inner call (2) or at its return (1)
     uint32_t stopDue = 0;     // an event taken at an inner call called for a stop: it waits for the return
+    uint32_t outcall = 0;     // a port's native override is running guest code on this context (kernel.md section 3b)
+    uint32_t leaving = 0;     // ...and guest code leaves it: checkpoints return (the stop deferred to the override's end)
 
     R5900Context()
     {

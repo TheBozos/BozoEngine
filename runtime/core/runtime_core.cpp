@@ -3,8 +3,10 @@
 #include "bozo/runtime.h"
 
 #include "bozo/ops_mem.h"
+#include "bozo/port.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 namespace bozo
@@ -68,7 +70,10 @@ void bozo_call_indirect(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t
     {
         ctx->pc = target;
         o(rdram, ctx, rt);
-        ctx->pc = ctx->r[31].uw[0]; // it returned to its caller (what a tail call's caller returns to)
+        // It returned to its caller (what a tail call's caller returns to), unless a stop was deferred inside a native
+        // out-call: the context's pc then says where the thread goes on, and the callers return up to the out-call.
+        if (!rt->stopDeferred)
+            ctx->pc = ctx->r[31].uw[0];
         return;
     }
     if (RecompiledFunction f = rt->functions.generated(target))
@@ -87,6 +92,7 @@ void bozo_tail_call(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t tar
 }
 
 void bozo_yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) { rt->services->yield(rdram, ctx, rt); }
+void bozo_leave(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc) { rt->services->leaveAt(rdram, ctx, rt, pc); }
 bool bozo_jump(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target)
 {
     return rt->services->jump(rdram, ctx, rt, target);
@@ -146,8 +152,22 @@ uint64_t bozo_io_read(R5900Context *ctx, Runtime *rt, uint32_t address, uint32_t
     rt->services->ioRead(ctx, rt, address, size, v);
     return v[0];
 }
+namespace bozo::port
+{
+    namespace
+    {
+        std::atomic<StorePatch> g_storePatch{nullptr};
+    }
+    void setStorePatch(StorePatch patch) { g_storePatch.store(patch, std::memory_order_release); }
+    StorePatch storePatch() { return g_storePatch.load(std::memory_order_acquire); }
+}
+
 void bozo_io_write(R5900Context *ctx, Runtime *rt, uint32_t address, uint32_t size, uint64_t value)
 {
+    // A port's patch of the game's register stores: a store it keeps the game from making (bozo/port.h).
+    if (const bozo::port::StorePatch patch = bozo::port::storePatch();
+        patch && size <= 4 && patch(ctx->pc, address, static_cast<uint32_t>(value)))
+        return;
     const uint64_t v[2] = {value, 0};
     rt->services->ioWrite(ctx, rt, address, size, v);
 }

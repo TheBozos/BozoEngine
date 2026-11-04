@@ -14,6 +14,11 @@
 #include <memory>
 #include <vector>
 
+namespace bozo::port
+{
+    class Host;
+}
+
 namespace bozo
 {
     // ---- Guest memory --------------------------------------------------------------------------------------------
@@ -94,6 +99,8 @@ namespace bozo
         // A transfer to an address with neither an override nor generated code.
         virtual void unknownTarget(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target) = 0;
         virtual void yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt) = 0;
+        // Guest code leaves for the runtime at `pc` (bozo_leave).
+        virtual void leaveAt(uint8_t *, R5900Context *ctx, Runtime *, uint32_t pc) { ctx->pc = pc; }
         // A jump through a register (bozo_jump): true to take it over (and not return), false to let the code jump.
         virtual bool jump(uint8_t *, R5900Context *, Runtime *, uint32_t) { return false; }
         // A resume entry asked for a pc that is not one of its function's labels (a resume point the analysis missed).
@@ -129,4 +136,9 @@ struct Runtime
     bozo::RuntimeServices *services = nullptr;
     uint32_t cop0Status = 0;
     bool tailCall = false; // the out-call being made was reached by a jump, not a call (bozo_tail_call)
+    // A stop deferred inside a native out-call (ee::Dispatcher::leave): the context's pc is where the thread goes on,
+    // and the calls between return up to the out-call without setting it to their return address.
+    bool stopDeferred = false;
+    // The port host behind the port's overrides (bozo/port.h); null without a port.
+    bozo::port::Host *port = nullptr;
 };

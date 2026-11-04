@@ -41,7 +41,8 @@ highest non-empty queue. A preempted thread goes back to the head of its queue; 
 preempted thread 2). A woken or started thread goes to the tail. `ChangeThreadPriority` of the running thread only
 changes its priority; of a ready thread it moves it to the tail of the new queue.
 
-**RotateThreadReadyQueue(p).** When the running thread has priority p it asks for a switch: the next `transfer` gives
+**RotateThreadReadyQueue(p).** Returns 0 (boot #228421: v0 0 after every rotation TMB makes, all through its
+switchThread override). When the running thread has priority p it asks for a switch: the next `transfer` gives
 way even if it is alone at that priority (the dispatcher then picks it again: boot #228443, its transfer recorded
 with thread 0 and no SWITCH after). Otherwise the head of queue p goes to its tail.
 
@@ -150,6 +151,56 @@ checkpoint and treat inner calls as ordinary calls.
 jump costs 16 and loses the frames (boot, 3,359 jumps: 6,719 checkpoints); uiFadeText's (`lui v0; addiu v0, v0, lo`,
 `sltiu`) is resolved (boot record 228027); the table at 0x17f304, built in place but with no `sltiu`, is not
 (match1p #17536212).
+
+## 3b. A port's overrides (phase 4)
+
+A port's override (`bozo/port.h`: TMB_Recomp's `runtime/`) is one out-call, like a library call: the dispatcher binds
+it at its address (`bindLibrary`) and the host runs it (`bozo-run`'s log host checking it against its record, the free
+host). Unlike a library call it may run guest code: TMB's call the game's own function they replace (`hier__Fi`,
+`fileReadf`, `TheGame::Update`...), and that guest code makes out-calls of its own. The reference (the PS2Recomp fork)
+logged all of it as the override's one CALL record: the out-calls made inside are only its traced calls and its OPs
+(`calllog.md` section 1). What its records show, and BozoEngine does (`Dispatcher::beginOutcall` / `endOutcall`):
+
+- **Checkpoints charge as anywhere** (the record's EE time is the guest code's), but **no event is taken in place**:
+  an event due (or, at depth 0, a queued handler, a switch, the end of the time slice) makes guest code **leave** the
+  override at that checkpoint. The override's record then ends with the transfer flag and the checkpoint's pc (boot
+  #1316122: `hier__Fi` leaves at 0x1ea728, the vblank's irq taken right after with 0 checkpoints; #170: `fileReadf`
+  leaves at its second `sceCdSync`'s call, pc 0x211f50, the read's 5 M cycles having passed a vblank; #193:
+  `zipInflateAll` at its `sceCdRead`'s call). The call at that pc is then made from the dispatcher (frames lost).
+- **A call inside that blocks** (a library's wait, a kernel call that gives way) leaves the override right after the
+  call, the thread going on at its return address once it runs again (match1p #16897525: `fileReadf`'s `sceCdSync`
+  blocks, the record unwound with pc 0x1c2288; boot #228421: `switchThread`'s `RotateThreadReadyQueue`, reached by a
+  tail jump, gives way, pc the override's return address).
+- **A jump through a register** leaves it too (as anywhere: the frames are lost), except a return to `ra` by an
+  invocation that recursed or called its own labels, which stays a plain return inside the override.
+- **An inner call's return** (to the inner call's return address, by the invocation that made it) leaves the override
+  (boot #228128, every frame: TMB's `hier` override ends at `texmActivateTextureAsm`'s inner return 0x1fba84, sp 0, the
+  rest of the frame's traversal run from the dispatcher), and so does a **recursive call's return** to the caller's
+  level (match1p #17531043: TMB's `texmInit` override ends at `_M_erase`'s recursive return 0x1fabd8, no traced call
+  made).
+- **Overrides nest**: an override reached by guest code inside another is part of the outer one's record (traced when
+  it is at a name of the reference's).
+- **An override calling the original where the original is a library** BozoEngine implements calls the native
+  library (`bozo::port::callLibrary`), not the guest code there: the reference's stub (TMB's `sceGsSetDefLoadImage`
+  override returns libgraph's 0 through the stub, boot #192, where the game's own copy returns 6).
+
+How guest code leaves: the stop is **deferred** (`Dispatcher::leave`): the context's pc is set to where the thread
+goes on, `ctx->leaving` is set, and the generated code returns at the next checkpoint (`bozo::checkpoint` returns
+true), after the call it just made (the check after every call also tests `ctx->leaving`), at the jump, or at the inner
+return (`bozo::innerReturn` returns true) or the recursive call's return (the runtime's `bozo_leave`). Up the C++ chain the callers return (their
+return address is not the pc, or `leaving` is set) to the override, whose own code after the guest call runs, as the
+reference's did; when it returns the host stops the thread at the pc (`Dispatcher::takeDeferredStop`, then `stop`).
+The override's C++ is never unwound by an exception.
+
+In a pinned run (section 4) the host says where guest code leaves: the reference's record has the transfer flag, its
+pc and its end cycle; guest code leaves at the first checkpoint at that pc once every traced call of the record was
+made and the clock reached the record's end (`Host::outcallDeadline`, `outcallLeave`), or at the first such
+checkpoint when a timed library call inside took a time the log does not hold (a disc read's). Whether a timed
+library call inside waits is the reference's too: the record's OP `block` for the thread.
+
+A free host's library calls inside an override are made natively as anywhere; a hardware register a port reads or
+writes itself (`bozo::port::ioRead32` / `ioWrite32`: TMB's frame end restarting T0) is not one of the game's stores
+(it does not complete the IPU's transfer: match1p #14450438).
 
 ## 4. The dispatcher
 

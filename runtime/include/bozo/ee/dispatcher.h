@@ -60,6 +60,10 @@ namespace bozo::ee
         virtual void threadEnded(Dispatcher &, Thread &) {}
         // The dispatcher idles from `from` to `to` (every thread waiting).
         virtual void idle(Dispatcher &, uint64_t /*from*/, uint64_t /*to*/) {}
+        // Pinned mode, inside a port's native override (kernel.md section 3b): the EE cycle from which guest code may
+        // leave it (~0: it does not), and whether it leaves at this checkpoint (the reference's override ended there).
+        virtual uint64_t outcallDeadline(Dispatcher &) { return ~0ull; }
+        virtual bool outcallLeave(Dispatcher &, const R5900Context *) { return false; }
         // Pinned mode (Dispatcher::pinned, kernel.md section 4): whether the next asynchronous event (the vblank's
         // start or end) is due right here, at this checkpoint (`ctx`: guest code's context, null in the dispatcher's
         // loop); and whether one is due before the next out-call (every checkpoint then asks).
@@ -142,6 +146,22 @@ namespace bozo::ee
         [[noreturn]] void stop(R5900Context *ctx, uint32_t pc);
         // After an out-call: the kernel's state may have changed (a handler queued, a thread readied).
         void updateLimit(R5900Context *ctx);
+
+        // ---- Native out-calls that run guest code (a port's overrides: kernel.md section 3b) ----
+        // Between beginOutcall and endOutcall the guest code an override calls charges EE time as usual, but no
+        // checkpoint stops it and no event is taken (the reference: an override is one out-call, nothing happens inside
+        // it but what it does). A stop it calls for through an out-call (a call that blocks, a kernel call that gives
+        // way) is deferred: the context's pc is set to where the thread goes on, and guest code returns up to the
+        // override (after a call, a pc other than the return address returns); the host stops the thread once the
+        // override has returned. Overrides nest.
+        void beginOutcall(R5900Context *ctx);
+        void endOutcall(R5900Context *ctx);
+        bool insideOutcall() const { return outcallDepth_ != 0; }
+        // Leave guest code at `pc`: inside an out-call deferred (returns), else stop (does not return).
+        void leave(R5900Context *ctx, uint32_t pc);
+        // The deferred stop, if any (taken: cleared).
+        bool takeDeferredStop(R5900Context *ctx, uint32_t &pc);
+        bool stopDeferred() const { return rt_.stopDeferred; }
         // A handler stacked by a library call on the current thread (the call is unwound right after).
         Frame &stackOnCurrent(const QueuedHandler &h);
 
@@ -149,6 +169,7 @@ namespace bozo::ee
         void unknownTarget(uint8_t *, R5900Context *, Runtime *, uint32_t target) override;
         void resumeFailed(uint8_t *, R5900Context *, Runtime *, uint32_t pc) override;
         void yield(uint8_t *, R5900Context *, Runtime *) override;
+        void leaveAt(uint8_t *, R5900Context *ctx, Runtime *, uint32_t pc) override { leave(ctx, pc); }
         bool jump(uint8_t *, R5900Context *, Runtime *, uint32_t target) override;
         void syscall(uint8_t *, R5900Context *, Runtime *, uint32_t code) override;
         void breakpoint(uint8_t *, R5900Context *, Runtime *, uint32_t code) override;
@@ -209,5 +230,7 @@ namespace bozo::ee
         uint32_t lastDepth_ = 0;
         bool lastHandlerEnded_ = false;
         bool started_ = false;
+        uint32_t outcallDepth_ = 0;
+        uint32_t deferredPc_ = 0;
     };
 }

@@ -31,21 +31,31 @@ namespace bozo::libs
         // libmpeg's decoder asked the game for more data (it queued the game's nodata callback) since channel 4 was
         // last started: the IPU has taken that transfer, which completes at the game's next store.
         bool ipuDemand = false;
+        // The access being made is a port's own (bozo::port::ioWrite32: TMB's frame end restarting T0), not one of the
+        // game's stores: it does not complete the IPU's transfer (match1p #14450438: none at the frame end's T0 write).
+        bool hostAccess = false;
         uint32_t ctrl = 0, stat = 0, pcr = 0, sqwc = 0, rbsr = 0, rbor = 0, stadr = 0, enable = 0;
 
         // ---- The GS's privileged registers (PMODE ... BGCOLOR): what the game sets, for the renderer ----
         std::array<uint64_t, 16> gsPrivileged{};
 
         bool pcrWritten = false;
+        // The transfers CPCOND0 sees completed: D_STAT's channel bits as completions set them and the game's D_STAT
+        // stores clear them, and none after a FlushCache (the reference: TMB's hierCheckVifComplete, right after
+        // hier__Fi's FlushCache, reads CPCOND0 false whatever completed before: match1p #17540836 and every call after
+        // it; libraries.md section 11).
+        uint32_t cpcondDone = 0;
 
         // CPCOND0 (BC0F/BC0T) as the reference answers it (replay.md section 3): every channel D_PCR names has
-        // completed (D_STAT); before the game writes D_PCR, any channel has.
+        // completed; before the game writes D_PCR, any channel has.
         bool cpcond0() const
         {
             if (!pcrWritten)
-                return (stat & 0x3FFu) != 0;
-            return (pcr & 0x3FFu) != 0 && (stat & pcr & 0x3FFu) == (pcr & 0x3FFu);
+                return (cpcondDone & 0x3FFu) != 0;
+            return (pcr & 0x3FFu) != 0 && (cpcondDone & pcr & 0x3FFu) == (pcr & 0x3FFu);
         }
+        // FlushCache: the completions so far no longer count for CPCOND0.
+        void flushCache() { cpcondDone = 0; }
     };
 
     // The access being made (bozo-run hands it to the I/O library's function, ioFunction()).

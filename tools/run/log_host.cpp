@@ -1,7 +1,9 @@
 // bozo-run's log-backed host. See log_host.h and docs/specs/calllog.md section 8.
 #include "log_host.h"
 
+#include "bozo/app/determinism.h"
 #include "bozo/hash.h"
+#include "bozo/render/renderer.h"
 
 #include <algorithm>
 #include <array>
@@ -121,6 +123,29 @@ namespace bozo::run
         for (uint32_t address : log_.overrides())
             if (!d.isKernelCall(address))
                 d.bindLibrary(address);
+        d.runtime().port = this;
+        if (opt_.overrides)
+        {
+            // The port's overrides where the reference had one (its OVRD, or a name of class 3): run natively. One
+            // registered elsewhere was not an override of the reference's run and stays guest code; one of the
+            // reference's that the port does not register stays answered from the log.
+            for (const BozoFunctionEntry &e : opt_.overrides->functions())
+            {
+                auto n = names_.find(e.address);
+                if (log_.overrides().count(e.address) || (n != names_.end() && n->second.cls == 3))
+                {
+                    portAt_[e.address] = e.function;
+                    if (!d.isKernelCall(e.address))
+                        d.bindLibrary(e.address);
+                    ++overrides_.bound;
+                }
+                else
+                    overrides_.notInLog.push_back(e.address);
+            }
+            for (uint32_t address : log_.overrides())
+                if (!portAt_.count(address))
+                    overrides_.fromLog.push_back(address);
+        }
         return kernel;
     }
 
@@ -428,6 +453,11 @@ namespace bozo::run
 
     void LogHost::libraryCall(ee::Dispatcher &, R5900Context *ctx, uint32_t target)
     {
+        if (insideDepth_)
+        {
+            innerLibraryCall(ctx, target);
+            return;
+        }
         Call c;
         const Record r = takeCall(kStub, target, ctx, c);
         for (int k = 0; k < 4; ++k)
@@ -444,6 +474,11 @@ namespace bozo::run
                                 c.ra, c.sp),
                     &r, true);
         log_.advance();
+        if (auto p = portAt_.find(target); p != portAt_.end() && !(r.flags & kCut))
+        {
+            runOverride(ctx, r, c, p->second);
+            return;
+        }
         // A call the run was cut inside (its end not recorded) stays the log's.
         auto n = (r.flags & kCut) ? nativeAt_.end() : nativeAt_.find(target);
         answer(ctx, r, c, true, n != nativeAt_.end() ? n->second : nullptr);
@@ -451,6 +486,19 @@ namespace bozo::run
 
     void LogHost::vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address)
     {
+        if (insideDepth_)
+        {
+            ++overrides_.innerCalls;
+            const libs::Function *f = libs_.vu0Program(address);
+            if (!f)
+            {
+                diverge(std::format("VU0 microprogram 0x{:x} inside a native override: no native program", address), nullptr);
+                return;
+            }
+            libs::Guest g(d_->runtime(), ctx);
+            f->handler(libs_, g);
+            return;
+        }
         Call c;
         const Record r = takeCall(kVu0, address, ctx, c);
         log_.advance();
@@ -462,6 +510,11 @@ namespace bozo::run
 
     void LogHost::ioRead(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2])
     {
+        if (insideDepth_)
+        {
+            innerIo(ctx, address, size, false, value);
+            return;
+        }
         Call c;
         const Record r = takeCall(kIoLoad, address, ctx, c);
         if (c.size != size)
@@ -495,6 +548,12 @@ namespace bozo::run
 
     void LogHost::ioWrite(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2])
     {
+        if (insideDepth_)
+        {
+            uint64_t v[2] = {value[0], value[1]};
+            innerIo(ctx, address, size, true, v);
+            return;
+        }
         Call c;
         const Record r = takeCall(kIoStore, address, ctx, c);
         uint32_t got[4] = {static_cast<uint32_t>(value[0]), static_cast<uint32_t>(value[0] >> 32),
@@ -548,7 +607,12 @@ namespace bozo::run
     bool LogHost::cop0Condition(ee::Dispatcher &, R5900Context *)
     {
         if (opt_.native & libs::kIo)
+        {
+            if (log_.peek() && log_.peek()->index >= opt_.traceFrom)
+                std::printf("    cpcond0: stat %x pcr %x written %d running ch1 %d ch2 %d -> %d\n", libs_.io.stat, libs_.io.pcr,
+                            libs_.io.pcrWritten, libs_.io.channels[1].running, libs_.io.channels[2].running, libs_.io.cpcond0());
             return libs_.io.cpcond0();
+        }
         if (dmaPcrKnown_)
             return dmaPcr_ != 0 && (dmaDone_ & dmaPcr_) == dmaPcr_;
         return dmaDone_ != 0;
@@ -797,10 +861,399 @@ namespace bozo::run
             }
     }
 
+    // ---- The port's overrides, run natively (kernel.md section 3b) ----------------------------------------------
+
+    void LogHost::innerTrace(uint32_t id, const uint32_t a[4], uint32_t v0, bool blocked)
+    {
+        Trace t;
+        t.id = id;
+        std::memcpy(t.a, a, sizeof(t.a));
+        t.v0 = blocked ? 0 : v0;
+        t.flags = blocked ? 1u : 0u;
+        innerTraces_.push_back(t);
+    }
+
+    void LogHost::innerLibraryCall(R5900Context *ctx, uint32_t target)
+    {
+        ++overrides_.innerCalls;
+        const bool tail = d_->runtime().tailCall;
+        d_->runtime().tailCall = false;
+        if (auto p = portAt_.find(target); p != portAt_.end())
+        {
+            // An override called by guest code inside another: one out-call with it in the reference too.
+            // Traced when it is at a name of the reference's (its entry first, its result once it returned).
+            ++overrides_.nested;
+            const uint32_t id = tail ? 0 : traceId(kStub, target, ctx);
+            const uint32_t args[4] = {gpr(ctx, 4), gpr(ctx, 5), gpr(ctx, 6), gpr(ctx, 7)};
+            const size_t slot = innerTraces_.size();
+            if (id)
+                innerTrace(id, args, 0, false);
+            ++insideDepth_;
+            d_->beginOutcall(ctx);
+            p->second(d_->runtime().memory.flat(), ctx, &d_->runtime());
+            d_->endOutcall(ctx);
+            --insideDepth_;
+            if (id && slot < innerTraces_.size())
+                innerTraces_[slot].v0 = gpr(ctx, 2);
+            return;
+        }
+        const libs::Function *f = nullptr;
+        if (auto n = names_.find(target); n != names_.end())
+            f = libs_.find(n->second.name);
+        if (!f)
+        {
+            diverge(std::format("a call to 0x{:x} inside a native override has no native answer", target), nullptr);
+            return;
+        }
+        const uint32_t id = tail ? 0 : traceId(kStub, target, ctx);
+        const uint32_t args[4] = {gpr(ctx, 4), gpr(ctx, 5), gpr(ctx, 6), gpr(ctx, 7)};
+        const ee::Thread *t = d_->currentThread();
+        const int32_t self = t ? t->id : 0;
+        blockedInCall_ = false;
+        libs_.pin = libs::Pin{};
+        // Pinned: whether a timed call waits, and until when, is the reference's (the wait the override's record holds:
+        // match1p #16897525, fileReadf's sceCdSync); its EE time is the library's own (no record of its own).
+        if (f->timed && opt_.pinned)
+        {
+            overrideTimeUnknown_ = true;
+            libs_.pin.active = true;
+            libs_.pin.nativeCycles = true;
+            // This call's traced entry says whether it blocked (the record's block, its token, is the next inside it).
+            const size_t at = innerTraces_.size();
+            const bool tracedBlocked = id && at < overrideCall_.traces.size() && overrideCall_.traces[at].id == id &&
+                                       (overrideCall_.traces[at].flags & 1u);
+            if (const Record *p = log_.peek();
+                tracedBlocked && p && p->inside() && p->seq == overrideSeq_ && p->type == kOp && p->sub == ee::kOpBlock)
+            {
+                Op o;
+                std::string err;
+                if (parse(*p, o, err) && !o.args.empty() && static_cast<int32_t>(o.args[0]) == self)
+                {
+                    libs_.pin.waits = true;
+                    libs_.pin.token = o.wide;
+                }
+            }
+        }
+        if (opt_.pinned && f->logReply)
+        {
+            // The reference's reply words, for what its IOP time decided (the movie sound's position, 989SND's
+            // snd_GetTransStatus inside TMB's audioDecSendToIOP override): the override's record holds the reply buffer
+            // as the call left it (its runs, else the memory as it is).
+            const std::vector<Run> *runs = &overrideCall_.runs;
+            const uint8_t *flat = d_->runtime().memory.flat();
+            libs_.pin.logWord = [runs, flat](uint32_t address, uint32_t &value) {
+                const int64_t o = GuestMemory::flatOffset(address, 4);
+                if (o < 0)
+                    return false;
+                uint8_t b[4];
+                for (uint32_t i = 0; i < 4; ++i)
+                {
+                    const uint32_t at = static_cast<uint32_t>(o) + i;
+                    b[i] = flat[at];
+                    for (const Run &run : *runs)
+                        if (at >= run.address && at < run.address + run.length)
+                            b[i] = run.data[at - run.address];
+                }
+                std::memcpy(&value, b, 4);
+                return true;
+            };
+        }
+        libs::Guest g(d_->runtime(), ctx);
+        try
+        {
+            f->handler(libs_, g);
+        }
+        catch (const libs::BadAccess &b)
+        {
+            diverge(std::format("native {} inside a native override: an access to 0x{:x} ({} bytes) outside guest memory", f->name,
+                                b.address, b.bytes),
+                    nullptr);
+        }
+        libs_.pin = libs::Pin{};
+        if (g.cycles)
+            d_->setNow(ctx, d_->now(ctx) + g.cycles);
+        const bool blocked = d_->kernel().running() != self;
+        if (id)
+            innerTrace(id, args, gpr(ctx, 2), blocked || blockedInCall_);
+        // A call that made its thread wait: guest code leaves the override right there, the thread going on after the
+        // call once woken (match1p #16897525: fileReadf's sceCdSync, its record going on at 0x1c2288).
+        if (blocked)
+            d_->leave(ctx, gpr(ctx, 31));
+    }
+
+    void LogHost::innerIo(R5900Context *ctx, uint32_t address, uint32_t size, bool store, uint64_t value[2])
+    {
+        ++overrides_.innerCalls;
+        if (log_.peek() && log_.peek()->index >= opt_.traceFrom)
+            std::printf("    inner io-%s 0x%x = %llx at pc 0x%x\n", store ? "store" : "load", address,
+                        static_cast<unsigned long long>(value[0]), ctx->pc);
+        if (!libs::ioKnown(address, size, store))
+        {
+            diverge(std::format("io-{} 0x{:x} ({} bytes) inside a native override: not a register the I/O library answers",
+                                store ? "store" : "load", address, size),
+                    nullptr);
+            return;
+        }
+        libs_.ioAccess = libs::IoAccess{address, size, store, store ? value[0] : 0, d_->timerPending()};
+        libs::Guest g(d_->runtime(), ctx);
+        libs::Libraries::ioFunction().handler(libs_, g);
+        d_->setTimerPending(libs_.ioAccess.timerPending);
+        if (!store)
+        {
+            value[0] = libs_.ioAccess.value;
+            value[1] = 0;
+        }
+    }
+
+    void LogHost::runOverride(R5900Context *ctx, const Record &r, const Call &logged, port::Function fn)
+    {
+        // The record's runs point into the reader's buffer, which the records inside the call move on: kept.
+        Call c = logged;
+        std::vector<std::vector<uint8_t>> owned;
+        owned.reserve(c.runs.size());
+        for (Run &run : c.runs)
+        {
+            owned.emplace_back(run.data, run.data + run.length);
+            run.data = owned.back().data();
+        }
+        const uint64_t callSeq = seq_++;
+        ++matched_;
+        ++overrides_.calls;
+        ++overrides_.perAddress[c.target];
+        trace(r, " (native override)");
+        const bool tail = d_->runtime().tailCall;
+        d_->runtime().tailCall = false;
+        const uint32_t id = !tail ? traceId(c.kind, c.target, ctx) : 0;
+        const uint32_t args[4] = {gpr(ctx, 4), gpr(ctx, 5), gpr(ctx, 6), gpr(ctx, 7)};
+        openId_ = id;
+        std::memcpy(openArgs_, args, sizeof(args));
+        blockedInCall_ = false;
+        uint32_t &status = d_->runtime().cop0Status;
+        ContextWords entry;
+        toWords(*ctx, status, entry);
+        const uint32_t ra = gpr(ctx, 31);
+        const ee::Thread *self = d_->currentThread();
+        const int32_t selfId = self ? self->id : 0;
+        const uint32_t frameBefore = frame_;
+
+        overrideSeq_ = callSeq;
+        overrideCall_ = c;
+        overrideTransfer_ = (r.flags & kTransfer) != 0;
+        overrideTimeUnknown_ = false;
+        overrideRecord_ = r.index;
+        innerTraces_.clear();
+        innerTracesAdded_ = 0;
+        d_->kernel().setOrigin(ee::kOriginCall, callSeq);
+        ++insideDepth_;
+        d_->beginOutcall(ctx);
+        ctx->pc = c.target;
+        fn(d_->runtime().memory.flat(), ctx, &d_->runtime());
+        d_->endOutcall(ctx);
+        --insideDepth_;
+        uint32_t pc = ctx->pc;
+        const bool deferred = d_->takeDeferredStop(ctx, pc);
+
+        std::string diff;
+        // Records of the log inside the call that the override did not make.
+        for (;;)
+        {
+            const Record *p = log_.peek();
+            if (!p || !p->inside() || p->seq != callSeq)
+                break;
+            diff += std::format(" it did not make the log's {} #{};", typeName(p->type), p->index);
+            log_.advance();
+        }
+        ContextWords now;
+        toWords(*ctx, status, now);
+        std::map<uint32_t, uint32_t> words(c.words.begin(), c.words.end());
+        for (uint32_t w = 0; w < kContextWords; ++w)
+        {
+            if (w == kWordPc)
+                continue;
+            auto it = words.find(w);
+            const uint32_t want = it != words.end() ? it->second : entry[w];
+            if (now[w] != want)
+                diff += std::format(" w{} {:x} (log {:x})", w, now[w], want);
+        }
+        uint32_t logPc = ra;
+        if (auto it = words.find(kWordPc); it != words.end())
+            logPc = it->second;
+        if (pc != logPc)
+            diff += std::format(" goes on at 0x{:x} (log 0x{:x});", pc, logPc);
+        for (const Run &run : c.runs)
+            if (std::memcmp(d_->runtime().memory.flat() + run.address, run.data, run.length) != 0)
+            {
+                const uint8_t *flat = d_->runtime().memory.flat();
+                uint32_t i = 0;
+                while (flat[run.address + i] == run.data[i])
+                    ++i;
+                diff += std::format(" memory 0x{:x}: {:02x} (log {:02x}, run 0x{:x} +{});", run.address + i, flat[run.address + i],
+                                    run.data[i], run.address, run.length);
+                break;
+            }
+        // The traced calls made inside it.
+        if (innerTraces_.size() != c.traces.size())
+            diff += std::format(" {} traced calls inside (log {});", innerTraces_.size(), c.traces.size());
+        for (size_t i = 0; i < std::min(c.traces.size(), innerTraces_.size()); ++i)
+            {
+                const Trace &a = innerTraces_[i], &b = c.traces[i];
+                if (a.id != b.id || std::memcmp(a.a, b.a, sizeof(a.a)) != 0 || a.v0 != b.v0 || (a.flags & 1u) != (b.flags & 1u))
+                {
+                    const auto name = [&](uint32_t x) {
+                        auto it = idNames_.find(x);
+                        return it == idNames_.end() ? std::format("{:x}", x) : it->second;
+                    };
+                    diff += std::format(" traced call {}: {} ({:x} {:x} {:x} {:x}) -> {:x}{} (log {} ({:x} {:x} {:x} {:x}) -> {:x}{});", i,
+                                        name(a.id), a.a[0], a.a[1], a.a[2], a.a[3], a.v0, a.flags & 1u ? " blocked" : "",
+                                        name(b.id), b.a[0], b.a[1], b.a[2], b.a[3], b.v0, b.flags & 1u ? " blocked" : "");
+                    break;
+                }
+            }
+        // EE time: the reference's (pinned mode follows the log's clock; free mode checks it).
+        const uint64_t mine = d_->now(ctx);
+        if (mine != c.cycleAfter)
+        {
+            ++overrides_.timeDiffers;
+            if (!opt_.pinned)
+                diff += std::format(" ends at cycle {} (log {}, {:+});", mine, c.cycleAfter,
+                                    static_cast<int64_t>(mine) - static_cast<int64_t>(c.cycleAfter));
+        }
+        if (d_->timerPending() != c.timerAfter)
+            diff += std::format(" leaves {} timer-poll cycles pending (log {});", d_->timerPending(), c.timerAfter);
+        d_->setNow(ctx, c.cycleAfter);
+        d_->setTimerPending(c.timerAfter);
+
+        const ee::Thread *t = d_->currentThread();
+        const bool leaves = deferred || !t || d_->kernel().running() != selfId || pc != ra;
+        const bool theirs = (r.flags & (kUnwound | kTransfer)) != 0 || logPc != ra;
+        if (leaves != theirs)
+            diff += std::format(" {} here, the log's {};", leaves ? "leaves to the dispatcher" : "returns",
+                                theirs ? "leaves" : "returns");
+        if (!diff.empty())
+        {
+            ++overrides_.divergences;
+            diverge(std::format("native override 0x{:x} differs from the log:{}", c.target, diff), &r, true);
+        }
+        if (id && frame_ == frameBefore)
+            calls_.add(id, args, blockedInCall_ ? 0 : gpr(ctx, 2), blockedInCall_ ? reference::CallList::kBlocked : 0);
+        for (size_t i = innerTracesAdded_; i < innerTraces_.size(); ++i)
+            calls_.add(innerTraces_[i].id, innerTraces_[i].a, innerTraces_[i].v0, innerTraces_[i].flags & 1u);
+        openId_ = 0;
+        d_->markOutcallEnd(ctx);
+        if (leaves)
+            d_->stop(ctx, pc);
+    }
+
+    // The reference's override ended with the transfer flag at a checkpoint of its guest code (an event came due there:
+    // boot #1316122, hier ends at 0x1ea728, the vblank taken right after; #170, fileReadf at its second sceCdSync's call;
+    // #193, zipInflateAll at its sceCdRead's): guest code leaves at the first checkpoint at that pc once every traced
+    // call of the record was made, at the record's end cycle (the time model's own inside an override), or, when a
+    // timed library call inside took a time the log does not hold, at its first pass there.
+    uint64_t LogHost::outcallDeadline(ee::Dispatcher &)
+    {
+        if (!overrideTransfer_ || innerTraces_.size() < overrideCall_.traces.size())
+            return ~0ull;
+        return overrideTimeUnknown_ ? 0 : overrideCall_.cycleAfter;
+    }
+
+    bool LogHost::outcallLeave(ee::Dispatcher &, const R5900Context *ctx)
+    {
+        if (!overrideTransfer_ || innerTraces_.size() != overrideCall_.traces.size())
+            return false;
+        if (!overrideTimeUnknown_ && ctx->cycles < overrideCall_.cycleAfter)
+            return false;
+        uint32_t logPc = 0;
+        for (const auto &[w, v] : overrideCall_.words)
+            if (w == kWordPc)
+                logPc = v;
+        return ctx->pc == logPc;
+    }
+
+    bool LogHost::callLibrary(Runtime *, R5900Context *ctx, uint32_t address)
+    {
+        auto n = names_.find(address);
+        const libs::Function *f = n != names_.end() ? libs_.find(n->second.name) : nullptr;
+        if (!f)
+            return false;
+        // Part of the override's call (no record or trace of its own in the reference's log).
+        ++overrides_.innerCalls;
+        libs_.pin = libs::Pin{};
+        libs::Guest g(d_->runtime(), ctx);
+        f->handler(libs_, g);
+        if (g.cycles)
+            d_->setNow(ctx, d_->now(ctx) + g.cycles);
+        ctx->pc = ctx->r[31].uw[0]; // it returned, as the function would have
+        return true;
+    }
+
+    void LogHost::frameEnd(Runtime *, R5900Context *ctx)
+    {
+        if (!insideDepth_)
+            endRun("FAULT: a frame end outside a native override");
+        const Record &rr = next("FRAME");
+        if (rr.type != kFrame || !rr.inside() || rr.seq != overrideSeq_)
+            diverge(std::format("the native override 0x{:x} ends frame {}; the log has a {} record", overrideCall_.target, frame_,
+                                typeName(rr.type)),
+                    &rr);
+        const Record r = rr;
+        Frame f;
+        std::string err;
+        if (!parse(r, f, err))
+            endRun(err);
+        ++overrides_.frames;
+        // Its memory as of the frame end (what the call had written by then) must be ours.
+        std::string diff;
+        for (const Run &run : f.runs)
+            if (std::memcmp(d_->runtime().memory.flat() + run.address, run.data, run.length) != 0)
+            {
+                const uint8_t *flat = d_->runtime().memory.flat();
+                uint32_t i = 0;
+                while (flat[run.address + i] == run.data[i])
+                    ++i;
+                diff += std::format(" memory 0x{:x}: {:02x} (log {:02x});", run.address + i, flat[run.address + i], run.data[i]);
+                break;
+            }
+        if (f.traces.size() != innerTraces_.size() - innerTracesAdded_)
+            diff += std::format(" {} traced calls before it (log {});", innerTraces_.size() - innerTracesAdded_, f.traces.size());
+        const uint64_t mine = d_->now(ctx);
+        if (mine != r.cycle && !opt_.pinned)
+            diff += std::format(" at cycle {} (log {});", mine, r.cycle);
+        if (!diff.empty())
+        {
+            ++overrides_.divergences;
+            diverge(std::format("the frame end inside native override 0x{:x} differs from the log:{}", overrideCall_.target, diff), &r,
+                    true);
+        }
+        log_.advance();
+        ++matched_;
+        trace(r);
+        std::vector<Trace> traces(innerTraces_.begin() + static_cast<std::ptrdiff_t>(innerTracesAdded_), innerTraces_.end());
+        innerTracesAdded_ = innerTraces_.size();
+        endFrame(r, f, openId_, openArgs_, &traces, false);
+        d_->setNow(ctx, r.cycle);
+    }
+
     // ---- Kernel calls ------------------------------------------------------------------------------------------
 
     void LogHost::kernelCallBegin(ee::Dispatcher &d, R5900Context *ctx, uint32_t target, uint32_t kind)
     {
+        if (insideDepth_)
+        {
+            // Inside a native override: no record of its own; its operations are the override's (origin call).
+            ++overrides_.innerCalls;
+            kc_.active = true;
+            kc_.inner = true;
+            kc_.tail = d.runtime().tailCall;
+            d.runtime().tailCall = false;
+            kc_.target = target;
+            kc_.kind = kind;
+            toWords(*ctx, d.runtime().cop0Status, kc_.entry);
+            blockedInCall_ = false;
+            ++kernelCalls_;
+            d.kernel().setOrigin(ee::kOriginCall, overrideSeq_);
+            return;
+        }
+        kc_.inner = false;
         Call &c = kc_.call;
         const Record r = takeCall(static_cast<uint8_t>(kind), target, ctx, c);
         uint32_t want[4];
@@ -842,6 +1295,28 @@ namespace bozo::run
 
     void LogHost::kernelCallEnd(ee::Dispatcher &d, R5900Context *ctx, uint32_t target, bool stopping)
     {
+        // FlushCache restarts CPCOND0's completions (libraries.md section 11). Only with the port's overrides native:
+        // answered from the log, the transfers they start are not seen, and the earlier completions stand in for them.
+        if ((opt_.native & libs::kIo) && opt_.overrides)
+            if (auto n = names_.find(target); n != names_.end() && n->second.name.find("FlushCache") != std::string::npos)
+                libs_.io.flushCache();
+        if (kc_.inner)
+        {
+            // A stop it calls for is deferred by the dispatcher (kernel.md section 3b).
+            (void)d;
+            (void)stopping;
+            kc_.active = false;
+            kc_.inner = false;
+            const uint32_t id = kc_.tail ? 0 : traceId(static_cast<uint8_t>(kc_.kind == kSyscall ? kSyscall : kStub), target, ctx);
+            if (id)
+            {
+                uint32_t args4[4];
+                for (int k = 0; k < 4; ++k)
+                    args4[k] = kc_.entry[gprWord(4 + k)];
+                innerTrace(id, args4, gpr(ctx, 2), blockedInCall_);
+            }
+            return;
+        }
         const Call &c = kc_.call;
         if (const Record *p = log_.peek(); p && p->inside() && p->seq == kc_.seq)
             diverge(std::format("kernel call 0x{:x}: the log has more inside it", target), p);
@@ -1260,15 +1735,17 @@ namespace bozo::run
 
     // ---- Frames ------------------------------------------------------------------------------------------------
 
-    void LogHost::endFrame(const Record &r, const Frame &f, uint32_t openId, const uint32_t *openArgs)
+    void LogHost::endFrame(const Record &r, const Frame &f, uint32_t openId, const uint32_t *openArgs,
+                           const std::vector<Trace> *traces, bool apply)
     {
         if (f.ended != frame_)
             diverge(std::format("frame {} ends here; the log's FRAME is {}", frame_, f.ended), &r);
         d_->setNow(nullptr, r.cycle);
-        applyRuns(f.runs);
+        if (apply)
+            applyRuns(f.runs);
         if (openId)
             calls_.add(openId, openArgs, 0, reference::CallList::kOpenAtEnd);
-        addTraces(f.traces, 0);
+        addTraces(traces ? *traces : f.traces, 0);
 
         uint8_t *flat = d_->runtime().memory.flat();
         reference::FrameRecord fr;
@@ -1284,6 +1761,11 @@ namespace bozo::run
         // The frame ends inside an out-call, at the log's time there: BozoEngine's own is that plus how far its clock
         // was from the log's when the call was made (0 in free mode, where a difference ends the run).
         fr.eeCycle = static_cast<uint64_t>(static_cast<int64_t>(r.cycle) + callDrift_);
+        // The renderer's draw lists published during the frame (a port's native renderer: TMB's overrides).
+        const render::FrameDraws draws = render::Renderer::instance().takeFrameDraws();
+        fr.draws = draws.hash;
+        fr.drawBatches = draws.batches;
+        fr.drawVertices = draws.vertices;
         if (writer_)
             writer_->write(fr);
         ++stats_.frames;
@@ -1311,10 +1793,18 @@ namespace bozo::run
             field(fr.eeCycle == x.eeCycle, stats_.eeCycle, stats_.firstEeCycle, "eeCycle", fr.eeCycle, x.eeCycle);
             if (fr.callCount == x.callCount)
                 ++stats_.callCount;
+            // The draws are reported, not checked (milestone M0: the renderer records, it does not draw yet).
+            if (fr.draws == x.draws)
+                ++stats_.draws;
+            else if (stats_.firstDraws < 0)
+                stats_.firstDraws = frame_;
+            if (fr.drawBatches == x.drawBatches && fr.drawVertices == x.drawVertices)
+                ++stats_.drawCounts;
         }
         calls_.clear();
         ++frame_;
         libs_.framesEnded = frame_;
+        det::frameCounter().store(frame_, std::memory_order_relaxed);
         const uint32_t limit = opt_.frames ? opt_.frames : log_.header().frameLimit;
         if (limit && frame_ >= limit)
         {

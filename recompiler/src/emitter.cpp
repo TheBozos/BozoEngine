@@ -53,7 +53,8 @@ namespace bozo
         return cppName(it != f.entrySymbols.end() ? it->second : std::string(), addr);
     }
 
-    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error)
+    bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error,
+                       std::set<uint32_t> *storePcs)
     {
         std::ifstream in(path);
         if (!in)
@@ -82,6 +83,8 @@ namespace bozo
                 out[static_cast<uint32_t>(address)] = ExternalKind::Stub;
             else if (k == "override")
                 out.emplace(static_cast<uint32_t>(address), ExternalKind::Override); // a stub entry wins
+            else if (k == "store" && storePcs)
+                storePcs->insert(static_cast<uint32_t>(address));
             else
             {
                 error = std::format("{}:{}: unknown kind \"{}\"", path, n, k);
@@ -112,6 +115,13 @@ namespace bozo
 
     // One instruction that is not a branch or jump. Writes to r0 are dropped (r0 stays zero).
     std::string Emitter::translate(const Insn &i)
+    {
+        if (opt_.storePcs.count(i.addr))
+            return std::format("ctx->pc = {}; ", hex(i.addr)) + translateBody(i);
+        return translateBody(i);
+    }
+
+    std::string Emitter::translateBody(const Insn &i)
     {
         const uint32_t s = i.rs(), t = i.rt(), d = i.rd(), sa = i.sa();
         const uint32_t imm = static_cast<uint32_t>(i.simm());
@@ -583,14 +593,15 @@ namespace bozo
         // register are checkpoints charged kLeaveCycles, made before the transfer (if one fires, the thread resumes at
         // the target). A direct jump or branch to another function (a tail call) and a return are not charged.
         auto leave = [&](const std::string &target) {
-            return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {});", kLeaveCycles, target);
+            return std::format("if (bozo::checkpoint(rdram, ctx, rt, {}, {})) return;", kLeaveCycles, target);
         };
         // A transfer to `target` from the instruction at `from`: goto inside the function, else a tail call.
         auto jumpTo = [&](uint32_t target, uint32_t from) -> std::string {
             if (target >= f.start && target < f.end && !isExternal(target, false))
             {
                 if (target <= from)
-                    return std::format("bozo::checkpoint(rdram, ctx, rt, {}, {}); goto {};", kBackwardCycles, hex(target), label(target));
+                    return std::format("if (bozo::checkpoint(rdram, ctx, rt, {}, {})) return; goto {};", kBackwardCycles, hex(target),
+                                       label(target));
                 return std::format("goto {};", label(target));
             }
             return callTo(target, false) + " return;";
@@ -644,8 +655,13 @@ namespace bozo
                 return std::format("recursed = true; ++innerDepth; bozo::innerCall(rdram, ctx, rt, {}, {}); goto {};",
                                    kLeaveCycles, hex(from + 8), label(target));
             const std::string mark = target == f.start && !selfReturns.empty() ? "recursed = true; " : "";
+            // A recursive call's return inside a port's native override leaves the override there (kernel.md section
+            // 3b: match1p #17531043, texmInit's _M_erase).
+            const std::string recursion =
+                target == f.start ? std::format(" if (BOZO_UNLIKELY(ctx->outcall)) {{ bozo_leave(rdram, ctx, rt, {}); return; }}", hex(from + 8))
+                                  : std::string();
             return mark + leave(hex(target)) + " " + callTo(target, true) +
-                   std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(from + 8));
+                   std::format(" if (BOZO_UNLIKELY(ctx->pc != {} || ctx->leaving)) return;", hex(from + 8)) + recursion;
         };
         // A return through `reg` (ra or a copy of the entry ra): the target is left in ctx->pc for the dispatcher,
         // which runs the caller from there when its C++ frame is gone (a thread resumed after stopping).
@@ -655,7 +671,7 @@ namespace bozo
             {
                 inner = "if (innerDepth) switch (target) { ";
                 for (uint32_t r : innerReturns)
-                    inner += std::format("case {}: --innerDepth; bozo::innerReturn(rdram, ctx, rt, {}); goto {}; ", hex(r), hex(r),
+                    inner += std::format("case {}: --innerDepth; if (bozo::innerReturn(rdram, ctx, rt, {})) return; goto {}; ", hex(r), hex(r),
                                          label(r));
                 inner += "default: break; } ";
             }
@@ -791,7 +807,8 @@ namespace bozo
             else if (i.op == Op::JALR)
             {
                 const std::string link = i.rd() == 0 ? std::string() : std::format("BZ_D({}) = {}; ", i.rd(), hex64(a + 8));
-                const std::string check = i.rd() == 31 ? std::format(" if (BOZO_UNLIKELY(ctx->pc != {})) return;", hex(a + 8)) : std::string();
+                const std::string check =
+                    i.rd() == 31 ? std::format(" if (BOZO_UNLIKELY(ctx->pc != {} || ctx->leaving)) return;", hex(a + 8)) : std::string();
                 code = std::format("{{ const uint32_t target = BZ_W({}); {}{} {} bozo_call_indirect(rdram, ctx, rt, target);{} }}", s, link,
                                    delay, leave("target"), check);
             }
@@ -841,7 +858,10 @@ namespace bozo
                            "extern const size_t {0}_function_count;\n"
                            "// Every function's range and its resume entry (enters it at ctx->pc), sorted.\n"
                            "extern const BozoResumeEntry {0}_resume_table[];\n"
-                           "extern const size_t {0}_resume_count;\n",
+                           "extern const size_t {0}_resume_count;\n"
+                           "// The externals the code was generated with (--externals), sorted.\n"
+                           "extern const BozoExternalEntry {0}_external_table[];\n"
+                           "extern const size_t {0}_external_count;\n",
                            opt_.prefix);
     }
 
@@ -864,6 +884,14 @@ namespace bozo
         for (const Function &f : a_.functions())
             out += std::format("    {{0x{:x}u, 0x{:x}u, resume_0x{:x}}},\n", f.start, f.end, f.start);
         out += std::format("}};\nconst size_t {0}_resume_count = sizeof({0}_resume_table) / sizeof({0}_resume_table[0]);\n", opt_.prefix);
+        // The externals (a port checks its overrides against them at startup: bozo/port.h). An empty array is not
+        // valid C++: a zero entry then, not counted.
+        out += std::format("\nconst BozoExternalEntry {}_external_table[] = {{\n", opt_.prefix);
+        for (const auto &[addr, kind] : opt_.externals)
+            out += std::format("    {{0x{:x}u, {}u}},\n", addr, kind == ExternalKind::Stub ? 1 : 2);
+        if (opt_.externals.empty())
+            out += "    {0u, 0u},\n";
+        out += std::format("}};\nconst size_t {0}_external_count = {1};\n", opt_.prefix, opt_.externals.size());
     }
 
 

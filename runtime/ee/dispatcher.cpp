@@ -152,6 +152,41 @@ namespace bozo::ee
         throw StopGuest{};
     }
 
+    void Dispatcher::beginOutcall(R5900Context *ctx)
+    {
+        ++outcallDepth_;
+        ctx->outcall = outcallDepth_;
+        updateLimit(ctx);
+    }
+
+    void Dispatcher::endOutcall(R5900Context *ctx)
+    {
+        if (outcallDepth_)
+            --outcallDepth_;
+        ctx->outcall = outcallDepth_;
+    }
+
+    void Dispatcher::leave(R5900Context *ctx, uint32_t pc)
+    {
+        if (!outcallDepth_)
+            stop(ctx, pc);
+        ctx->pc = pc;
+        ctx->leaving = 1;
+        ctx->cycleLimit = 0; // every checkpoint returns from here on
+        deferredPc_ = pc;
+        rt_.stopDeferred = true;
+    }
+
+    bool Dispatcher::takeDeferredStop(R5900Context *ctx, uint32_t &pc)
+    {
+        if (!rt_.stopDeferred)
+            return false;
+        rt_.stopDeferred = false;
+        ctx->leaving = 0;
+        pc = deferredPc_;
+        return true;
+    }
+
     bool Dispatcher::eventDue(const R5900Context *ctx, uint64_t cycle)
     {
         return pinned ? host_.eventPinned(*this, ctx) : cycle >= kernel_.nextEvent();
@@ -177,6 +212,13 @@ namespace bozo::ee
 
     void Dispatcher::updateLimit(R5900Context *ctx)
     {
+        if (outcallDepth_ && (rt_.stopDeferred || pinned))
+        {
+            // Inside a native out-call (kernel.md section 3b). Pinned: guest code leaves it where the reference's did
+            // (the host's deadline); free: as anywhere (below), an event due or a switch makes it leave.
+            ctx->cycleLimit = traceCheckpoints || timerPending_ || rt_.stopDeferred ? 0 : host_.outcallDeadline(*this);
+            return;
+        }
         if (traceCheckpoints || timerPending_ ||
             (current_ && current_->depth() == 0 && (kernel_.handlerQueued() || kernel_.reschedulePending())) ||
             (pinned && host_.eventPinnedSoon(*this)))
@@ -210,13 +252,17 @@ namespace bozo::ee
         d.host_.kernelCallEnd(d, ctx, target, stopping);
         d.markOutcallEnd(ctx);
         if (stopping)
-            d.stop(ctx, ctx->r[31].uw[0]);
+            d.leave(ctx, ctx->r[31].uw[0]); // inside a native out-call: deferred (kernel.md section 3b)
         d.updateLimit(ctx);
     }
 
     void Dispatcher::libraryEntry(uint8_t *, R5900Context *ctx, Runtime *rt)
     {
         Dispatcher &d = self(rt);
+        if (d.outcallDepth_ && rt->stopDeferred)
+            d.host_.fault(d, ctx, std::format("an out-call at 0x{:x} after a stop deferred inside a native out-call (depth {}, "
+                                              "deferred pc 0x{:x})",
+                                              ctx->pc, d.outcallDepth_, d.deferredPc_));
         d.host_.libraryCall(d, ctx, ctx->pc);
         d.markOutcallEnd(ctx);
         d.updateLimit(ctx);
@@ -328,6 +374,26 @@ namespace bozo::ee
             ctx->cycles += timerPending_;
             timerPending_ = 0;
         }
+        // Inside a native out-call (kernel.md section 3b): guest code leaves it (the stop deferred to its end, the
+        // checkpoints returning) where the reference's left: pinned, at the host's point; free, when an event is due or
+        // a switch or handler waits (as a stop anywhere else). Events are not taken in place there.
+        if (outcallDepth_)
+        {
+            if (rt_.stopDeferred)
+            {
+                ctx->leaving = 1;
+                ctx->cycleLimit = 0;
+                return;
+            }
+            const bool leaveNow = pinned ? host_.outcallLeave(*this, ctx) : mustStop(ctx, ctx->cycles);
+            if (leaveNow)
+            {
+                leave(ctx, ctx->pc);
+                return;
+            }
+            updateLimit(ctx);
+            return;
+        }
         // Inner calls in progress, at an inner call and at an inner call's return (kernel.md section 3): the events
         // due are taken in place, guest code's frames kept, with the dispatcher's start of guest code charged; guest
         // code stops only when they call for it (a handler to run, another thread to run), at once at a checkpoint
@@ -377,6 +443,18 @@ namespace bozo::ee
     // frame and every frame below it are gone: their returns come back to the dispatcher too).
     bool Dispatcher::jump(uint8_t *, R5900Context *ctx, Runtime *, uint32_t target)
     {
+        // Inside a native out-call (kernel.md section 3b): a jump through a register leaves the override too (its frames
+        // are gone, as anywhere), the stop deferred to the override's return and the dispatcher then running on from
+        // the target; a return to ra by an invocation that recursed or called its own labels is a plain return there
+        // (hierTraverseAsm's, inside TMB's hier override).
+        if (outcallDepth_)
+        {
+            if (target == ctx->r[31].uw[0])
+                return false;
+            ++jumps;
+            leave(ctx, target);
+            return true;
+        }
         ++jumps;
         stop(ctx, target);
     }

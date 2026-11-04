@@ -35,6 +35,7 @@ void bozo_resume_failed(uint8_t *, R5900Context *, Runtime *rt, uint32_t pc) { r
 bool bozo_jump(uint8_t *, R5900Context *, Runtime *, uint32_t) { return false; }
 void bozo_tail_call(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target) { bozo_call_indirect(rdram, ctx, rt, target); }
 
+void bozo_leave(uint8_t *, R5900Context *ctx, Runtime *, uint32_t pc) { ctx->pc = pc; }
 void bozo_yield(uint8_t *, R5900Context *ctx, Runtime *rt)
 {
     ++rt->yields;

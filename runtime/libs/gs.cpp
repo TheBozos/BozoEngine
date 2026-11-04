@@ -183,11 +183,13 @@ namespace bozo::libs
             const int32_t px = w * h;
             switch (psm)
             {
-            case 0x00: case 0x30: return px >> 2;                    // 32 bits
+            // T8H, T4HL and T4HH (0x1b, 0x24, 0x2c) as 32 bits: their texels sit in 32-bit words (match1p #16897863:
+            // a 0x1b upload's image tag, inside TMB's texmResInit override, is four times an 8-bit one's).
+            case 0x00: case 0x30: case 0x1b: case 0x24: case 0x2c: return px >> 2; // 32 bits
             case 0x01: case 0x31: return (px * 3) >> 4;              // 24 bits
             case 0x02: case 0x0a: case 0x32: case 0x3a: return px >> 3; // 16 bits
-            case 0x13: case 0x1b: return px >> 4;                    // 8 bits
-            case 0x14: case 0x24: case 0x2c: return px >> 5;         // 4 bits
+            case 0x13: return px >> 4;                               // 8 bits
+            case 0x14: return px >> 5;                               // 4 bits
             default: return 0;
             }
         }
@@ -301,6 +303,15 @@ namespace bozo::libs
             g.ret(0);
         }
 
+        // sceGsExecLoadImage(lp, src): an upload of the image at src as the load packet lp describes. Nothing in flight,
+        // no GS memory: the renderer takes textures from the game's own assets (a port's packs). Returns 0, as every
+        // one of the reference's (boot: 86, all made inside TMB's texmResInit / texmLoadResTexture overrides).
+        void execLoadImage(Libraries &l, Guest &g)
+        {
+            (void)l;
+            g.ret(0);
+        }
+
         // sceGsSyncV(mode): the game waits for the next vblank, and the game frame ends there. The reference returns
         // 1 when the frames ended by then (this one included) are odd, 0 when even: settled on all of boot's 8 and
         // match1p's 2,290 calls. The wait and the frame end are the runtime's frame boundary.
@@ -323,6 +334,7 @@ namespace bozo::libs
         out.push_back({"sceGsSetDefStoreImage", kGs, setDefStoreImage});
         out.push_back({"sceGsPutDrawEnv", kGs, putDrawEnv});
         out.push_back({"sceGsSyncPath", kGs, syncPath});
+        out.push_back({"sceGsExecLoadImage", kGs, execLoadImage});
         Function v{"sceGsSyncV", kGs, syncV};
         v.frameBoundary = true;
         out.push_back(v);

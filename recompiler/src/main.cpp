@@ -95,7 +95,7 @@ int main(int argc, char **argv)
         else if (a == "--externals" && k + 1 < argc)
         {
             std::string error;
-            if (!readExternals(argv[++k], options.externals, error))
+            if (!readExternals(argv[++k], options.externals, error, &options.storePcs))
             {
                 std::fprintf(stderr, "bozo-recomp: %s\n", error.c_str());
                 return 1;

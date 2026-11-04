@@ -81,5 +81,8 @@ namespace bozo::libs
         std::array<std::array<Port, 4>, 2> ports{};
         bool initialized = false;
         uint64_t reads = 0;
+        // A multitap in port 1 (sceMtapPortOpen through a port's override: the game's sceMtap library is answered by
+        // the port). The slots behind it (players 2-4 on port 1) come with the PC's pads (milestone M2).
+        bool multitap = false;
     };
 }

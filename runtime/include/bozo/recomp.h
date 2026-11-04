@@ -28,7 +28,9 @@ namespace bozo
     // The scheduler's checkpoint (abi.md section 3): count guest cycles, call the runtime past the limit. `pc` is
     // where the guest code goes on from (a transfer's target): the runtime may stop the thread here (it does not
     // return then) and run it on from ctx->pc later.
-    BOZO_INLINE void checkpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
+    // Inside a port's native override the runtime may make guest code leave here instead (an event due: kernel.md
+    // section 3b): true, with ctx->pc where it goes on, and the generated code returns.
+    BOZO_INLINE bool checkpoint(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t cycles, uint32_t pc)
     {
         ctx->cycles += cycles;
         ++ctx->checkpoints;
@@ -36,7 +38,9 @@ namespace bozo
         {
             ctx->pc = pc;
             bozo_yield(rdram, ctx, rt);
+            return ctx->leaving != 0;
         }
+        return false;
     }
 
     // EE time charged where guest code cannot stop (the reference's call to a label of the same function).
@@ -68,10 +72,18 @@ namespace bozo
     // A return to an inner call's return address (kernel.md section 3): the call has returned (ordinary checkpoints
     // can stop guest code again once none is left), and the events due meanwhile are taken here, in place, guest
     // code's frames kept, however many inner calls are still in progress (match1p #18297743).
-    BOZO_INLINE void innerReturn(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
+    // Inside a port's native override (kernel.md section 3b) the return leaves for the runtime instead, the override
+    // ending there (the reference: TMB's hier override ends at texmActivateTextureAsm's inner return 0x1fba84, boot
+    // #228128): true, and the generated code returns.
+    BOZO_INLINE bool innerReturn(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
     {
         if (ctx->noStop)
             --ctx->noStop;
+        if (BOZO_UNLIKELY(ctx->outcall))
+        {
+            bozo_leave(rdram, ctx, rt, pc);
+            return true;
+        }
         if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
         {
             ctx->pc = pc;
@@ -79,6 +91,7 @@ namespace bozo
             bozo_yield(rdram, ctx, rt);
             ctx->inPlace = 0;
         }
+        return false;
     }
 
     // ---- Multiply and divide (r5900.md "Multiply and divide") ----

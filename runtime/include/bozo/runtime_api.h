@@ -22,6 +22,13 @@ struct BozoResumeEntry
     RecompiledFunction resume;
 };
 
+// The externals the code was generated with (bozo-recomp --externals): the addresses the runtime answers, sorted.
+struct BozoExternalEntry
+{
+    uint32_t address;
+    uint32_t kind; // 1 stub (every transfer goes to the runtime), 2 override (calls do; a direct jump runs the guest code)
+};
+
 // A resume entry was asked for a pc that is not one of its function's labels.
 void bozo_resume_failed(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc);
 
@@ -43,6 +50,9 @@ bool bozo_jump(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t target);
 // leaving a function), with ctx->pc set to where the guest code goes on. The runtime may stop the thread here (switch
 // threads, run a handler: it then does not return) or raise the limit and return.
 void bozo_yield(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
+// Guest code leaves for the runtime at `pc` (an inner call's return inside a port's native override: kernel.md section
+// 3b); the generated code returns right after.
+void bozo_leave(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc);
 
 // ---- Exceptions and system instructions ----------------------------------------------------------------------------
 void bozo_syscall(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t code); // `syscall` (number in v1)

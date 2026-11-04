@@ -47,6 +47,7 @@ namespace bozo::libs
             c.running = false;
             c.chcr &= ~0x100u;
             io.stat |= 1u << ch;
+            io.cpcondDone |= 1u << ch;
             l.dispatcher()->kernel().irq(true, ch);
         }
 
@@ -92,6 +93,8 @@ namespace bozo::libs
             return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
+        if (!store && a == 0x12001000u) // the GS's CSR (TMB's vblank handler reads its FIELD)
+            return size == 8 || size == 4;
         return false;
     }
 
@@ -115,6 +118,12 @@ namespace bozo::libs
         }
         else if (a == 0x10000010u)
             v = io.t0Mode;
+        else if (a == 0x12001000u)
+        {
+            // CSR: FIELD (bit 13) is the vblank count's parity (read inside TMB's vblankHandler override, boot #729700
+            // on: gp - 0x36d4 alternates 1, 0, ... from an odd count). Nothing else of it is observed.
+            v = static_cast<uint64_t>(l.dispatcher()->kernel().vblankCount() & 1u) << 13;
+        }
         else if (const int ch = channelOf(a, reg); ch >= 0)
         {
             // CHCR reads back (STR clear once the transfer completed); MADR, QWC and TADR read 0, as the reference
@@ -140,13 +149,16 @@ namespace bozo::libs
         uint32_t reg = 0;
         // Channel 4 (to the IPU) completes as the reference completed it: at the game's first store after libmpeg's
         // decoder took the transfer (asked for more data), before the store's own effect (libraries.md section 11).
-        if (io.channels[kIpuTo].running && io.ipuDemand)
+        if (io.channels[kIpuTo].running && io.ipuDemand && !io.hostAccess)
             complete(l, kIpuTo);
         if (a == 0x10000000u)
         {
             io.t0Start = v & 0xFFFFu;
             io.t0Base = l.dispatcher()->now();
-            io.t0LastRead = ~0u;
+            // A port's own restart (TMB's frame end) keeps the last read: the game's next read of the same count is a
+            // poll (match1p #34736003).
+            if (!io.hostAccess)
+                io.t0LastRead = ~0u;
         }
         else if (a == 0x10000010u)
             io.t0Mode = v;
@@ -190,6 +202,7 @@ namespace bozo::libs
         else if (a == 0x1000E010u)
         {
             io.stat &= ~(v & 0x3FFu);               // the status bits written 1 clear
+            io.cpcondDone &= ~(v & 0x3FFu);
             io.stat ^= v & 0x3FF0000u;               // the mask bits written 1 toggle
         }
         else if (a == 0x1000E020u)

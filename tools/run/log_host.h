@@ -7,6 +7,7 @@
 
 #include "bozo/ee/dispatcher.h"
 #include "bozo/libs/libraries.h"
+#include "bozo/port.h"
 #include "bozo/reference.h"
 
 #include <cstdint>
@@ -35,6 +36,19 @@ namespace bozo::run
         // Pinned mode: whether the 989SND driver takes the decisions the reference's IOP time made from the log's replies
         // (libraries.md section 15.5); off, it answers them from its own models too.
         uint32_t sndFromLog = 0; // 989SND replies taken from the log: bit 0 0x11, 1 0x19, 2 0x21, 3 0x2c (none: the model answers)
+        // A port's overrides run natively instead of being answered from the log (phase 4, kernel.md section 3b):
+        // each call checked against its record (context words, memory runs, traced calls, operations, frame end).
+        const port::Registry *overrides = nullptr;
+    };
+
+    // The port's overrides run natively: per override address, calls and divergences.
+    struct OverrideStats
+    {
+        uint64_t calls = 0, nested = 0, divergences = 0, timeDiffers = 0, innerCalls = 0, frames = 0;
+        uint64_t bound = 0;                   // override addresses bound (registered and an override of the log)
+        std::vector<uint32_t> notInLog;       // registered, but not an override of the reference's run
+        std::vector<uint32_t> fromLog;        // the log's overrides with no registration: answered from the log
+        std::map<uint32_t, uint64_t> perAddress;
     };
 
     // Per library: calls answered natively, and the native state checked against calls answered from the log.
@@ -63,9 +77,11 @@ namespace bozo::run
         uint32_t frames = 0;
         uint32_t ram = 0, scratchpad = 0, calls = 0, threads = 0, eeCycle = 0, callCount = 0; // frames matching
         int64_t firstRam = -1, firstScratchpad = -1, firstCalls = -1, firstThreads = -1, firstEeCycle = -1;
+        uint32_t draws = 0, drawCounts = 0; // frames whose draw-list hash (and batch and vertex counts) match: reported
+        int64_t firstDraws = -1;
     };
 
-    class LogHost final : public ee::Host, public ee::KernelObserver
+    class LogHost final : public ee::Host, public ee::KernelObserver, public port::Host
     {
     public:
         LogHost(calllog::Reader &log, const Options &options);
@@ -82,7 +98,7 @@ namespace bozo::run
         const FieldStats &stats() const { return stats_; }
         const PinnedStats &pinnedStats() const { return pinned_; }
         const NativeStats &nativeStats() const { return native_; }
-        libs::Libraries &libraries() { return libs_; }
+        const OverrideStats &overrideStats() const { return overrides_; }
         uint32_t errors() const { return errors_; }
         uint64_t recordsMatched() const { return matched_; }
         uint64_t calls() const { return seq_; }
@@ -108,11 +124,18 @@ namespace bozo::run
         void threadEnded(ee::Dispatcher &, ee::Thread &) override;
         void fault(ee::Dispatcher &, R5900Context *, const std::string &what) override;
         bool eventPinned(ee::Dispatcher &, const R5900Context *ctx) override;
+        uint64_t outcallDeadline(ee::Dispatcher &) override;
+        bool outcallLeave(ee::Dispatcher &, const R5900Context *ctx) override;
         bool eventPinnedSoon(ee::Dispatcher &) override;
 
         // ee::KernelObserver
         void op(const ee::OpEvent &e) override;
         bool dmacStatusSet(uint32_t cause) override;
+
+        // port::Host
+        libs::Libraries &libraries() override { return libs_; }
+        void frameEnd(Runtime *rt, R5900Context *ctx) override;
+        bool callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address) override;
 
     private:
         // The next record; ends the run (with a report) when the log has none.
@@ -139,7 +162,16 @@ namespace bozo::run
         // The records made inside a call (OPs of depth 0, INVOKE, FRAME), made again in order.
         bool insideRecords(R5900Context *ctx, uint64_t callSeq, const calllog::Call &c, uint32_t &tracesTaken,
                            bool native = false);
-        void endFrame(const calllog::Record &r, const calllog::Frame &f, uint32_t openId, const uint32_t *openArgs);
+        // `traces` (the frame's traced calls when not the record's) and `apply` (the record's memory applied: calls
+        // answered from the log; a native override's memory is compared instead).
+        void endFrame(const calllog::Record &r, const calllog::Frame &f, uint32_t openId, const uint32_t *openArgs,
+                      const std::vector<calllog::Trace> *traces = nullptr, bool apply = true);
+        // ---- The port's overrides, run natively (kernel.md section 3b) ----
+        void runOverride(R5900Context *ctx, const calllog::Record &r, const calllog::Call &c, port::Function fn);
+        // Out-calls made inside a native override (none is a record of the log): made natively.
+        void innerLibraryCall(R5900Context *ctx, uint32_t target);
+        void innerIo(R5900Context *ctx, uint32_t address, uint32_t size, bool store, uint64_t value[2]);
+        void innerTrace(uint32_t id, const uint32_t a[4], uint32_t v0, bool blocked);
         void continuation(uint32_t origin, uint32_t memSource, const char *what);
         // A native library's continuation (origin resume): made on the thread's context, checked against the log's
         // MEM records of that source (its operations are matched as the kernel makes them).
@@ -185,6 +217,7 @@ namespace bozo::run
             uint8_t flags = 0;
             ContextWords entry{};
             uint32_t args[4] = {};
+            bool inner = false; // made inside a native override (no record of its own)
         } kc_;
         // The traced call in progress (its entry is "open" if the frame ends inside it), and whether it blocked.
         uint32_t openId_ = 0;
@@ -202,5 +235,16 @@ namespace bozo::run
         uint32_t dmaDone_ = 0, dmaPcr_ = 0;
         bool dmaPcrKnown_ = false;
         uint32_t vif0Tadr_ = 0;
+        // The port's overrides bound natively, and the one running (its call, its traced calls so far).
+        std::map<uint32_t, port::Function> portAt_;
+        OverrideStats overrides_;
+        uint32_t insideDepth_ = 0;
+        uint64_t overrideSeq_ = 0;
+        calllog::Call overrideCall_;
+        uint64_t overrideRecord_ = 0;
+        bool overrideTransfer_ = false;
+        bool overrideTimeUnknown_ = false; // a timed library call inside took a time the log does not hold
+        std::vector<calllog::Trace> innerTraces_;
+        size_t innerTracesAdded_ = 0; // those already in a frame's list (a frame ended inside the override)
     };
 }
