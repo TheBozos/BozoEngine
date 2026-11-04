@@ -821,7 +821,7 @@ export tables, code, data references); addresses below are offsets into the modu
 | The tick: an IOP hardware timer at 1/240 s (USec2SysClock(1 s) / 240) whose handler wakes the tick thread, which runs 0x54b8; a command locks it (0x1630) and the ticks missed meanwhile run at the unlock (0x16a0) | 0x4a04, 0x4c78, 0x4cd4, 0x54b8 | |
 | KeyOn and KeyOff are sent once a tick, after the voice loop (0x1ed0: KOFF, 0x1db0: KON through `sceSdProcBatch`): a sound's voices start at the tick after its command | 0x56bc | |
 | **A voice's end** (0x54b8): for each active voice the tick reads ENVX (`sceSdGetParam(0x500 \| voice << 1 \| core)`). Not 0: nothing. 0 and keyed off: the voice is freed (0x1fc0, its owner told with reason 2). 0 and still keyed on: the voice's byte counter (0x183c0) is decremented and, when it reaches 0, the sound ends (0x214c: its owner told with reason 3, KeyOff queued). The counter's reset ("4 when the last ENVX was not 0") never fires, because the last ENVX (0x18360) is only stored on the zero path: the counter runs from 0 to 0 through 255, so **a natural end comes 256 silent ticks after the mixer reports the voice silent** | 0x54b8, 0x214c, 0x1fc0 | the +1.166 s of 15.5 |
-| A voice's pitch at KeyOn: `sceSdNote2Pitch(centre note, centre fine, note, fine)` from the tone (a negative centre note is a 44.1 kHz sample, converted); ADSR1/ADSR2 the tone's bytes 10-13; the start address the tone's sample | 0x1a00-0x1c88, 0x27d0 | |
+| A voice's pitch at KeyOn: `sceSdNote2Pitch(centre note, centre fine, note, fine)` from the tone, the note's pitch including the pitch modifier and bend (`989snd.md` Part A 3.1); a non-negative centre note is converted to 48 kHz (x 44100 / 48000), a negative one is negated and used as is; ADSR1/ADSR2 the tone's bytes 10-13; the start address the tone's sample | 0x1a00-0x1c88, 0x27d0 | |
 | `sceSdNote2Pitch` (LIBSD.IRX 0x33a0): fine = note's fine + centre fine (the semitones it carries moved to the note), the semitone from a 12-entry table (LIBSD 0x4680), the fine from a 128-entry one (0x4698), their product >> 16, then shifted right by the octave with rounding | LIBSD 0x33a0 | |
 | InitVAGStreamingEx creates four streaming threads (stacks of 0x800) and allocates the streams' buffers and state (0x61d00 for TMB's 6 x 0xfa00); with the reference's thread stacks taken from the IOP heap (0x840 each) that is the 0x63e00 of 15.4 | 0x7fc, 0xb4ac-0xb590 | the first level bank at 0xe3c64 |
 | Bank transfers to sound memory take a free DMA channel (0xe590), their end handler (0x4714) frees it; while streams run, disc reads go through the streaming thread (0xd55c) | | |
@@ -864,33 +864,75 @@ more after it), it gives every 989SND reply of boot but the movie positions, and
 (the first due tick at the call), one asynchronous sound of bank 0xe5284 ends a tick before the reference's and the
 first play handle differs at frame 6597: the phase is the one point the records must give.
 
-First difference left: frame 8663, SetSoundParams and SoundIsStillPlaying of the stream handle 0x84020002 (given inside
-`TheGame::Update`): ended in the reference, playing in the replay, whose streaming threads (disc reads into the stream's
-ring and its end) do not run yet. The 141 movie positions left are the same G question for the second movie
-(`iop-timing.md` section 8).
+That difference (frame 8663, the stream handle 0x84020002 ended in the reference) is cleared by running 989SND's
+streaming threads (15.13b).
 
-**Handover (state at 2026-11-04, for whoever picks this up).**
+### 15.13b The replay with 989SND's threads (2026-11-04, second session)
 
-- *The oracle* (scratch, never committed: it runs 989SND.IRX's code): `D:\BozoScratch\irx\`.
-  - `iop.py`: the MIPS I interpreter and IRX loader.
-  - `drv.py`: the IOP imports in Python. Through `D:\BozoScratch\bzaudio.dll` (built from `bzaudio.cpp` there, linking `build/runtime/libbozo_audio.a`, clocked mode), libsd goes to `bozo_audio`, except `sceSdNote2Pitch`, which is `n2p.py` from LIBSD.IRX's tables. It also has the heap, the threads' stacks (0x840 each after the module start), DMA-end handlers, `snd_StreamSafeCdRead`'s disc read, and the sreg and SIF stubs.
-  - `run.py`: replays a command trace with the IOP clock of this section and compares every result.
-  - The IRX modules are copies from the disc image (`/MOD/989SND.IRX`, `/MOD/LIBSD.IRX`): the user's data, never committed.
-- *The command traces* (`m1.snd`, `boot.snd` there):
-  - Format: one line per 989SND command: EE cycle, frame, vblank count, followed (1: inside a call answered from the log), command id, the seven argument words, the log's result, whether it returns one.
-  - How they were made: a temporary trace in `SndDriver::call` (since removed) during `bozo-run --pinned` with the log's replies on.
-  - Run: `cd D:\BozoScratch\irx; python t2.py m1.snd phase2=0.0015 verbose=12`, about 5 minutes. It prints the counts per command and the first differences (trace line, frame, id, arguments, the log's result, the replay's).
-  - `t8.py` checks slot generations; `t6.py`/`t9.py` dump libsd calls and handler allocations around a time window.
-- *Pinned points so far:*
-  - G = 0.
-  - The level-start tick phase `phase2` = 1.5 ms after InitVAGStreamingEx (#17536113); 0.5-3.6 ms all work.
-  - The IOP reset at EE cycle 4,927,984.
+The replay now runs 989SND's IOP threads on a scheduler per `iop-timing.md` section 3: the four streaming threads
+(0xe3ec priority 60, 0xe7d8 61, 0xd3a0 62, 0xdcdc 63) run between the RPC calls and the ticks, highest priority first,
+in slices of at most 256 instructions up to the next payment's target P, with the services (due ticks, queued
+interrupt calls, CD completions) between slices; semaphores, SleepThread/WakeupThread and cdvdman's asynchronous
+`sceCdRead` with its callback (`sceCdCallback`) are modelled; the tick and the RPC server stay inline (they never block
+in TMB's runs, but for the bank loads' disc reads while streaming is initialised, which complete at once). 989SND's
+behaviour, read from its code for the native driver, is `989snd.md` (Part A programs, voices, the tick; Part B MIDI;
+Part C streams).
+
+**Results** (match1p's 125,000 commands, about 6 minutes; boot unchanged: every reply but 51 movie positions):
+
+- Every reply through frame 10826: the three short streams (0x84020002-4, `DEA_AI_M`) end at the reference's frame
+  (1007 ticks after their KeyOn: `989snd.md` Part C section 6), and so do the program sounds whose voices the streams
+  took (`allocVoice(group, 127)` steals a program voice). Without the threads the first difference is frame 8999
+  (a play handle), so the streams' voices matter to the programs' handler slots.
+- First difference left: frame 10827 (trace line 82837), PlaySound of bank 0xe6500 sound 3: the reference gives slot
+  0x11 (0x80110009), the replay slot 0x16 (0x8016000c). Slot 0x11 holds 0x80110008 (bank 0xe5284 sound 0xf, played at
+  frame 10696, never queried): two tones (centre notes 76 and 77, one sample, ADSR 0x80ff/0x5fcf), on voices 35 and
+  40 in the replay, which take the first free voices ascending. Voice 35's end counter was 253 at the play (two silent
+  ticks under the MIDI sound 0x81010004 before a steal at tick 43536), so its sound ends 2.37 s after the play in the
+  replay; the reference had it ended by 2.18 s. The per-voice end counter is never reset (Part A 4.2), so a voice's
+  counter carries all its earlier silent ticks: whatever differs is upstream of tick 44440 and invisible in the replies
+  so far. 323 replies differ after it (0x11 171, 0x21 152), every 0x19 matches.
+- What it does not depend on (each run to frame 10830): the instruction cost (each IOP instruction counted 0.5, 1.0 or
+  1.1 cycles: the same first difference; 0 cycles diverges at frame 6868, so a native driver needs a cost model, but a
+  rough one), the level-start phase (1.5 or 3 ms), G (0 or 550), the CD callback inside `sceCdRead` or at the next
+  service point. The CD's latency does matter: 20,000 IOP cycles (0.5 ms) per read moves the first short stream's end
+  one frame late (frame 10304), 200,000 that of 8663; the reference's reads complete within a fraction of that.
+- Movie positions (0x40, followed: they never need a native answer): with the global G = 550 every position of the
+  first movie fits (with G = 0, 141 of them, from frame 646 on, are one sample ahead); no single extra
+  G fits the second movie in the replay (the positions drift by a sample within it), which the reference's records do
+  fit with one offset (`iop-timing.md` section 8): the replay's clock gains time during the second movie that the
+  reference's did not.
+
+**Handover (state at 2026-11-04 end of the second session).**
+
+- *The oracle* (scratch, never committed): `D:\BozoScratch\irx\`. The first session's files (`iop.py`, `drv.py`,
+  `run.py`, `t*.py`) are unchanged; the threaded replay is in copies:
+  - `iop2.py`: the interpreter with a thread level (pause after n instructions, block in an import, resume at
+    (pc, npc)).
+  - `drv2.py`: `drv.py` on `iop2`, with an instruction-cost factor.
+  - `sched.py`: `SDriver`, the threads, semaphores, sleep/wakeup, cdvdman (read, sync, callback, break), the event
+    queue, `advance(P)` (ticks, events, slices) and `tick()`.
+  - `run2.py`: the replay. Options as `run.py`'s plus `cost=` (cycles per instruction), `cd_delay=` (IOP cycles per
+    read; -1 completes inside `sceCdRead`), `G2=`/`g2_line=` (an extra G from a trace line), `run_threads=0`.
+    Run: `cd D:\BozoScratch\irx; python run2.py m1.snd phase2=0.0015 verbose=30`.
+  - `t10.py <line> <slot hex>`: the handler slot and all 48 voices (state, owner, priority, age, end counter) before
+    a trace line. `t11.py <from line> <to line> <voice>`: one voice's owner/state/counter changes per tick.
+    `t12.py <bank hex> <sound hex>`: a sound's record and tones.
+  - `cov/runcov.py`: the replay with instruction coverage (match1p runs 9,940 distinct instructions of 989SND, boot
+    4,457).
+- *Pinned points:* unchanged (G = 0, level-start phase 1.5 ms, IOP reset at EE cycle 4,927,984); CD reads complete
+  at once.
 - *Next:*
-  1. Run 989SND's streaming threads in the oracle (thread entries 0xe3ec, 0xd3a0, 0xe7d8, 0xdcdc; their disc reads through cdvdman; the stream's ring in sound memory; its end), to clear frame 8663.
-  2. The second movie's G (0x40 positions).
-  3. The native C++ driver on `bozo::audio::Mixer`, per 15.12 and this section, checked against the oracle command by command. Land it with a per-command switch for the log replies, so fully native commands can go off first.
-  4. The IOP clock in `bozo-run`, with the pinned points above.
-  5. `--snd-log-replies off` as the default.
+  1. Frame 10827: find what differs before tick 44440. Candidates not yet tested: the order in which a missed tick
+     runs inside a command (Part A 1.5, 6.3: a tick due inside PlaySound's lock runs at its unlock, inside the
+     command, in the reference only if the tick thread can preempt the RPC thread, which `iop-timing.md` section 4
+     excludes), the MIDI sound 0x81010004's notes (Part B: its voices' first silent ticks), the stream threads' slice
+     boundaries against the ticks, and `sceSdNote2Pitch` (the replay uses LIBSD.IRX's tables; the reference may use
+     another implementation).
+  2. The native C++ driver per `989snd.md` (programs, voices, the tick and its counter, MIDI, streams) on
+     `bozo::audio::Mixer`/`Libsd`, with a cost model for the IOP clock (the replay's instruction counts per call and
+     tick as the target), checked against the oracle command by command, behind a per-command log-reply switch.
+  3. The IOP clock in `bozo-run` with the pinned points above; then `--snd-log-replies off` as the default.
 
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 
