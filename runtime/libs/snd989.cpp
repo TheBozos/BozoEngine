@@ -2397,6 +2397,12 @@ namespace bozo::libs::snd989
                     if (s.used)
                         stopStream(s.handle);
                 return false;
+            case 0x35: // CloseVAGStreaming: the streams stopped (their SPU buffers kept: a later InitVAGStreamingEx reuses
+                       // them; what the driver does with SPU memory there is not settled)
+                for (Handler &s : S)
+                    if (s.used)
+                        stopStream(s.handle);
+                return false;
             default: return false;
             }
         }

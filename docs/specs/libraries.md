@@ -691,6 +691,7 @@ The command ids are the client's (each `snd_*` function passes its own). What TM
 | 0x2a | `snd_InitVAGStreamingEx` | streams, buffer bytes | none (IOP memory: streams x bytes + 0x6200) | yes |
 | 0x2c | `snd_PlayVAGStreamByLoc` | left sector, right sector, flags, ... | the stream's handle | pinned (15.5) |
 | 0x2d | `snd_PauseVAGStream` | handle | none | yes |
+| 0x35 | `snd_CloseVAGStreaming` | | none | yes: the streams stopped, their IOP block freed (stage-level20 #26677069: the next bank lands at 0x7fe60) |
 | 0x3b | `snd_InitMovieSound` | (inside the movie override only) | the movie's buffer: 0x6010 bytes of IOP memory | followed (15.7) |
 | 0x3c, 0x3d, 0x3e | `snd_CloseMovieSound` (frees the buffer), `snd_ResetMovieSound`, `snd_StartMovieSound` | | none | yes |
 | 0x40 | `snd_GetTransStatus` | (inside the movie override only) | the movie sound's position | followed |

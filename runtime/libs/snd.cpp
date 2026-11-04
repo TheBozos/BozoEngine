@@ -536,6 +536,13 @@ namespace bozo::libs
             streamBlock = l.sif.heap.allocate(a[0] * a[1] + 0x6200u);
             count();
             return 0;
+        case 0x35: // CloseVAGStreaming: the streams' buffers and state freed (stage-level20 #26677069: Warhawk's
+                   // Rooftop's first bank then lands at 0x7fe60, where InitVAGStreamingEx's block was)
+            if (streamBlock)
+                l.sif.heap.release(streamBlock);
+            streamBlock = 0;
+            count();
+            return 0;
         case 0x2C: // PlayVAGStreamByLoc(left, right, flags, ..., volume...): the stream's handle
         {
             const uint32_t model = modelHandle(l, g, 0x84u);
