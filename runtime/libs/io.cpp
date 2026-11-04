@@ -156,10 +156,8 @@ namespace bozo::libs
         {
             io.t0Start = v & 0xFFFFu;
             io.t0Base = l.dispatcher()->now();
-            // A port's own restart (TMB's frame end) keeps the last read: the game's next read of the same count is a
-            // poll (match1p #34736003).
-            if (!io.hostAccess)
-                io.t0LastRead = ~0u;
+            // A restart keeps the last read, the port's (TMB's frame end: match1p #34736003) and the game's alike: the
+            // next read of the same count is a poll (stage-level0 #13062314: the game read 0, wrote 0, read 0 again).
         }
         else if (a == 0x10000010u)
             io.t0Mode = v;

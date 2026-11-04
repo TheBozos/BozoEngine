@@ -360,8 +360,17 @@ namespace bozo::libs
             g.ret(0);
         }
 
+        // What the demux counts as read ahead: the coded pictures begun (a picture's data begins at its sequence or GOP
+        // header when it has one, so a header whole in the stream counts its picture before the picture start code
+        // arrives: stage-level0 #11640007, the Suburbs movie, stops at 0xd000 bytes where the header of picture 42 is
+        // whole and its start code not yet), the sequence end and the program end.
+        uint32_t ahead(const MpegState &s)
+        {
+            return static_cast<uint32_t>(s.cuts.size()) + (s.sequenceEnd ? 1u : 0u) + (s.programEnd ? 1u : 0u);
+        }
+
         // sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize): a sector at a time while fewer than kPicturesAhead
-        // pictures are ahead of the game (picture starts, the sequence end and the program end whole in the stream, less
+        // pictures are ahead of the game (ahead(): the coded pictures begun, the sequence end and the program end, less
         // those delivered; nothing after the program end is read); each whole packet of a registered stream gets its
         // callback. Returns the bytes taken.
         void demux(Libraries &l, Guest &g)
@@ -377,7 +386,7 @@ namespace bozo::libs
             }
             s.ringBias = static_cast<uint32_t>(((data - s.ring) + s.ringSize - (s.consumed % s.ringSize)) % s.ringSize);
             uint32_t taken = 0;
-            while (taken + 0x800 <= bytes && s.starts < s.delivered + kPicturesAhead)
+            while (taken + 0x800 <= bytes && ahead(s) < s.delivered + kPicturesAhead)
             {
                 const uint32_t offset = static_cast<uint32_t>((s.consumed + s.ringBias) % s.ringSize);
                 for (uint32_t k = 0; k < 0x800; ++k)

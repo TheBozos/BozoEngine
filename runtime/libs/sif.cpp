@@ -110,7 +110,8 @@ namespace bozo::libs
 
         // sceSifCallRpc(client, fno, mode, send, ssize, receive, rsize, end_function, end_param): the server answers
         // within the call (the reference's replies all land inside it), so the call is complete when it returns; 0.
-        // The client header keeps the mode and the function; the server data the request's fields.
+        // The client header keeps the mode and the function; the server data the request's fields (its packet address,
+        // reply mode and id 0).
         void callRpc(Libraries &l, Guest &g)
         {
             const uint32_t client = g.arg(0), fno = g.arg(1), mode = g.arg(2), send = g.arg(3);
@@ -122,9 +123,12 @@ namespace bozo::libs
             {
                 g.write32(server + 0x0C, ssize);
                 g.write32(server + 0x1C, client);
+                g.write32(server + 0x20, 0); // the packet's address on the IOP: none
                 g.write32(server + 0x24, fno);
                 g.write32(server + 0x28, recv);
                 g.write32(server + 0x2C, rsize);
+                g.write32(server + 0x30, 0); // the reply's mode and id: 0 (stage-level0 #13052622: a level load had
+                g.write32(server + 0x34, 0); // overwritten 0x1f10000; the reference's call wrote every word back)
             }
             // 989SND's client (bound at sceSifBindRpc): not the server data's first word, which the game's own data can
             // overwrite (the story's second level loads over 0x1f10000; the call then went unanswered and the client
