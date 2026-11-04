@@ -224,7 +224,7 @@ TMB_Recomp keeps raylib until phase 4 moves it onto BozoEngine; its window and i
 
 For each file we want to bring: `git blame` on the fork's current tree; a file moves only if every line is the team's
 (boubou666, thomas.epitech, and Arzaroth's identities). Files with lines by anyone else are rewritten from a spec
-instead. To confirm: whose is `gitea@barrut.me` (5,000+ runtime lines)?
+instead. `gitea@barrut.me` is Arzaroth (the only address under that name in the fork's history), so those lines are the team's; Ranieri and Ran-j are the same upstream author.
 
 ## 8. Risks
 
