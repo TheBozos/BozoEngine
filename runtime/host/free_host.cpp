@@ -27,6 +27,10 @@ namespace bozo::host
                          std::string &error)
     {
         d_ = &d;
+        // Stops jump back to the dispatcher (nothing on the way holds anything to destroy: dispatcher.h), and no frame
+        // keeps the context words only the call-log host compares.
+        d.jumpStops = true;
+        d.keepStopWords = false;
         d.kernel().setObserver(this);
         d.runtime().port = this;
         libs_.attach(d);
