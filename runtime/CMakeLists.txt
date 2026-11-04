@@ -88,15 +88,42 @@ if(BOZO_APP)
     DOWNLOAD_EXTRACT_TIMESTAMP ON)
   FetchContent_MakeAvailable(SDL3)
 
+  # Dear ImGui (MIT licence), pinned to v1.92.7-docking (commit b1bcb12a, the version the fork's TMB used), for the
+  # settings window (F2) and the overlay (F3), through ImGui's own SDL3 and OpenGL 3 backends. Downloaded at configure
+  # unless FETCHCONTENT_SOURCE_DIR_IMGUI names a source tree of that commit (the TMB build kit's deps/imgui-src).
+  # bozo_ui: ImGui's core and the settings window's tab list (bozo/app/settings_tabs.h), without SDL3, so a port's
+  # runtime can draw a tab of its own and still link into a headless program; bozo_app adds the backends.
+  FetchContent_Declare(imgui
+    URL https://github.com/ocornut/imgui/archive/b1bcb12a624af7509894c8e77dd47416997777fa.tar.gz
+    URL_HASH SHA256=123926eb22d4990dea06bec0739d92f7790c8ee505b3d903fe2de7e5940f2c27
+    DOWNLOAD_EXTRACT_TIMESTAMP ON)
+  FetchContent_MakeAvailable(imgui) # no CMakeLists.txt of its own: only fetched
+  add_library(bozo_ui STATIC
+    app/settings_tabs.cpp
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp)
+  target_include_directories(bozo_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${imgui_SOURCE_DIR})
+  target_compile_definitions(bozo_ui PUBLIC BOZO_SETTINGS_UI IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+
   add_library(bozo_app STATIC
     app/window.cpp
     app/device_pad.cpp
     app/input_bindings.cpp
     app/app.cpp
     app/png.cpp
-    app/audio_device.cpp)
-  target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs SDL3::SDL3-static)
+    app/audio_device.cpp
+    app/video_settings.cpp
+    app/panel.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(bozo_app PRIVATE ${imgui_SOURCE_DIR}/backends)
+  target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs bozo_ui SDL3::SDL3-static)
   target_compile_options(bozo_app PRIVATE -Wall -Wextra)
+  set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+                              ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
 # libmpeg's video decoder (libraries.md section 9): FFmpeg's libavcodec (mpeg2video) and libavutil, optional. Found in

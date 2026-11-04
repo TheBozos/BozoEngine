@@ -6,8 +6,9 @@
 // each frame the renderer publishes (Renderer::present), letterboxed to the picture's shape, and reads the PC's devices
 // (bozo/app/device_pad.h).
 //
-// Keys: F8 saves the window as a PNG (captureDir); F11 or Alt+Enter switches fullscreen. Closing the window ends the
-// game at its next frame.
+// Keys (milestone M4): F2 the settings window and F3 the frame rate counter (bozo/app/panel.h); F8 a capture sequence
+// and F9 a burst of captures (window.cpp says where and how); F11 or Alt+Enter switches fullscreen (with the video
+// settings: to the last full-screen mode, bozo/app/video_settings.h). Closing the window ends the game at its next frame.
 #pragma once
 
 #include <cstdint>
@@ -31,6 +32,10 @@ namespace bozo::app
         std::vector<uint64_t> captureFrames; // the window saved at the first present after each of these game frames
         uint64_t quitAfterFrames = 0;        // close once the game ended this many frames (0: never)
         bool stats = true;                   // every 2 s on stderr: game frames and presents a second, frame times
+        // The window's size, mode and render scale from video::edited() (the port called video::loadAtStartup and
+        // applied its command line there) instead of width / height / fullscreen / renderScale.
+        bool videoSettings = false;
+        bool panel = true; // F2 / F3 (Dear ImGui)
     };
 
     // What the window runs and how it talks to it.

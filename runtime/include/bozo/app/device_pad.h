@@ -34,6 +34,9 @@ namespace bozo::app
         // devices read through the bindings and the rumble applied.
         void handle(const SDL_Event &event);
         void update(bool focused);
+        // Window thread: while the settings window (F2) holds them, the keyboard and the mouse do not reach the game
+        // (the gamepads still do), and the cursor is not captured.
+        void setHeld(bool keyboard, bool mouse);
         // Game thread.
         void read(uint32_t frame, int player, libs::PadInputState &out) override;
         void rumble(int player, bool small, uint8_t large) override;
