@@ -57,6 +57,8 @@ namespace bozo::app
         std::array<SDL_Gamepad *, input::kPlayers> rumbling{};
         bool rumbleOn = true;
         bool background = false;
+        // The settings window's hold (DevicePad::setHeld): the keyboard / the mouse kept from the game.
+        bool heldKeys = false, heldMouse = false;
 
         // The gamepad of a player: the one input.ini names, else the player's among the connected ones (player n the
         // nth, as the fork gave port n the nth raylib gamepad).
@@ -182,6 +184,12 @@ namespace bozo::app
         }
     }
 
+    void DevicePad::setHeld(bool keyboard, bool mouse)
+    {
+        impl_->heldKeys = keyboard;
+        impl_->heldMouse = mouse;
+    }
+
     void DevicePad::update(bool focused)
     {
         Impl &m = *impl_;
@@ -202,7 +210,7 @@ namespace bozo::app
         }
 
         // Cursor capture while playing: the motion is then unbounded (no screen edge), and the cursor hidden.
-        const bool capture = mouse.capture && focused;
+        const bool capture = mouse.capture && focused && !m.heldMouse;
         if (capture != m.captured)
         {
             if (SDL_Window *w = SDL_GetKeyboardFocus())
@@ -219,10 +227,13 @@ namespace bozo::app
         int keyCount = 0;
         const bool *keys = SDL_GetKeyboardState(&keyCount);
         const uint64_t now = SDL_GetTicks();
-        if (allowed)
+        if (allowed && !m.heldKeys)
         {
             devices.keys = keys;
             devices.keyCount = keyCount;
+        }
+        if (allowed && !m.heldMouse)
+        {
             devices.mouseButtons = SDL_GetMouseState(nullptr, nullptr);
             devices.mouseX = std::clamp(m.speedX * scale, -1.0f, 1.0f);
             devices.mouseY = std::clamp(m.speedY * scale * (mouse.invertY ? -1.0f : 1.0f), -1.0f, 1.0f);
