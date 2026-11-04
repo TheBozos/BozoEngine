@@ -662,6 +662,26 @@ namespace bozo::audio
         noteMixed(out, frames);
     }
 
+    size_t Mixer::take(int16_t *out, size_t frames)
+    {
+        std::lock_guard<std::mutex> queueLock(m_queueMutex);
+        const size_t taken = std::min(frames, m_queueFill);
+        for (size_t i = 0; i < taken; ++i)
+        {
+            out[i * 2u] = m_queue[m_queueRead * 2u];
+            out[i * 2u + 1u] = m_queue[m_queueRead * 2u + 1u];
+            m_queueRead = (m_queueRead + 1u) % kQueueFrames;
+        }
+        m_queueFill -= taken;
+        return taken;
+    }
+
+    size_t Mixer::queuedFrames()
+    {
+        std::lock_guard<std::mutex> queueLock(m_queueMutex);
+        return m_queueFill;
+    }
+
     void Mixer::mix(int16_t *out, size_t frames)
     {
         for (size_t frame = 0; frame < frames; ++frame)

@@ -24,6 +24,10 @@ namespace bozo::libs::snd989
         constexpr uint32_t kKon = 0x1500, kKoff = 0x1600, kVmixL = 0x1800, kVmixEL = 0x1900, kVmixR = 0x1A00,
                            kVmixER = 0x1B00;
         constexpr uint32_t kEea = 0x1D00, kSsa = 0x2040, kLsax = 0x2140, kNax = 0x2240;
+        constexpr uint32_t kMmix = 0x800, kMvolL = 0x980, kMvolR = 0xA80, kEvolL = 0xB80, kEvolR = 0xC80, kAvolL = 0xD80,
+                           kAvolR = 0xE80, kBvolL = 0xF80, kBvolR = 0x1080; // core parameters (| core)
+        constexpr uint32_t kAttrEffect = 2, kAttrSpdif = 10; // core attributes (| core)
+        constexpr uint32_t kUploadArea = Engine::kIopRamBytes; // the bank uploads' staging area in the engine's RAM
 
         int32_t s8(uint8_t v) { return static_cast<int8_t>(v); }
         uint32_t le32(const uint8_t *p)
@@ -93,6 +97,16 @@ namespace bozo::libs::snd989
                 const uint32_t args[5] = {a0, a1, a2, a3, a4};
                 uint32_t r = 0;
                 I.e.m_libsd->call(ordinal, args, 0, r);
+                // A debugging aid: every libsd call (the IOP clock, the export, its arguments and result).
+                static FILE *sdlog = std::getenv("BOZO_SND989_SDLOG") ? std::fopen(std::getenv("BOZO_SND989_SDLOG"), "w") : nullptr;
+                if (sdlog)
+                {
+                    if (I.inBatch && (ordinal == 5 || ordinal == 7 || ordinal == 9))
+                        std::fprintf(sdlog, "%llu B%u %x %x%c", static_cast<unsigned long long>(I.e.m_now), (ordinal - 3) / 2, a0, a1, 10);
+                    else
+                        std::fprintf(sdlog, "%llu %u %x %x %x %x %x %x%c", static_cast<unsigned long long>(I.e.m_now), ordinal, a0, a1, a2,
+                                     a3, a4, r, 10);
+                }
                 if (I.traceCalls && !I.inBatch)
                     I.callLog.push_back({ordinal, a0 & 0xFFFFu, I.e.m_now - I.tickService, r});
                 return r;
@@ -112,6 +126,13 @@ namespace bozo::libs::snd989
             void setAddr(uint32_t en, uint32_t v) { c(9, en, v); }
             uint32_t getAddr(uint32_t en) { return c(10, en); }
             uint32_t voiceTrans(uint32_t ch, uint32_t mode, uint32_t iop, uint32_t spu, uint32_t size) { return c(17, ch, mode, iop, spu, size); }
+            uint32_t blockTrans(uint32_t ch, uint32_t mode, uint32_t iop, uint32_t size, uint32_t start = 0) { return c(18, ch, mode, iop, size, start); }
+            uint32_t blockTransStatus(uint32_t ch) { return c(20, ch, 0); }
+            void setCoreAttr(uint32_t en, uint32_t v) { c(11, en, v); }
+            void setEffectAttr(uint32_t core, uint32_t attr) { c(23, core, attr); }
+            void clearEffectWorkArea(uint32_t core, uint32_t ch, uint32_t mode) { c(25, core, ch, mode); }
+            void init() { c(4, 0); }
+            void setTransIntrHandler(uint32_t ch, uint32_t function, uint32_t argument) { c(26, ch, function, argument); }
         };
         Sd sd() { return Sd{*this}; }
         struct CallRec
@@ -1670,7 +1691,7 @@ namespace bozo::libs::snd989
             // keyOnStream when the threads get there (the replay: about 1,280 IOP cycles after the command for a
             // two-chunk mono file, 2,470 for a long stereo one).
             if (keyOnPending)
-                keyOns.push_back({at + (kind == 2 ? 2470u : 1280u), L});
+                keyOns.push_back({at + (kind == 2 ? e.timing.streamKeyOnStereo : e.timing.streamKeyOnMono), L});
             keyOnPending = false;
         }
         void keyOnStream(Buffer *b)
@@ -2116,10 +2137,182 @@ namespace bozo::libs::snd989
             }
             else
                 tok(FlushKonNone);
+            reverbTick();
             tok(TickEnd);
             if (!refills.empty())
                 doRefills();
             return e.m_now;
+        }
+
+        // ---- the output's settings (989SND.IRX 0x4828, 0x7cf0, 0x819c, 0x83b0, 0x85b0, 0x86ac) ----
+        // What 989SND sets that only the output hears (no reply depends on it): the start's libsd setup, the master
+        // volume groups' voices and core 1's master volume, the reverb's effect attributes, depth and the 10-tick wait
+        // for its work area's clear.
+        void startSoundSystem()
+        {
+            sd().init();
+            playbackMode = 0;
+            sd().setParam(kMmix | 0, 0xF00);
+            sd().setParam(kMmix | 1, 0xF0C);
+            sd().setParam(kMvolL | 0, 0x3FFF);
+            sd().setParam(kMvolR | 0, 0x3FFF);
+            sd().setParam(kEvolL | 0, 0);
+            sd().setParam(kEvolR | 0, 0);
+            sd().setParam(kEvolL | 1, 0);
+            sd().setParam(kEvolR | 1, 0);
+            sd().setParam(kAvolL | 1, 0x7FFF);
+            sd().setParam(kAvolR | 1, 0x7FFF);
+            sd().setCoreAttr(kAttrSpdif | 0, 0);
+            sd().setCoreAttr(kAttrEffect | 0, 0);
+            for (int32_t group : {0, 1, 2, 7})
+                setGroupVolume(group, 1024);
+        }
+        void setGroupVolume(int32_t group, int32_t vol)
+        {
+            vol = std::clamp(vol, 0, 1024);
+            groupVol[group & 7] = vol;
+            if ((group & 7) == 7)
+            {
+                const uint32_t m = static_cast<uint32_t>(tdiv((static_cast<int64_t>(vol) << 14) - vol, 1024)) & 0xFFFFu;
+                sd().setParam(kMvolL | 1, m);
+                sd().setParam(kMvolR | 1, m);
+                return;
+            }
+            for (int v = 0; v < kVoices; ++v)
+            {
+                const Voice &x = V[v];
+                if ((x.state != 1 && x.state != 4) || x.group != group)
+                    continue;
+                sd().begin();
+                sd().setParam(entry(v, kVolL), static_cast<uint16_t>(groupScale(x.volL, group)) >> 1);
+                sd().setParam(entry(v, kVolR), static_cast<uint16_t>(groupScale(x.volR, group)) >> 1);
+                sd().end();
+            }
+        }
+        uint32_t reverbDepth[2][2] = {}, reverbClear[2] = {}, reverbClearCh[2] = {};
+        static constexpr uint32_t kAttrScratch = 2u * Engine::kIopRamBytes - 64u; // a 20-byte sceSdEffectAttr
+        void reverbAttributes(uint32_t core, uint32_t type)
+        {
+            uint8_t *a = e.m_ram.data() + kAttrScratch;
+            std::memset(a, 0, 20);
+            std::memcpy(a, &core, 4);
+            std::memcpy(a + 4, &type, 4);
+            sd().setEffectAttr(core, kAttrScratch);
+        }
+        void setReverbDepth(uint32_t cores, uint32_t left, uint32_t right)
+        {
+            for (uint32_t core = 0; core < 2; ++core)
+            {
+                if (!(cores >> core & 1u))
+                    continue;
+                reverbDepth[core][0] = left & 0xFFFFu;
+                reverbDepth[core][1] = right & 0xFFFFu;
+                if (!reverbClear[core])
+                {
+                    sd().setParam(kEvolL | core, reverbDepth[core][0]);
+                    sd().setParam(kEvolR | core, reverbDepth[core][1]);
+                }
+            }
+        }
+        void reverbTick()
+        {
+            for (uint32_t core = 0; core < 2; ++core)
+                if (reverbClear[core] && --reverbClear[core] == 0)
+                {
+                    sd().setParam(kEvolL | core, reverbDepth[core][0]);
+                    sd().setParam(kEvolR | core, reverbDepth[core][1]);
+                    const uint64_t at = e.m_now;
+                    e.m_now += e.timing.reverbEnableDelay; // a debugging aid (0)
+                    sd().setCoreAttr(kAttrEffect | core, 1);
+                    e.m_now = at;
+                    reverbClearCh[core] = 0;
+                }
+        }
+
+        // ---- the movie's sound (989SND.IRX 0x104c0-0x109b0; libraries.md 15.13c) ----
+        // InitMovieSound takes a DMA channel (the first free: bank uploads end at once here, so channel 0) and a
+        // buffer; StartMovieSound plays the buffer as that core's sound data input, looping, at BVOL from the movie's
+        // volume and pan (voiceVolPan, then the volume group's scale), with the input's dry bits of MMIX set; Reset and
+        // Close clear BVOL and those bits and stop the input; GetTransStatus is sceSdBlockTransStatus. The channel is
+        // passed to libsd as 989SND passes it, a signed halfword (-1 before Init: core 1).
+        int32_t movieCh = -1;
+        uint32_t movieBuf = 0;
+        int32_t movieVol = 0, moviePan = 0, movieGroup = 0;
+        uint32_t movieChannel() const { return static_cast<uint32_t>(movieCh); }
+        uint32_t movieEntry(uint32_t id) const { return (static_cast<uint32_t>(movieCh) | id) & 0xFFFFu; }
+        void movieReset()
+        {
+            if (movieCh == -1)
+                return;
+            const uint32_t mix = sd().getParam(movieEntry(kMmix));
+            sd().begin();
+            sd().setParam(movieEntry(kBvolL), 0);
+            sd().setParam(movieEntry(kBvolR), 0);
+            sd().setParam(movieEntry(kMmix), mix & 0xFF3Fu);
+            sd().end();
+            sd().blockTrans(movieChannel(), 2, 0, 0);
+        }
+        uint32_t bvol(int32_t v) const
+        {
+            const uint32_t r = (static_cast<uint32_t>(groupScale(v, movieGroup)) & 0xFFFFu) << 1;
+            return r > 0x7FFFu ? 0x7FFFu : r;
+        }
+        bool movie(uint32_t id, const uint32_t a[7], uint32_t &result)
+        {
+            result = 0;
+            switch (id)
+            {
+            case 0x3b: // InitMovieSound(bytes, volume 0..1024, pan, volume group): the buffer
+            {
+                if ((a[0] & 3u) || !e.m_movieBuffer)
+                    return true;
+                movieBuf = e.m_movieBuffer;
+                e.m_movieBuffer = 0;
+                movieCh = 0;
+                sd().setTransIntrHandler(0, 0, 0);
+                const int32_t v = static_cast<int32_t>(a[1]);
+                movieVol = (v * 128 - v) >> 10;
+                moviePan = static_cast<int32_t>(a[2]);
+                movieGroup = static_cast<int32_t>(a[3]);
+                sd().blockTrans(0, 0, movieBuf, 1024); // 1 KB of the buffer, once
+                result = movieBuf;
+                return true;
+            }
+            case 0x3c: // CloseMovieSound
+                movieReset();
+                movieCh = -1;
+                movieBuf = 0;
+                return false;
+            case 0x3d: // ResetMovieSound
+                movieReset();
+                return false;
+            case 0x3e: // StartMovieSound(address, bytes, start)
+            {
+                int32_t L = 0, R = 0;
+                voiceVolPan(127, movieVol, moviePan, 127, 0, 127, 0, L, R);
+                sd().blockTrans(movieChannel(), 0x13, a[0], a[1], a[2]);
+                const uint32_t bl = bvol(L), br = bvol(R);
+                const uint32_t mix = sd().getParam(movieEntry(kMmix));
+                sd().begin();
+                sd().setParam(movieEntry(kBvolL), bl);
+                sd().setParam(movieEntry(kBvolR), br);
+                sd().setParam(movieEntry(kMmix), (mix | 0xC0u) & 0xFFFFu);
+                sd().end();
+                return false;
+            }
+            case 0x3f: // PauseMovieSound: where it was
+                sd().begin();
+                sd().setParam(movieEntry(kBvolL), 0);
+                sd().setParam(movieEntry(kBvolR), 0);
+                sd().end();
+                result = sd().blockTrans(movieChannel(), 2, 0, 0) & 0xFFFFFFu;
+                return true;
+            case 0x40: // GetTransStatus: where the input plays
+                result = sd().blockTransStatus(movieChannel());
+                return true;
+            default:
+                return false;
+            }
         }
 
         // ---- commands ----
@@ -2129,14 +2322,16 @@ namespace bozo::libs::snd989
             const auto i32 = [](uint32_t v) { return static_cast<int32_t>(v); };
             switch (id)
             {
+            case 0x00: startSoundSystem(); return false;
             case 0x09: // SetMasterVolume(group, volume)
-                groupVol[a[0] & 7] = i32(a[1]);
+                setGroupVolume(i32(a[0]) & 7, i32(a[1]));
                 return false;
             case 0x0a:
                 result = static_cast<uint32_t>(groupVol[a[0] & 7] == 1024 || (a[0] & 7) >= 3 ? groupVol[a[0] & 7] : groupVol[a[0] & 7]);
                 return true;
             case 0x0b: playbackMode = static_cast<int16_t>(a[0]); return false;
             case 0x0e: setReverbType(a[0], a[1]); return false;
+            case 0x0f: setReverbDepth(a[0], a[1], a[2]); return false;
             case 0x11:
             case 0x12:
             {
@@ -2213,6 +2408,9 @@ namespace bozo::libs::snd989
             {
                 if (!(cores >> core & 1u) || reverbType[core] == type)
                     continue;
+                sd().setCoreAttr(kAttrEffect | core, 0);
+                sd().setParam(kEvolL | core, 0);
+                sd().setParam(kEvolR | core, 0);
                 if (static_cast<int32_t>(reverbType[core]) > 0)
                     spuFree(reverbArea[core], kArea[reverbType[core] % 10]);
                 if (type)
@@ -2225,6 +2423,15 @@ namespace bozo::libs::snd989
                     }
                     sd().setAddr(kEea | core, reverbArea[core] + kArea[type % 10] - 1);
                 }
+                reverbAttributes(core, type);
+                if (type)
+                {
+                    // The work area is cleared through a DMA channel (the first free: 0); the effect comes on, at the
+                    // depth set meanwhile, 10 ticks later.
+                    reverbClearCh[core] = 1;
+                    reverbClear[core] = 10;
+                    sd().clearEffectWorkArea(core, 0, type);
+                }
                 reverbType[core] = type;
             }
         }
@@ -2232,7 +2439,7 @@ namespace bozo::libs::snd989
 
     // -----------------------------------------------------------------------------------------------------------------
     Engine::Engine()
-        : m_mixer(std::make_unique<audio::Mixer>()), m_ram(0x10000), m_impl(std::make_unique<Impl>(*this))
+        : m_mixer(std::make_unique<audio::Mixer>()), m_ram(2u * kIopRamBytes), m_impl(std::make_unique<Impl>(*this))
     {
         m_mixer->setClocked(true);
         m_libsd = std::make_unique<audio::Libsd>(*m_mixer, *this);
@@ -2259,11 +2466,11 @@ namespace bozo::libs::snd989
         b->spuBytes = static_cast<uint32_t>(samples.size());
         b->spu = I.spuAlloc(b->spuBytes);
         m_now = m_clock;
-        if (b->spu && !samples.empty())
+        bringUp(m_now);
+        if (b->spu && !samples.empty() && samples.size() <= m_ram.size() - kUploadArea)
         {
-            m_ram.resize(std::max<size_t>(m_ram.size(), samples.size()));
-            std::memcpy(m_ram.data(), samples.data(), samples.size());
-            I.sd().voiceTrans(0, 0, 0, b->spu, static_cast<uint32_t>(samples.size()));
+            std::memcpy(m_ram.data() + kUploadArea, samples.data(), samples.size());
+            I.sd().voiceTrans(0, 0, kUploadArea, b->spu, static_cast<uint32_t>(samples.size()));
         }
         // Tones' sample offsets become sound memory addresses.
         for (int p = 0; p < b->programCount; ++p)
@@ -2366,7 +2573,7 @@ namespace bozo::libs::snd989
                          m_impl->pendingKon[0], m_impl->pendingKon[1], 10);
         ++m_ticks;
         m_now = service;
-        m_mixer->advanceTo(service);
+        bringUp(service);
         m_impl->traceCalls = trace != nullptr;
         m_impl->tickService = service;
         m_impl->callLog.clear();
@@ -2421,20 +2628,29 @@ namespace bozo::libs::snd989
 
     bool Engine::command(uint32_t id, const uint32_t a[7], uint64_t ee, uint32_t &result)
     {
-        const uint64_t P = ee > timing.eeReset ? (ee - timing.eeReset) / 8 + timing.g : 0;
+        const uint64_t P = paid(ee);
         if (!m_started)
         {
             m_started = true;
-            m_nextDue = P + kTick;
+            m_nextDue = P + kTick + timing.firstTickPhase;
             m_clock = P;
         }
-        if (id == 0x2a)
+        if (id == 0x03 && timing.firstBankPhase >= 0 && !m_bankRephased)
+        {
+            // A debugging aid: the tick's phase set again at the first bank load (the reference's IOP waited on the
+            // disc there: iop-timing.md section 4).
+            m_bankRephased = true;
+            advance(P);
+            m_nextDue = P + static_cast<uint64_t>(timing.firstBankPhase);
+        }
+        if (id == 0x2a && timing.streamInitRephase)
         {
             advance(P);
             m_nextDue = P + timing.streamInitPhase;
         }
         advance(P);
         m_now = m_clock;
+        bringUp(m_now);
         if (static const char *dump = std::getenv("BOZO_SND989_DUMP"); dump && !m_dumped && ee >= std::strtoull(dump, nullptr, 10))
         {
             // A debugging aid: the voice table and the handlers before the first command at or after an EE cycle.
@@ -2449,7 +2665,7 @@ namespace bozo::libs::snd989
             }
         }
         const uint64_t start = m_now;
-        const bool returns = m_impl->command(id, a, result);
+        const bool returns = id >= 0x3b && id <= 0x40 ? m_impl->movie(id, a, result) : m_impl->command(id, a, result);
         static FILE *trace = std::getenv("BOZO_SND989_CMDTRACE") ? std::fopen(std::getenv("BOZO_SND989_CMDTRACE"), "w") : nullptr;
         if (trace)
             std::fprintf(trace, "K %x %lld %x%c", id, static_cast<long long>(m_now - start), a[1], 10);
@@ -2461,5 +2677,37 @@ namespace bozo::libs::snd989
             m_impl->pendingStarts.clear();
         }
         return returns;
+    }
+
+    void Engine::advanceTo(uint64_t ee)
+    {
+        const uint64_t P = paid(ee);
+        if (!m_started)
+        {
+            bringUp(P);
+            return;
+        }
+        advance(P);
+        m_now = m_clock;
+        bringUp(m_clock);
+    }
+
+    // The reference's mixer is brought up at every IOP payment, so it never skips (bozo/audio/mixer.h: one bring-up
+    // mixes at most kQueueFrames samples): long gaps between the engine's libsd calls are mixed in steps.
+    void Engine::bringUp(uint64_t cycle)
+    {
+        const uint64_t due = cycle / audio::Mixer::kIopCyclesPerSample;
+        for (uint64_t made = m_mixer->samplesMade(); made && due > made + audio::Mixer::kQueueFrames; made = m_mixer->samplesMade())
+            m_mixer->advanceTo((made + audio::Mixer::kQueueFrames) * audio::Mixer::kIopCyclesPerSample);
+        m_mixer->advanceTo(cycle);
+    }
+
+    void Engine::iopWrite(uint64_t ee, uint32_t address, const uint8_t *data, uint32_t bytes)
+    {
+        advanceTo(ee);
+        const uint32_t at = address & 0x1FFFFFu;
+        if (at >= kIopRamBytes)
+            return;
+        std::memcpy(m_ram.data() + at, data, std::min(bytes, kIopRamBytes - at));
     }
 }

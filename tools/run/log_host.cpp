@@ -10,8 +10,24 @@
 #include <cstring>
 #include <format>
 
+#include "bozo/audio/wav.h"
+
+#include <cstdlib>
+
 namespace bozo::run
 {
+    namespace
+    {
+        // FNV-1a 64 of `samples` silent stereo samples (the sound record of a silent frame).
+        uint64_t silentHash(uint32_t samples)
+        {
+            uint64_t h = 0xCBF29CE484222325ull;
+            for (uint64_t i = 0; i < 4ull * samples; ++i)
+                h *= 0x100000001B3ull;
+            return samples ? h : 0;
+        }
+    }
+
     using namespace calllog;
 
     namespace
@@ -1770,6 +1786,37 @@ namespace bozo::run
         fr.draws = draws.hash;
         fr.drawBatches = draws.batches;
         fr.drawVertices = draws.vertices;
+        // The sound the 989SND engine's mixer made up to the frame's end (libraries.md 15.13c, harness.md section 6).
+        // The reference's mixer is brought up at the IOP's payments (iop-timing.md section 2), the last one a little before
+        // the frame's end: kPaymentLag EE cycles, fitted on the records' sample counts (boot and match1p's shell). Its
+        // first frame (the output's start) has no samples.
+        if (libs_.sndNative)
+        {
+            constexpr uint64_t kPaymentLag = 192;
+            libs_.snd.advanceAudio(libs_, r.cycle > kPaymentLag ? r.cycle - kPaymentLag : 0);
+            if (audio::Mixer *mixer = libs_.snd.mixer())
+            {
+                mixer->takeMixed(fr.sound, fr.soundSamples);
+                // BOZO_WAV=<file>: the samples, as a WAV file (a debugging aid).
+                static audio::WavWriter *wav = [] {
+                    const char *path = std::getenv("BOZO_WAV");
+                    auto *w = new audio::WavWriter;
+                    if (path && *path)
+                        w->open(path);
+                    return w;
+                }();
+                std::vector<int16_t> samples(2u * audio::Mixer::kQueueFrames);
+                const size_t n = mixer->take(samples.data(), audio::Mixer::kQueueFrames);
+                if (wav->isOpen())
+                {
+                    wav->write(samples.data(), n);
+                    if (frame_ % 60 == 0)
+                        std::fflush(nullptr);
+                }
+            }
+            if (frame_ == 0)
+                fr.sound = fr.soundSamples = 0;
+        }
         if (writer_)
             writer_->write(fr);
         ++stats_.frames;
@@ -1804,6 +1851,19 @@ namespace bozo::run
                 stats_.firstDraws = frame_;
             if (fr.drawBatches == x.drawBatches && fr.drawVertices == x.drawVertices)
                 ++stats_.drawCounts;
+            // The sound is reported, not checked (milestone M3).
+            if (fr.sound == x.sound)
+            {
+                ++stats_.sound;
+                if (fr.sound == silentHash(fr.soundSamples))
+                    ++stats_.soundSilent;
+            }
+            else if (stats_.firstSound < 0)
+                stats_.firstSound = frame_;
+            if (fr.soundSamples == x.soundSamples)
+                ++stats_.soundSamples;
+            else if (stats_.firstSoundSamples < 0)
+                stats_.firstSoundSamples = frame_;
         }
         calls_.clear();
         ++frame_;

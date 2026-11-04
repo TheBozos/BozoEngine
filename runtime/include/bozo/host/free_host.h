@@ -34,6 +34,10 @@ namespace bozo::host
         // The game on the host's clock (a window): port::Host::realTime() true, deterministic() false (the port holds
         // its frames to their rate: FramePacer). Off: as fast as the host makes frames, nothing host-timed.
         bool realTime = false;
+        // The sound: 989SND's engine and its mixer brought up to each frame's end on the EE clock (libraries.md 15.13c,
+        // free mode), the frame's samples to onAudio and to the record's sound field. Off: the mixer runs only as the
+        // driver's commands bring it up (nothing is output).
+        bool sound = true;
     };
 
     struct FreeStats
@@ -60,6 +64,9 @@ namespace bozo::host
         // Called at each game frame's end (after the frame's record), with the frame's number from 0 and the context
         // the frame ended in (its ra: who waited for the frame's end).
         std::function<void(uint64_t frame, const R5900Context *ctx)> onFrame;
+        // Called at each game frame's end (before onFrame) with the stereo 16-bit 48 kHz samples the mixer made since the
+        // last one (FreeOptions::sound), on the game's thread.
+        std::function<void(uint64_t frame, const int16_t *samples, size_t count)> onAudio;
         // The ELF function holding `pc` (its symbol, "?" if none), and a symbol's address (0 if none).
         std::string functionAt(uint32_t pc) const;
         uint32_t symbol(const std::string &name) const;
@@ -100,6 +107,8 @@ namespace bozo::host
         void watchdog(R5900Context *ctx);
         uint64_t lastFrameCycle_ = 0;
         void endFrame(const R5900Context *ctx);
+        void frameSound(uint64_t &hash, uint32_t &count);
+        std::vector<int16_t> audio_;
 
         FreeOptions opt_;
         ee::Dispatcher *d_ = nullptr;

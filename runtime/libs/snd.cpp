@@ -3,7 +3,9 @@
 #include "bozo/libs/libraries.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace bozo::libs
 {
@@ -335,8 +337,14 @@ namespace bozo::libs
         returns = returnsResult(id);
         const uint32_t idx = id < 0x50 ? id : 0x4F;
         engineValid_ = false;
-        if (engine && id != 0x3B && id != 0x3C && id != 0x3D && id != 0x3E && id != 0x40)
+        if (engine)
         {
+            if (id == 0x3B)
+            {
+                // InitMovieSound's buffer comes from the IOP heap (the driver's model); the engine plays it.
+                movieAlloc_ = l.sif.heap.allocate(0x6010u);
+                engine->setMovieBuffer(movieAlloc_);
+            }
             uint32_t ea[7];
             std::memcpy(ea, a, sizeof ea);
             const bool takesHandle = (id >= 0x13 && id <= 0x25) || (id >= 0x2D && id <= 0x2F);
@@ -555,7 +563,8 @@ namespace bozo::libs
             return 0;
         case 0x3B: // InitMovieSound(...): the movie's sound buffer in IOP memory (0x6000 bytes and its state)
         {
-            const uint32_t native = l.sif.heap.allocate(0x6010u);
+            const uint32_t native = movieAlloc_ ? std::exchange(movieAlloc_, 0u) : l.sif.heap.allocate(0x6010u);
+            engineValid_ = false;
             const uint32_t v = pinnedOr(native, false);
             if (follow && v != native)
                 ++stats.followMismatch;
@@ -596,14 +605,46 @@ namespace bozo::libs
         ++stats.engineDiffers[idx];
     }
 
+    void SndDriver::makeEngine(Libraries &l)
+    {
+        if (engine)
+            return;
+        engine = std::make_unique<snd989::Engine>();
+        engine->timing = timing;
+        if (const char *phase = std::getenv("BOZO_SND989_PHASE")) // a debugging aid: the first tick's phase, IOP cycles
+            engine->timing.firstTickPhase = static_cast<uint32_t>(std::strtoul(phase, nullptr, 10));
+        if (const char *delay = std::getenv("BOZO_SND989_REVDELAY"))
+            engine->timing.reverbEnableDelay = static_cast<uint32_t>(std::strtoul(delay, nullptr, 10));
+        if (const char *phase = std::getenv("BOZO_SND989_PHASE2")) // and at the first bank load
+            engine->timing.firstBankPhase = std::strtoll(phase, nullptr, 10);
+        engine->setDisc([&l](uint32_t lbn, uint32_t sectors, uint8_t *out) { return discRead(l, lbn, sectors, out); });
+    }
+
+    void SndDriver::iopReset(uint64_t ee)
+    {
+        if (!freeTiming)
+            return;
+        timing.eeReset = ee;
+        if (engine)
+            engine->timing.eeReset = ee;
+    }
+
+    void SndDriver::advanceAudio(Libraries &l, uint64_t ee)
+    {
+        makeEngine(l);
+        engine->advanceTo(ee);
+    }
+
+    void SndDriver::iopWrite(Libraries &l, uint64_t ee, uint32_t address, const uint8_t *data, uint32_t bytes)
+    {
+        makeEngine(l);
+        engine->iopWrite(ee, address, data, bytes);
+    }
+
     void SndDriver::call(Libraries &l, Guest &g, uint32_t fno, const std::vector<uint32_t> &request, uint32_t recv, uint32_t rsize,
                          std::vector<uint32_t> &reply, const LogWord *log, bool follow)
     {
-        if (!engine)
-        {
-            engine = std::make_unique<snd989::Engine>();
-            engine->setDisc([&l](uint32_t lbn, uint32_t sectors, uint8_t *out) { return discRead(l, lbn, sectors, out); });
-        }
+        makeEngine(l);
         const uint32_t words = rsize / 4;
         reply.assign(words, 0);
         auto put = [&](uint32_t i, uint32_t v) {

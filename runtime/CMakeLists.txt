@@ -13,7 +13,8 @@ target_compile_options(bozo_runtime_core PRIVATE -Wall -Wextra)
 # computes in single precision, never fused (the samples must stay the reference's).
 add_library(bozo_audio STATIC
   audio/mixer.cpp
-  audio/libsd.cpp)
+  audio/libsd.cpp
+  audio/wav.cpp)
 target_include_directories(bozo_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(bozo_audio PRIVATE -Wall -Wextra -ffp-contract=off)
 
@@ -89,7 +90,8 @@ if(BOZO_APP)
   add_library(bozo_app STATIC
     app/window.cpp
     app/device_pad.cpp
-    app/png.cpp)
+    app/png.cpp
+    app/audio_device.cpp)
   target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs SDL3::SDL3-static)
   target_compile_options(bozo_app PRIVATE -Wall -Wextra)
 endif()
