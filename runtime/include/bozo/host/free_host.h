@@ -17,6 +17,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace bozo::host
@@ -53,6 +54,7 @@ namespace bozo::host
     {
     public:
         explicit FreeHost(const FreeOptions &options);
+        ~FreeHost();
 
         // Loads the ELF into guest memory and binds every external of the generated code (`externals`) by the ELF's
         // symbol at its address: a kernel call, a port override (`registry`), a native library function. False with
@@ -111,6 +113,17 @@ namespace bozo::host
         void endFrame(const R5900Context *ctx);
         void frameSound(uint64_t &hash, uint32_t &count);
         std::vector<int16_t> audio_;
+        // Real time with sound (libraries.md 15.13e): when no frame has ended for a while (a load, a stall), the sound
+        // is still made, on the game's thread between two out-calls (never inside a command): a watcher thread only
+        // raises soundDue_, the watchdog's next look brings the engine up to the host's clock and hands the samples to
+        // onAudio. The next frame's end takes them as made (the engine's clock only moves forward).
+        void stallSound(const R5900Context *ctx);
+        void startSoundWatcher();
+        void stopSoundWatcher();
+        std::atomic<bool> soundDue_{false};
+        std::atomic<int64_t> frameEndNs_{0};
+        std::atomic<bool> watcherStop_{false};
+        std::thread watcher_;
 
         FreeOptions opt_;
         ee::Dispatcher *d_ = nullptr;

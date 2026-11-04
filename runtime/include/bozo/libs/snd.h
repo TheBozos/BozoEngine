@@ -125,6 +125,12 @@ namespace bozo::libs
         // IOP reset then taken where the game reboots the IOP (iopReset).
         snd989::Timing timing;
         bool freeTiming = false;
+        // Free mode in real time (a window; libraries.md 15.13e): the IOP clock held to the host's. Before the engine
+        // takes a command or a write or is brought up, its lead moves P back onto the host's clock where the EE left it
+        // (a load's disc time puts the EE seconds ahead; a stall on the PC leaves it behind). Off: P is the EE's.
+        bool realTimeClock = false;
+        // realTimeClock: the engine's lead set for EE cycle `ee` and the host's clock now.
+        void syncClock(uint64_t ee);
 
         // sceSifRebootIop at EE cycle `ee`: free mode's IOP reset (P counts from it).
         void iopReset(uint64_t ee);
@@ -176,6 +182,10 @@ namespace bozo::libs
         uint32_t engineGame_ = 0;               // its answer, in the game's handles
         uint32_t movieAlloc_ = 0;               // InitMovieSound's buffer, allocated before the engine takes the command
         void makeEngine(Libraries &l);
+        // realTimeClock: the host's time (steady clock, ns) and the IOP clock it was anchored at.
+        bool clockAnchored_ = false;
+        int64_t anchorNs_ = 0;
+        uint64_t anchorIop_ = 0;
         bool fromLogFor(uint32_t id) const
         {
             // GetTransStatus (0x40, the movie sound's position) always: the game's movie code paces itself on it, and

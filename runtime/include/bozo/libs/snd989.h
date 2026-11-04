@@ -90,6 +90,11 @@ namespace bozo::libs::snd989
 
         audio::Mixer &mixer() { return *m_mixer; }
         uint64_t iopClock() const { return m_clock; }
+        // The IOP clock at EE cycle `ee` (P, the lead included).
+        uint64_t iopAt(uint64_t ee) const { return paid(ee); }
+        // Free mode in real time (libraries.md 15.13e): IOP cycles added to P = (EE - reset) / 8 + G, so that the IOP
+        // follows the host's clock where the EE does not (a load's disc time, a stall). 0 otherwise.
+        int64_t lead = 0;
         uint64_t ticks() const { return m_ticks; }
 
         // LibsdHost
@@ -104,7 +109,15 @@ namespace bozo::libs::snd989
         void advance(uint64_t P);
         void runTick(uint64_t service);
         void bringUp(uint64_t cycle);
-        uint64_t paid(uint64_t ee) const { return ee > timing.eeReset ? (ee - timing.eeReset) / 8 + timing.g : 0; }
+        uint64_t paid(uint64_t ee) const
+        {
+            if (ee <= timing.eeReset)
+                return 0;
+            const uint64_t p = (ee - timing.eeReset) / 8 + timing.g;
+            if (lead >= 0)
+                return p + static_cast<uint64_t>(lead);
+            return p > static_cast<uint64_t>(-lead) ? p - static_cast<uint64_t>(-lead) : 0;
+        }
 
         std::unique_ptr<audio::Mixer> m_mixer;
         std::unique_ptr<audio::Libsd> m_libsd;

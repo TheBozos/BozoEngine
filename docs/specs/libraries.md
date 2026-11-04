@@ -1099,6 +1099,36 @@ The free host brings the engine up at each frame's end and hands the frame's sam
 window's device, `tmb-headless --wav`); in real time the EE clock follows the host's (the FramePacer), so the samples
 come at the field's rate, and `bozo::app::AudioDevice` absorbs the drift (`bozo/app/audio_device.h`).
 
+### 15.13e Free mode in real time: the IOP on the host's clock (2026-11-04)
+
+Between frames the EE clock does not follow the host's, and the sound, played as it is made, heard it. At a match
+start (`tmb --audio-stats`, ch1p into Junkyard) the load's disc reads are charged a PS2 drive's time: the EE gained
+about 2.8 s in 0.24 s of the PC's. The engine made those 2.8 s at once (the device kept the last 0.34 s and dropped the
+rest), then TMB's frame pacer held the EE back to pay that debt (EE/PC 0.48 for the next 5 s), so the sound was made at
+half speed: 270 underruns, about 4 s of silence in bursts. A stall on the PC (no frame ending, a frame charged at most
+0.1 s) left the output empty the same way.
+
+`SndDriver::realTimeClock` (the free host in real time with sound) holds the IOP's clock to the host's:
+`snd989::Engine::lead` is added to P = (EE - reset) / 8 + G. Before the engine takes a command (`SndDriver::call`), a
+write (`iopWrite`) or is brought up (`advanceAudio`), `syncClock` compares P with a line on the host's steady clock
+anchored at the first call (36.864 MHz of host time per IOP second):
+
+- more than 4 ms behind the line: the lead brings P up to 4 ms behind it;
+- more than 25 ms ahead: P is held at 25 ms ahead (never below the engine's clock: P only moves forward); the band
+  covers a frame's guest code running ahead of the host's clock within it, so commands keep their EE order and spacing;
+- more than 32 ms behind (the output queue's target: the device has already played silence, nothing was there to bring
+  it up): the line moves to P + 32 ms, so the sound goes on from where it stopped instead of skipping.
+
+A stall's sound: when no frame has ended for 25 ms, a watcher thread of the free host raises a flag (it touches nothing
+else); the watchdog's next look on the game's thread, between two out-calls (never inside a library's handler, so
+never inside a 989SND command or a SIF call), brings the engine up to the line and hands the samples to `onAudio`. The
+next frame end takes what the engine made since (its clock only moves forward), so nothing is made twice.
+`BOZO_SND_CLOCK_LOG=1`: each move of the lead over 50 ms on stderr.
+
+Pinned, checked and headless runs (not real time) never set it: their P is the EE's as before, their records unchanged.
+Same run as above, after: 9 underruns (54 ms) over 6,700 frames against 625 (5.9 s), 3 of them in the match start's
+window, none dropped there; frames dropped 1,899 (all at boot) against 12,906.
+
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 
 The reference's mixer is the team's own code on the fork, so it moved here (PLAN.md section 7) instead of being

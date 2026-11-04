@@ -2,7 +2,10 @@
 // the reference's replies made. See bozo/libs/snd.h.
 #include "bozo/libs/libraries.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <utility>
@@ -633,18 +636,69 @@ namespace bozo::libs
             return;
         timing.eeReset = ee;
         if (engine)
+        {
             engine->timing.eeReset = ee;
+            engine->lead = 0;
+        }
+        clockAnchored_ = false;
+    }
+
+    // Free mode in real time (libraries.md 15.13e). The sound is played as it is made, so the IOP's clock must follow
+    // the host's; the EE's does not everywhere: a load's disc reads are charged a PS2 drive's time (the match start puts
+    // the EE about 2.8 s ahead in 0.24 s of the PC's, then the frame pacer's debt holds it back for seconds), and a stall
+    // on the PC charges the EE at most 0.1 s. P = (EE - reset) / 8 + lead is kept within a band of a line on the host's
+    // clock (one IOP cycle per IOP cycle of host time, from where it was anchored): P only moves forward (the lead never
+    // takes it below the engine's clock), and nothing within a frame's usual run-ahead changes, so the commands keep
+    // their EE order and spacing there.
+    void SndDriver::syncClock(uint64_t ee)
+    {
+        if (!realTimeClock || !engine)
+            return;
+        constexpr int64_t kIopPerMs = 36864;             // 36.864 MHz
+        constexpr int64_t kBehind = 4 * kIopPerMs;       // brought up when more than this behind the host's clock
+        constexpr int64_t kAhead = 25 * kIopPerMs;       // held when more than this ahead (a frame's guest code runs ahead)
+        constexpr int64_t kCatchUp = 32 * kIopPerMs;     // the output queue's target: further behind, the device has
+                                                         // played silence already; the sound goes on from where it was
+        const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const int64_t P = static_cast<int64_t>(engine->iopAt(ee));
+        if (!clockAnchored_)
+        {
+            clockAnchored_ = true;
+            anchorNs_ = ns;
+            anchorIop_ = static_cast<uint64_t>(P);
+            return;
+        }
+        int64_t L = static_cast<int64_t>(anchorIop_) + (ns - anchorNs_) / 1000 * kIopPerMs / 1000;
+        if (P < L - kCatchUp)
+        {
+            anchorIop_ -= static_cast<uint64_t>(L - P - kCatchUp);
+            L = P + kCatchUp;
+        }
+        int64_t target = P;
+        if (P < L - kBehind)
+            target = L - kBehind;
+        else if (P > L + kAhead)
+            target = std::max(L + kAhead, static_cast<int64_t>(engine->iopClock()));
+        if (target == P)
+            return;
+        engine->lead += target - P;
+        static const bool s_log = std::getenv("BOZO_SND_CLOCK_LOG") != nullptr;
+        if (s_log && (target - P > 50 * kIopPerMs || P - target > 50 * kIopPerMs))
+            std::fprintf(stderr, "[snd] IOP clock held to the host's: %+.1f ms (lead %+.1f ms)\n",
+                         static_cast<double>(target - P) / kIopPerMs, static_cast<double>(engine->lead) / kIopPerMs);
     }
 
     void SndDriver::advanceAudio(Libraries &l, uint64_t ee)
     {
         makeEngine(l);
+        syncClock(ee);
         engine->advanceTo(ee);
     }
 
     void SndDriver::iopWrite(Libraries &l, uint64_t ee, uint32_t address, const uint8_t *data, uint32_t bytes)
     {
         makeEngine(l);
+        syncClock(ee);
         engine->iopWrite(ee, address, data, bytes);
     }
 
@@ -652,6 +706,7 @@ namespace bozo::libs
                          std::vector<uint32_t> &reply, const LogWord *log, bool follow)
     {
         makeEngine(l);
+        syncClock(l.now(g));
         const uint32_t words = rsize / 4;
         reply.assign(words, 0);
         auto put = [&](uint32_t i, uint32_t v) {

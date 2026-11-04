@@ -8,6 +8,7 @@
 
 #include "elf.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -23,6 +24,8 @@ namespace bozo::host
 
     FreeHost::FreeHost(const FreeOptions &options) : opt_(options) {}
 
+    FreeHost::~FreeHost() { stopSoundWatcher(); }
+
     bool FreeHost::setUp(ee::Dispatcher &d, const BozoExternalEntry *externals, size_t count, const port::Registry *registry,
                          std::string &error)
     {
@@ -35,6 +38,8 @@ namespace bozo::host
         // Free mode's IOP time (libraries.md 15.13c): the IOP reset where the game makes it, nothing pinned.
         libs_.snd.freeTiming = true;
         libs_.snd.timing = libs::snd989::Timing::freeRun(0);
+        // In real time the sound is played as it is made: the IOP's clock follows the host's (15.13e).
+        libs_.snd.realTimeClock = opt_.realTime && opt_.sound;
         libs_.cd.imagePath = opt_.iso;
         libs_.mc.hostDirectory = opt_.cardDir;
         for (int player = 0; player < 4; ++player)
@@ -119,6 +124,7 @@ namespace bozo::host
 
     uint64_t FreeHost::run()
     {
+        startSoundWatcher();
         try
         {
             d_->run();
@@ -126,6 +132,7 @@ namespace bozo::host
         catch (const ee::EndRun &)
         {
         }
+        stopSoundWatcher();
         if (writing_)
             writer_.close();
         return stats_.frames;
@@ -272,6 +279,8 @@ namespace bozo::host
             endReason_ = "stopped";
             throw ee::EndRun{};
         }
+        if (soundDue_.load(std::memory_order_relaxed))
+            stallSound(ctx);
         if (!opt_.stallFields)
             return;
         const uint64_t now = d_->now(ctx);
@@ -364,6 +373,56 @@ namespace bozo::host
             onAudio(stats_.frames, audio_.data(), n);
     }
 
+    namespace
+    {
+        int64_t steadyNs()
+        {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+    }
+
+    // A stall's sound (real time): the engine brought up to the host's clock (SndDriver::syncClock) between two
+    // out-calls, its samples to onAudio. The watchdog calls it on the game's thread, never inside a library's handler.
+    void FreeHost::stallSound(const R5900Context *ctx)
+    {
+        soundDue_.store(false, std::memory_order_relaxed);
+        audio::Mixer *mixer = libs_.snd.mixer();
+        if (!mixer || !onAudio)
+            return;
+        libs_.snd.advanceAudio(libs_, ctx ? d_->now(ctx) : d_->now());
+        audio_.resize(2u * audio::Mixer::kQueueFrames);
+        const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        if (n)
+            onAudio(stats_.frames, audio_.data(), n);
+    }
+
+    // Raises soundDue_ every few milliseconds while no frame has ended for more than a frame and a half: the game's
+    // thread does the work at its next out-call. Only in real time with sound and an output.
+    void FreeHost::startSoundWatcher()
+    {
+        if (!opt_.realTime || !opt_.sound || !onAudio || watcher_.joinable())
+            return;
+        watcherStop_.store(false);
+        frameEndNs_.store(steadyNs());
+        watcher_ = std::thread([this] {
+            constexpr int64_t kStallNs = 25'000'000; // 1.5 frames: the output queue (32 ms) still holds most of its lead
+            while (!watcherStop_.load(std::memory_order_relaxed))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                if (steadyNs() - frameEndNs_.load(std::memory_order_relaxed) > kStallNs)
+                    soundDue_.store(true, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    void FreeHost::stopSoundWatcher()
+    {
+        watcherStop_.store(true);
+        if (watcher_.joinable())
+            watcher_.join();
+        soundDue_.store(false);
+    }
+
     void FreeHost::endFrame(const R5900Context *ctx)
     {
         const uint64_t frame = stats_.frames;
@@ -394,6 +453,8 @@ namespace bozo::host
             uint32_t count = 0;
             frameSound(hash, count);
         }
+        frameEndNs_.store(steadyNs(), std::memory_order_relaxed);
+        soundDue_.store(false, std::memory_order_relaxed);
         ++stats_.frames;
         framesEnded_.store(stats_.frames, std::memory_order_relaxed);
         libs_.framesEnded = static_cast<uint32_t>(stats_.frames);
