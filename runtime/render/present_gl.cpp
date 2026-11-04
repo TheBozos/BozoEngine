@@ -246,12 +246,30 @@ void main()
         std::unordered_map<uint64_t, GpuTexture> overlayTextures;
         gl::GLuint displayPicture = 0; // the display's circuit 2 picture (bozo::render::displayPicture), its version
         uint64_t displayPictureVersion = 0;
-        // The depth tiles read into a pixel-pack buffer at a present, taken at the next.
-        gl::GLuint depthPbo = 0;
-        size_t depthPboBytes = 0;
-        std::vector<uint64_t> depthPending; // the tiles in the buffer, in order (T x T floats each)
-        std::vector<int> depthPendingSize;  // each one's read width and height
-        int depthPendingWidth = 0, depthPendingHeight = 0;
+        // The depth tiles read into a ring of pixel-pack buffers, each read fenced and taken at a later present once its
+        // fence has passed, never waited for. (One buffer, mapped at the present after its read, waited there for the
+        // GPU to finish that whole frame: in a 1P match the window thread blocked there ~70% of the time and the
+        // presents fell to 15-45 a second while the game kept 60.)
+        // A run of tiles along a tile row (tx0 to tx1), read as one rectangle: width x height depth words at offset.
+        struct DepthRun
+        {
+            int ty, tx0, tx1, width, height;
+            size_t offset;
+        };
+        struct DepthRead
+        {
+            gl::GLuint pbo = 0;
+            size_t bytes = 0;
+            gl::GLsync fence = nullptr;  // set while the read is in flight
+            std::vector<DepthRun> runs;  // what the buffer holds, run by run
+            size_t used = 0;             // its bytes
+            int width = 0, height = 0;
+            uint64_t serial = 0;         // which read it was (the newest completed one is taken)
+        };
+        static constexpr int kDepthReads = 3;
+        DepthRead depthReads[kDepthReads];
+        int depthNext = 0; // the slot the next read tries first
+        uint64_t depthSerial = 0;
 
         gl::GLuint makeTexture(const uint32_t *rgba, int width, int height, gl::GLenum wrap)
         {
@@ -351,9 +369,17 @@ void main()
                 g.DeleteRenderbuffers(1, &depth);
             if (fbo != 0)
                 g.DeleteFramebuffers(1, &fbo);
-            for (gl::GLuint *b : {&vbo, &flatVbo, &depthPbo})
+            for (gl::GLuint *b : {&vbo, &flatVbo})
                 if (*b != 0)
                     g.DeleteBuffers(1, b);
+            for (DepthRead &r : depthReads)
+            {
+                if (r.fence)
+                    g.DeleteSync(r.fence);
+                if (r.pbo != 0)
+                    g.DeleteBuffers(1, &r.pbo);
+                r = DepthRead{};
+            }
             for (gl::GLuint *a : {&vao, &flatVao})
                 if (*a != 0)
                     g.DeleteVertexArrays(1, a);
@@ -383,10 +409,13 @@ void main()
             g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, static_cast<gl::GLint>(gl::kNearest));
             targetFiltered = false;
             g.BindRenderbuffer(gl::kRenderbuffer, depth);
-            g.RenderbufferStorage(gl::kRenderbuffer, gl::kDepthComponent24, width, height);
+            // Depth with stencil: the format the hardware keeps depth in, so readDepthTiles' reads of it
+            // (DEPTH_STENCIL, UNSIGNED_INT_24_8) are plain copies. A 24-bit depth read as floats went through the
+            // driver's conversion and waited for the GPU at every present.
+            g.RenderbufferStorage(gl::kRenderbuffer, gl::kDepth24Stencil8, width, height);
             g.BindFramebuffer(gl::kFramebuffer, fbo);
             g.FramebufferTexture2D(gl::kFramebuffer, gl::kColorAttachment0, gl::kTexture2D, colour, 0);
-            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthAttachment, gl::kRenderbuffer, depth);
+            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthStencilAttachment, gl::kRenderbuffer, depth);
             const bool complete = g.CheckFramebufferStatus(gl::kFramebuffer) == gl::kFramebufferComplete;
             g.BindFramebuffer(gl::kFramebuffer, 0);
             if (!complete)
@@ -1346,8 +1375,12 @@ void main()
         return true;
     }
 
-    // The depth tiles depthAt asked for in the last half second: read from the target (bound) into a pixel-pack buffer
-    // now, taken from the buffer the next present (one present late, so the read does not wait for the GPU).
+    // The depth tiles depthAt asked for in the last half second: read from the target (bound) into one of a ring of
+    // pixel-pack buffers and fenced; the newest read whose fence has passed is taken at a later present (the next one
+    // or the one after, as the GPU goes). Nothing here waits for the GPU: with every buffer still in flight, this
+    // present reads nothing and depthAt keeps the tiles it has. The tiles are read by runs along their rows (one
+    // ReadPixels a run, neighbours a gap of up to two tiles apart joined): a night arena's headlights want hundreds of
+    // tiles a present, and a ReadPixels each (up to 1,400 a present) held the window thread for most of the frame.
     void Renderer::readDepthTiles(int w, int h, const Screen &screen)
     {
         const gl::Api &g = gl::api();
@@ -1370,64 +1403,116 @@ void main()
                 else
                     tiles.push_back((it++)->first);
         }
-        constexpr size_t kTileBytes = static_cast<size_t>(kDepthTile) * kDepthTile * sizeof(float);
-        // The previous present's tiles, if they were of this size.
-        if (!gpu.depthPending.empty() && gpu.depthPbo != 0)
+        // The reads completed by now: the newest is taken, the older ones dropped.
+        int done = -1;
+        for (int i = 0; i < Gpu::kDepthReads; ++i)
         {
-            std::unordered_map<uint64_t, std::vector<float>> depth;
-            if (gpu.depthPendingWidth == w && gpu.depthPendingHeight == h)
+            Gpu::DepthRead &r = gpu.depthReads[i];
+            if (!r.fence)
+                continue;
+            const gl::GLenum state = g.ClientWaitSync(r.fence, 0, 0);
+            if (state != gl::kAlreadySignaled && state != gl::kConditionSatisfied)
+                continue;
+            g.DeleteSync(r.fence);
+            r.fence = nullptr;
+            if (r.width != w || r.height != h || r.runs.empty() || (done >= 0 && gpu.depthReads[done].serial > r.serial))
             {
-                g.BindBuffer(gl::kPixelPackBuffer, gpu.depthPbo);
-                const auto *mapped = static_cast<const float *>(
-                    g.MapBufferRange(gl::kPixelPackBuffer, 0, static_cast<gl::GLsizeiptr>(gpu.depthPending.size() * kTileBytes), gl::kMapReadBit));
-                if (mapped)
-                {
-                    for (size_t i = 0; i < gpu.depthPending.size(); ++i)
-                    {
-                        const int cw = gpu.depthPendingSize[2 * i], ch = gpu.depthPendingSize[2 * i + 1];
-                        const float *src = mapped + i * kDepthTile * kDepthTile;
-                        std::vector<float> &tile = depth[gpu.depthPending[i]];
-                        tile.assign(static_cast<size_t>(kDepthTile) * kDepthTile, 1.0f); // past the edge: far
-                        for (int r = 0; r < ch; ++r) // read bottom-up, kept top-down
-                            std::memcpy(&tile[static_cast<size_t>(ch - 1 - r) * kDepthTile], src + static_cast<size_t>(r) * cw,
-                                        static_cast<size_t>(cw) * sizeof(float));
-                    }
-                    g.UnmapBuffer(gl::kPixelPackBuffer);
-                }
-                g.BindBuffer(gl::kPixelPackBuffer, 0);
+                r.runs.clear();
+                continue;
             }
+            if (done >= 0)
+                gpu.depthReads[done].runs.clear();
+            done = i;
+        }
+        if (done >= 0)
+        {
+            Gpu::DepthRead &r = gpu.depthReads[done];
+            std::unordered_map<uint64_t, std::vector<float>> depth;
+            g.BindBuffer(gl::kPixelPackBuffer, r.pbo);
+            const auto *mapped = static_cast<const uint32_t *>(
+                g.MapBufferRange(gl::kPixelPackBuffer, 0, static_cast<gl::GLsizeiptr>(r.used), gl::kMapReadBit));
+            if (mapped)
+            {
+                for (const Gpu::DepthRun &run : r.runs)
+                {
+                    const uint32_t *src = mapped + run.offset / sizeof(uint32_t);
+                    for (int tx = run.tx0; tx <= run.tx1; ++tx)
+                    {
+                        const int x0 = (tx - run.tx0) * kDepthTile;
+                        const int cw = std::min(kDepthTile, run.width - x0);
+                        if (cw <= 0)
+                            break;
+                        std::vector<float> &tile = depth[static_cast<uint64_t>(run.ty) << 32 | static_cast<uint32_t>(tx)];
+                        tile.assign(static_cast<size_t>(kDepthTile) * kDepthTile, 1.0f); // past the edge: far
+                        for (int row = 0; row < run.height; ++row) // read bottom-up, kept top-down
+                        {
+                            // Depth in the top 24 bits (stencil below), as the window's [0, 1]: d / (2^24 - 1).
+                            const uint32_t *in = src + static_cast<size_t>(row) * run.width + x0;
+                            float *out = &tile[static_cast<size_t>(run.height - 1 - row) * kDepthTile];
+                            for (int x = 0; x < cw; ++x)
+                                out[x] = static_cast<float>(in[x] >> 8) / 16777215.0f;
+                        }
+                    }
+                }
+                g.UnmapBuffer(gl::kPixelPackBuffer);
+            }
+            g.BindBuffer(gl::kPixelPackBuffer, 0);
+            r.runs.clear();
             std::lock_guard<std::mutex> lock(m_depthMutex);
             m_depthTiles.swap(depth);
         }
-        gpu.depthPending.clear();
-        gpu.depthPendingSize.clear();
         if (tiles.empty())
             return;
-        const size_t bytes = tiles.size() * kTileBytes;
-        if (gpu.depthPbo == 0)
-            g.GenBuffers(1, &gpu.depthPbo);
-        g.BindBuffer(gl::kPixelPackBuffer, gpu.depthPbo);
-        if (bytes > gpu.depthPboBytes)
+        // A free slot; none: every read still in flight, nothing read at this present.
+        int slot = -1;
+        for (int k = 0; k < Gpu::kDepthReads && slot < 0; ++k)
         {
-            gpu.depthPboBytes = std::max(bytes, gpu.depthPboBytes * 2u);
-            g.BufferData(gl::kPixelPackBuffer, static_cast<gl::GLsizeiptr>(gpu.depthPboBytes), nullptr, gl::kStreamRead);
+            const int i = (gpu.depthNext + k) % Gpu::kDepthReads;
+            if (!gpu.depthReads[i].fence)
+                slot = i;
         }
-        g.PixelStorei(gl::kPackAlignment, 4);
-        for (size_t i = 0; i < tiles.size(); ++i)
+        if (slot < 0)
+            return;
+        gpu.depthNext = (slot + 1) % Gpu::kDepthReads;
+        Gpu::DepthRead &r = gpu.depthReads[slot];
+        r.runs.clear();
+        // Runs along each tile row (keys sort by row, then column).
+        std::sort(tiles.begin(), tiles.end());
+        size_t bytes = 0;
+        for (size_t i = 0; i < tiles.size();)
         {
-            const int tx = static_cast<int>(tiles[i] & 0xffffffffu), ty = static_cast<int>(tiles[i] >> 32);
-            const int x0 = tx * kDepthTile, top = ty * kDepthTile;
-            const int cw = std::min(kDepthTile, w - x0), ch = std::min(kDepthTile, h - top);
+            const int ty = static_cast<int>(tiles[i] >> 32), tx0 = static_cast<int>(tiles[i] & 0xffffffffu);
+            int tx1 = tx0;
+            size_t j = i + 1;
+            while (j < tiles.size() && static_cast<int>(tiles[j] >> 32) == ty && static_cast<int>(tiles[j] & 0xffffffffu) - tx1 <= 3)
+                tx1 = static_cast<int>(tiles[j++] & 0xffffffffu);
+            i = j;
+            const int x0 = tx0 * kDepthTile, top = ty * kDepthTile;
+            const int cw = std::min((tx1 + 1) * kDepthTile, w) - x0, ch = std::min(kDepthTile, h - top);
             if (cw <= 0 || ch <= 0)
                 continue;
-            g.ReadPixels(x0, h - (top + ch), cw, ch, gl::kDepthComponent, gl::kFloat,
-                         reinterpret_cast<void *>(static_cast<uintptr_t>(gpu.depthPending.size() * kTileBytes)));
-            gpu.depthPending.push_back(tiles[i]);
-            gpu.depthPendingSize.push_back(cw);
-            gpu.depthPendingSize.push_back(ch);
+            r.runs.push_back(Gpu::DepthRun{ty, tx0, tx1, cw, ch, bytes});
+            bytes += static_cast<size_t>(cw) * ch * sizeof(uint32_t);
         }
+        if (r.runs.empty())
+            return;
+        if (r.pbo == 0)
+            g.GenBuffers(1, &r.pbo);
+        g.BindBuffer(gl::kPixelPackBuffer, r.pbo);
+        if (bytes > r.bytes)
+        {
+            r.bytes = std::max(bytes, r.bytes * 2u);
+            g.BufferData(gl::kPixelPackBuffer, static_cast<gl::GLsizeiptr>(r.bytes), nullptr, gl::kStreamRead);
+        }
+        g.PixelStorei(gl::kPackAlignment, 4);
+        for (const Gpu::DepthRun &run : r.runs)
+            g.ReadPixels(run.tx0 * kDepthTile, h - (run.ty * kDepthTile + run.height), run.width, run.height, gl::kDepthStencil,
+                         gl::kUnsignedInt248, reinterpret_cast<void *>(static_cast<uintptr_t>(run.offset)));
         g.BindBuffer(gl::kPixelPackBuffer, 0);
-        gpu.depthPendingWidth = w;
-        gpu.depthPendingHeight = h;
+        r.used = bytes;
+        r.width = w;
+        r.height = h;
+        r.serial = ++gpu.depthSerial;
+        r.fence = g.FenceSync(gl::kSyncGpuCommandsComplete, 0);
     }
 }
