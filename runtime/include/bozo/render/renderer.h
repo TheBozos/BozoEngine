@@ -238,6 +238,10 @@ namespace bozo::render
         // The draw lists published since the last call, folded (the reference record's `draws`), and restarted: the
         // host takes it at each game frame's end.
         FrameDraws takeFrameDraws();
+        // Whether the draw lists are folded into that digest (on by default: the call-log checks and a record need it).
+        // A host that never takes it (free play, no record written) turns it off: hashing every vertex a frame is
+        // ~0.25 ms of a busy 1P frame.
+        void setDrawDigest(bool on) { m_digestDraws = on; }
 
     private:
         Renderer();
@@ -250,6 +254,19 @@ namespace bozo::render
 
         Frame m_building;
         Frame m_overlayBuilding;
+        bool m_digestDraws = true;
+        // Published frames come back here when their last holder lets go (their vectors' capacity kept), and the next
+        // frame is built in one: a busy frame's vertices (several MB) were a fresh allocation, grown by doubling and
+        // its pages touched for the first time, every frame. Shared with the frames' deleters (any thread).
+        struct FramePool
+        {
+            std::mutex mutex;
+            std::vector<Frame *> free;
+            ~FramePool();
+        };
+        std::shared_ptr<FramePool> m_pool = std::make_shared<FramePool>();
+        // A published frame holding m_building's content (m_building gets a recycled frame's emptied vectors).
+        std::shared_ptr<Frame> takeBuilt(Frame &building);
         bool m_enabled = false;
         bool m_presentsAlone = false;
         bool m_streamDraws = false;

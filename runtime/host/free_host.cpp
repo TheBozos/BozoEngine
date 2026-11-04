@@ -118,6 +118,8 @@ namespace bozo::host
             h.elfName = "SCUS_971.01";
             writing_ = writer_.open(opt_.out, h);
         }
+        // The draw lists' digest is the record's `draws`: not computed when no record is written.
+        render::Renderer::instance().setDrawDigest(writing_);
         return true;
     }
 
