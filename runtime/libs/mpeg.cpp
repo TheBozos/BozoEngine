@@ -403,12 +403,19 @@ namespace bozo::libs
 
         // sceMpegIsEnd(mp): 1 once the stream has ended, every picture was delivered and the last one's display time is
         // over (the vblank count past the first's plus two fields a picture); until then a sceMpegGetPicture gets an
-        // empty delivery.
+        // empty delivery. When the game took the last picture late (story's seventh movie, played one picture a game
+        // frame: picture 45 at base + 91; #11644213: 0 at base + 92, then an empty delivery and #11644909: 1), not before
+        // an empty delivery (boot, match1p and story's other movies took theirs at base + 2 x n or earlier). Once the
+        // port says the playback was aborted (a skipped movie), 1 (story #9723824: the abort, a
+        // picture delivered, then 1 with 7 of the stream's pictures never delivered).
         void isEnd(Libraries &l, Guest &g)
         {
             const MpegState &s = state(l);
             const uint64_t endsAt = s.base + static_cast<uint64_t>(kFieldsPerPicture) * s.pictureStarts;
-            g.ret(ended(s) && s.delivered >= s.pictureStarts && l.dispatcher()->kernel().vblankCount() > endsAt ? 1 : 0);
+            // A last picture the game took late (after its two fields' slot: base + 2 x its number) is still on screen:
+            // 0 until an empty delivery has counted one more slot.
+            const bool late = s.lastShown > s.base + static_cast<uint64_t>(kFieldsPerPicture) * s.delivered;
+            g.ret(s.aborted || (ended(s) && s.delivered >= s.pictureStarts && !late && l.dispatcher()->kernel().vblankCount() > endsAt) ? 1 : 0);
         }
 
         // The picture to the game: its pixels, the sceMpeg's size and picture index, the work area's buffer and size.
@@ -437,6 +444,7 @@ namespace bozo::libs
                 g.write32(s.mp, static_cast<uint32_t>(p.width));
                 g.write32(s.mp + 4, static_cast<uint32_t>(p.height));
                 s.decoded.pop_front();
+                s.lastShown = l.dispatcher()->kernel().vblankCount();
             }
             if (s.delivered == 0)
                 s.base = l.dispatcher()->kernel().vblankCount() - 1;

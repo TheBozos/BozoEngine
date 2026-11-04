@@ -80,6 +80,9 @@ namespace bozo::libs
         uint64_t pendingAt = 0;
         uint32_t ring = 0, ringSize = 0, ringBias = 0; // ring address of stream byte x: ring + (x + ringBias) % ringSize
         bool programEnd = false;
+        // The port says the game aborted the playback (TMB: its videoDecAbort, a skipped movie; the fork's
+        // abortMpegPlayback): sceMpegIsEnd answers 1 from then on (libraries.md section 9.5).
+        bool aborted = false;
 
         // The video elementary stream: its bytes, its start codes counted (pictures and the sequence end), the cuts
         // into coded pictures.
@@ -106,6 +109,8 @@ namespace bozo::libs
         // Pictures delivered to the game, and the vblank count the first was due at.
         uint32_t delivered = 0;
         uint64_t base = 0;
+        // The vblank count the last picture (not an empty delivery) reached the game at.
+        uint64_t lastShown = 0;
         std::unique_ptr<VideoDecoder> decoder;
         std::deque<YuvPicture> decoded;
 
