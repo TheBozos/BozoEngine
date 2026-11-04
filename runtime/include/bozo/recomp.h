@@ -82,7 +82,8 @@ namespace bozo
         if (BOZO_UNLIKELY(ctx->outcall))
         {
             bozo_leave(rdram, ctx, rt, pc);
-            return true;
+            if (ctx->leaving) // not on a context of the override's own: that one goes on (kernel.md section 3b)
+                return true;
         }
         if (BOZO_UNLIKELY(ctx->cycles >= ctx->cycleLimit))
         {
