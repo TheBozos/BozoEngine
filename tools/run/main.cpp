@@ -31,7 +31,7 @@ namespace
                      "                [--max-errors n] [--trace-from record] [--trace-checkpoints]\n"
                      "                [--pinned] [--native libc,libm,gs,pad,mc,cd,vu0,io,mpeg,sif,snd|all|none]\n"
                      "                [--pad-script [port=]file] [--card-dir dir] [--iso image] [--quiet]\n"
-                     "                [--snd-log-replies on|off]\n");
+                     "                [--snd-log-replies on|off|<ids>]\n");
         return 2;
     }
 
@@ -84,10 +84,31 @@ int main(int argc, char **argv)
             opt.pinned = true;
         else if (a == "--snd-log-replies")
         {
+            // on (every reply the reference's IOP time decides from the log), off (none: 989SND's model answers
+            // them), or the command ids still taken from the log (hex, comma-separated: 11,19,21,2c).
             const std::string v = value();
-            if (v != "on" && v != "off")
-                return usage();
-            opt.sndLogReplies = v == "on";
+            if (v == "on")
+                opt.sndFromLog = 0xF;
+            else if (v == "off")
+                opt.sndFromLog = 0;
+            else
+            {
+                opt.sndFromLog = 0;
+                size_t at = 0;
+                while (at < v.size())
+                {
+                    const size_t end = v.find(',', at);
+                    const std::string id = v.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                    if (id == "11") opt.sndFromLog |= 1;
+                    else if (id == "19") opt.sndFromLog |= 2;
+                    else if (id == "21") opt.sndFromLog |= 4;
+                    else if (id == "2c") opt.sndFromLog |= 8;
+                    else return usage();
+                    if (end == std::string::npos)
+                        break;
+                    at = end + 1;
+                }
+            }
         }
         else if (a == "--pad-script")
         {
@@ -314,6 +335,16 @@ int main(int argc, char **argv)
                     static_cast<unsigned long long>(soundSink.banks), static_cast<unsigned long long>(soundSink.sounds),
                     static_cast<unsigned long long>(soundSink.params), static_cast<unsigned long long>(soundSink.stops),
                     static_cast<unsigned long long>(soundSink.streams));
+        std::string agree;
+        for (unsigned i = 0; i < 0x50; ++i)
+            if (st.engineAgrees[i] || st.engineDiffers[i])
+                agree += std::format(" {:02x}:{}/{}", i, st.engineAgrees[i], st.engineDiffers[i]);
+        std::printf("989snd model against the log (agree/differ):%s", agree.c_str());
+        if (st.firstDifferCycle)
+            std::printf("; first difference at EE cycle %llu: command %02x (0x%x), log 0x%x, model 0x%x",
+                        static_cast<unsigned long long>(st.firstDifferCycle), st.firstDifferId, st.firstDifferArg,
+                        st.firstDifferLog, st.firstDifferEngine);
+        std::putchar('\n');
     }
     if (opt.pinned)
     {

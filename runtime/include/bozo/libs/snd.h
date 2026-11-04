@@ -8,9 +8,13 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <deque>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "bozo/libs/snd989.h"
 
 namespace bozo::libs
 {
@@ -50,6 +54,7 @@ namespace bozo::libs
         std::vector<std::vector<SndTone>> programs;
         std::vector<uint8_t> samples; // SPU ADPCM data, the tones' `vag` offsets into it
         std::vector<uint8_t> midi;    // the third chunk when there is one
+        std::vector<uint8_t> header;  // the first chunk (SBv2) as in the file, for 989SND's own model
     };
 
     // What should be playing, for the mixer (libraries.md section 15.6). Times are EE cycles of the call.
@@ -83,9 +88,14 @@ namespace bozo::libs
         uint64_t native[0x50] = {}, pinned[0x50] = {};
         uint64_t followed = 0;     // commands followed from calls answered from the log (port overrides)
         uint64_t lost = 0;         // commands of those calls whose request was overwritten before the call ended
+        uint64_t lostInferred = 0; // lost calls the model took as a StopSound (snd.cpp followTraced)
         uint64_t estimateWrong = 0; // pinned liveness decisions the native lifetime estimate gets wrong (free mode)
         uint64_t followMismatch = 0; // followed allocations not where the native IOP heap puts them
         uint64_t modelAgrees = 0, modelDiffers = 0; // pinned handles the native handler model gives (or not)
+        // The 989SND model (snd989.h) against the log's replies, per command, where the log has one.
+        uint64_t engineAgrees[0x50] = {}, engineDiffers[0x50] = {};
+        uint64_t firstDifferCycle = 0;
+        uint32_t firstDifferId = 0, firstDifferLog = 0, firstDifferEngine = 0, firstDifferArg = 0;
     };
 
     class SndDriver
@@ -107,6 +117,10 @@ namespace bozo::libs
 
         SoundSink *sink = nullptr;
         SndStats stats;
+        // Which of the replies the reference's IOP time decides (0x11, 0x19, 0x21, 0x2c) a pinned run takes from the
+        // log (bit 0 0x11, 1 0x19, 2 0x21, 3 0x2c: `--snd-log-replies`); the others come from the 989SND model.
+        uint32_t fromLog = 0;
+        std::unique_ptr<snd989::Engine> engine; // 989SND's behaviour on the native mixer (made at the first call)
 
         // ---- State (libraries.md section 15.3) ----
         struct Handle
@@ -143,5 +157,15 @@ namespace bozo::libs
         std::map<uint32_t, std::vector<Slot>> slots_;
         std::map<uint32_t, Handle> unseen_; // the native model's handles of asynchronous plays (the game never sees them)
         std::map<uint32_t, uint32_t> recvFor_;
+        std::map<uint32_t, uint32_t> toEngine_;
+        std::deque<std::pair<uint64_t, uint32_t>> recentPlays_; // (EE cycle, handle) of the latest plays // a handle the log gave -> the model's, where they differ
+        bool engineValid_ = false;              // the model answered the current command
+        uint32_t engineGame_ = 0;               // its answer, in the game's handles
+        bool fromLogFor(uint32_t id) const
+        {
+            return (id == 0x11 && (fromLog & 1)) || (id == 0x19 && (fromLog & 2)) || (id == 0x21 && (fromLog & 4)) ||
+                   (id == 0x2C && (fromLog & 8));
+        }
+        void noteEngine(Libraries &l, Guest &g, uint32_t id, uint32_t logValue, uint32_t engineValue, uint32_t arg);
     };
 }

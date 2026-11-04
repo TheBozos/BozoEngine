@@ -933,6 +933,60 @@ Part C streams).
      `bozo::audio::Mixer`/`Libsd`, with a cost model for the IOP clock (the replay's instruction counts per call and
      tick as the target), checked against the oracle command by command, behind a per-command log-reply switch.
   3. The IOP clock in `bozo-run` with the pinned points above; then `--snd-log-replies off` as the default.
+  (Done: 15.13c.)
+
+### 15.13c The native 989SND model (`bozo/libs/snd989.h`, 2026-11-04)
+
+989SND's behaviour (`989snd.md`) now runs natively on `bozo_audio`'s Mixer and Libsd: `snd989::Engine`, fed by
+`SndDriver` with every command in order (direct calls, batches, the commands it follows from calls answered from the
+log) at the EE cycle it was made. It answers the replies the reference's IOP time decided (PlaySound's handle 0x11,
+SoundIsStillPlaying 0x19, SetSoundParams 0x21, PlayVAGStreamByLoc's handle 0x2c); `SndDriver` keeps the SIF side,
+the IOP heap, bank parsing and the replies that never depended on time. What it implements:
+
+- **Voices and handlers** (Part A): the 48 voices and their active list, `allocVoice` (first free ascending, else the
+  lowest priority, then oldest, then lowest index; a stream voice is priority 127), KeyOn setup and the pending
+  KeyOn/KeyOff masks flushed once a tick, the per-voice end counter (256 silent ticks, never reset), the program,
+  MIDI and stream handler pools with 989SND's handle generations, the program callback freeing a handler with its
+  last voice, type 2's stop of earlier instances, StopSound/StopAllSounds, pitch (`sceSdNote2Pitch` from
+  2^(n/12) and 2^(f/1536), floored, and the 44.1 kHz conversion), volume, pan and auto-pan.
+- **MIDI** (Part B): MID and MMID blocks, the sequencer with 989SND's time base (4,170 us a tick), notes to voices,
+  note-off, sustain, pitch bend, bank select, loops and the stop at the end of track.
+- **Streams** (Part C): the buffers in sound memory from 989SND's own allocator (Part A's free-list tree, 64-byte
+  units; the reverb work areas below a 128 KB boundary), the disc pipeline as the threads leave it with the
+  reference's instant reads (header, chunks, `markBlocks`, the transfers and re-reads in their order), KeyOn setup when
+  the threads get there, the stream tick (NAX halves, refills, the end test on ENVX in the end phase), pause and
+  volume. Bank samples go to sound memory at their allocated address and the tones' sample offsets become addresses.
+- **The IOP clock** (`iop-timing.md`): P = (EE cycle - 4,927,984) / 8 + G with G = 0; the first tick due 153,600 IOP
+  cycles after the first command; at `snd_InitVAGStreamingEx` (0x2a) the next tick due 55,296 cycles (1.5 ms) after
+  it; ticks served at max(due, the clock), the next due 153,600 after the service, so lateness carries; a command runs
+  at max(P, the clock) and moves the clock by its cost; the stream threads' KeyOn setups come 1,280 (two-chunk mono)
+  or 2,470 (long stereo) IOP cycles after the 0x2c command. Every libsd call goes through `Libsd::call`, so the
+  clocked mixer is brought up to the engine's time first (calling the per-entry exports directly leaves the mixer
+  behind: that alone diverged at frame 6868).
+- **The cost model**: each step of the tick and of the commands (a voice read, a callback, a list step, a MIDI event,
+  a note-on's tone scan and voice, the flushes...) advances the clock by 989SND's instruction count for it, fitted on
+  the analysis replay's libsd call times over the shell (22,536 ticks: 95% of 241,428 call times exact, the rest
+  within a few cycles); a command adds, on top of its steps, a constant per command id (the replay's mean instruction count for it).
+- **Lost calls** (15.7): the 10 batches of match1p whose request a later call overwrote are taken as StopSound of the
+  first handle a play gave in the 5 M EE cycles before (pinned from the log: each is `TheGame::Update` stopping the
+  sound it replays every frame, bank 0xe3c64 sound 0x48, whose next play takes the freed slot; without it the first
+  difference is frame 13568).
+
+`--snd-log-replies` takes `off` (the default now: the model answers), `on`, or the command ids still taken from the
+log (`11,19,21,2c`); a pinned run reports the model against the log per command either way (`989snd model against
+the log (agree/differ)`).
+
+| Run | Replies native | From the log | Model against the log | Result | Time |
+|---|---|---|---|---|---|
+| boot, `--snd-log-replies off` | 3,592 | 0 | 0x11 1/0, 0x19 1,385/0 | MATCH | 20 s |
+| match1p, `--snd-log-replies off` | 122,519 (0x11 1,937, 0x19 14,390, 0x21 84,873, 0x2c 2, ...) | 0 | 0x11 776/0, 0x19 14,390/0, 0x21 84,873/0, 0x2c 2/0 | MATCH | 4 min 23 s |
+
+(Run times on this machine, where the same match1p run of 42a1d7c takes 4 min 26 s.) The analysis replay's first
+difference at frame 10827 (15.13b) does not occur in the model: the replay itself, not the reference, differs there.
+
+Open: the movie positions (0x40) stay followed from the log; free mode uses the same model with these pinned points
+(G, the level-start phase) and needs them from elsewhere; the cost model's last few-cycle errors (5% of the call
+times) have not mattered in either log.
 
 ### 15.14 The mixer under libsd (`bozo/audio/`)
 

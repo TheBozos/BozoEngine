@@ -43,7 +43,7 @@ python tools/capture/ref_compare.py build/boot.ref reference/tmb/records/boot.re
 | `--iso <image>` | the game's disc image for the native CD library (`libraries.md` section 8; also `BOZO_ISO`); without one the CD stays answered from the log |
 | `--pad-script [port=]file` | the controllers' input for the native pads (`docs/specs/libraries.md` section 6): a reference run's frame-keyed script, for port 1 or 2 (1 when omitted); match1p needs `reference/tmb/scripts/ch1p_frames.txt` |
 | `--card-dir <dir>` | the native memory cards' host folder (`<dir>/mc0`, `<dir>/mc1`); without it, fresh formatted cards in memory (as the reference runs' fresh user folder) |
-| `--snd-log-replies on\|off` | pinned mode: whether the 989SND driver takes what the reference's IOP time decided (sound lifetimes, handler slots) from the log's replies (`on`, the default) or answers it from its own models too (`off`; `libraries.md` section 15.11) |
+| `--snd-log-replies on\|off\|<ids>` | pinned mode: whether the 989SND replies the reference's IOP time decided (0x11, 0x19, 0x21, 0x2c) come from 989SND's native model (`off`, the default: `libraries.md` section 15.13c), from the log (`on`), or from the log for the listed command ids only (hex, comma-separated, e.g. `11,2c`); the model is compared with the log's replies either way |
 | `--quiet` | only the summary |
 
 The exit status is 0 when the whole log was made again with no divergence and every frame equals the reference: on

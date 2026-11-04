@@ -34,7 +34,7 @@ namespace bozo::run
         uint32_t native = libs::kAllLibraries;
         // Pinned mode: whether the 989SND driver takes the decisions the reference's IOP time made from the log's replies
         // (libraries.md section 15.5); off, it answers them from its own models too.
-        bool sndLogReplies = true;
+        uint32_t sndFromLog = 0; // 989SND replies taken from the log: bit 0 0x11, 1 0x19, 2 0x21, 3 0x2c (none: the model answers)
     };
 
     // Per library: calls answered natively, and the native state checked against calls answered from the log.

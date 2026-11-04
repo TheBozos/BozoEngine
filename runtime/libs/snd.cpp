@@ -56,6 +56,7 @@ namespace bozo::libs
             if (count > 2)
                 discBytes(l, lbn, chunks[2].first, chunks[2].second, b.midi);
             b.lbn = lbn;
+            b.header = h;
             b.id.assign(reinterpret_cast<const char *>(&h[0x0C]), 4);
             const int16_t sounds = static_cast<int16_t>(le16(&h[0x14])), programs = static_cast<int16_t>(le16(&h[0x16]));
             const uint32_t firstSound = le32(&h[0x1C]), firstProgram = le32(&h[0x20]);
@@ -242,6 +243,8 @@ namespace bozo::libs
         if (address)
         {
             b.address = address;
+            if (engine)
+                engine->bankLoaded(address, b.header, b.samples, b.midi);
             if (sink)
                 sink->bankLoaded(b);
             banks[address] = std::move(b);
@@ -257,6 +260,24 @@ namespace bozo::libs
             uint32_t v = 0;
             if (log)
                 (*log)(slot, v);
+            if (it != handles.end() && v == 0)
+                it->second.ended = true;
+            return v;
+        }
+        if (engineValid_)
+        {
+            // 989SND's model decides (snd989.h); a pinned run may take the log's answer instead (`fromLog`).
+            uint32_t v = engineGame_, lv = 0;
+            const bool haveLog = log && (*log)(slot, lv);
+            if (haveLog)
+                noteEngine(l, g, id, lv, v, handle);
+            if (haveLog && fromLogFor(id))
+            {
+                v = lv;
+                ++stats.pinned[id];
+            }
+            else
+                ++stats.native[id];
             if (it != handles.end() && v == 0)
                 it->second.ended = true;
             return v;
@@ -313,8 +334,49 @@ namespace bozo::libs
     {
         returns = returnsResult(id);
         const uint32_t idx = id < 0x50 ? id : 0x4F;
+        engineValid_ = false;
+        if (engine && id != 0x3B && id != 0x3C && id != 0x3D && id != 0x3E && id != 0x40)
+        {
+            uint32_t ea[7];
+            std::memcpy(ea, a, sizeof ea);
+            const bool takesHandle = (id >= 0x13 && id <= 0x25) || (id >= 0x2D && id <= 0x2F);
+            if (takesHandle)
+                if (auto m = toEngine_.find(ea[0]); m != toEngine_.end())
+                    ea[0] = m->second;
+            uint32_t er = 0;
+            engine->command(id, ea, l.now(g), er);
+            if (id == 0x06)
+                engine->bankUnloaded(a[0]);
+            engineValid_ = true;
+            // In the game's handles: a liveness answer names the handle the game asked about.
+            engineGame_ = (id == 0x19 || id == 0x21) ? (er ? a[0] : 0u) : er;
+            if (follow && (id == 0x11 || id == 0x2C))
+            {
+                uint32_t lv = 0;
+                if (log && (*log)(slot, lv) && lv != er)
+                    toEngine_[lv] = er;
+            }
+        }
         auto pinnedOr = [&](uint32_t native, bool timeDecides) {
             uint32_t v = native;
+            if (!follow && timeDecides && engineValid_)
+            {
+                // 989SND's model decides (snd989.h); a pinned run may take the log's answer instead (`fromLog`).
+                native = engineGame_;
+                uint32_t lv = 0;
+                const bool haveLog = log && (*log)(slot, lv);
+                if (haveLog)
+                    noteEngine(l, g, id, lv, native, a[0]);
+                if (haveLog && fromLogFor(id))
+                {
+                    if (lv != native)
+                        toEngine_[lv] = native;
+                    ++stats.pinned[idx];
+                    return lv;
+                }
+                ++stats.native[idx];
+                return native;
+            }
             if (follow || timeDecides)
             {
                 if (log && (*log)(slot, v))
@@ -396,6 +458,12 @@ namespace bozo::libs
                     handle = pinnedOr(model, true);
                     if (log && !follow)
                         ++(handle == model ? stats.modelAgrees : stats.modelDiffers);
+                }
+                if (handle && !follow)
+                {
+                    recentPlays_.push_back({l.now(g), handle});
+                    while (recentPlays_.size() > 64)
+                        recentPlays_.pop_front();
                 }
                 if (handle && s)
                 {
@@ -509,9 +577,33 @@ namespace bozo::libs
     }
 
 
+    void SndDriver::noteEngine(Libraries &l, Guest &g, uint32_t id, uint32_t logValue, uint32_t engineValue, uint32_t arg)
+    {
+        const uint32_t idx = id < 0x50 ? id : 0x4F;
+        if (logValue == engineValue)
+        {
+            ++stats.engineAgrees[idx];
+            return;
+        }
+        if (!stats.engineDiffers[0] && !stats.firstDifferCycle)
+        {
+            stats.firstDifferCycle = l.now(g);
+            stats.firstDifferId = id;
+            stats.firstDifferLog = logValue;
+            stats.firstDifferEngine = engineValue;
+            stats.firstDifferArg = arg;
+        }
+        ++stats.engineDiffers[idx];
+    }
+
     void SndDriver::call(Libraries &l, Guest &g, uint32_t fno, const std::vector<uint32_t> &request, uint32_t recv, uint32_t rsize,
                          std::vector<uint32_t> &reply, const LogWord *log, bool follow)
     {
+        if (!engine)
+        {
+            engine = std::make_unique<snd989::Engine>();
+            engine->setDisc([&l](uint32_t lbn, uint32_t sectors, uint8_t *out) { return discRead(l, lbn, sectors, out); });
+        }
         const uint32_t words = rsize / 4;
         reply.assign(words, 0);
         auto put = [&](uint32_t i, uint32_t v) {
@@ -577,6 +669,24 @@ namespace bozo::libs
             if (reused)
             {
                 ++stats.lost;
+                // Its request is gone. In match1p every lost batch is TheGame::Update's StopSound of the sound it
+                // replays each frame (the next play takes the freed slot: libraries.md 15.13c), so the model takes
+                // it as StopSound of the first handle a play gave in the frame before (the 4.92 M EE cycles before).
+                if (engine)
+                {
+                    const uint64_t now = l.now(g);
+                    for (const auto &[cycle, handle] : recentPlays_)
+                        if (cycle + 5000000u >= now && cycle < now)
+                        {
+                            uint32_t a[7] = {handle, 0, 0, 0, 0, 0, 0};
+                            if (auto m = toEngine_.find(handle); m != toEngine_.end())
+                                a[0] = m->second;
+                            uint32_t er = 0;
+                            engine->command(0x15, a, now, er);
+                            ++stats.lostInferred;
+                            break;
+                        }
+                }
                 continue;
             }
             std::vector<uint32_t> request, reply;
