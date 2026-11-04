@@ -65,7 +65,7 @@ Each recording also wrote the fork's sound. Those WAVs are wall-clock device out
 
 ## 2. Pinned checks
 
-The final build is BozoEngine def8230 + 79fb362 and TMB 03b6a2f.
+The final build is BozoEngine def8230 and TMB 03b6a2f.
 
 | Run | Default (989SND models) | ram / scratchpad / calls / threads | draws | sound frames equal (silent) | With the 989SND IOP-time replies from the log |
 |---|---|---|---|---|---|
