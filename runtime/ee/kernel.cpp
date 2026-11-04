@@ -237,7 +237,7 @@ namespace bozo::ee
     {
         Thread *t = thread(id);
         if (!t)
-            return -406; // KE_UNKNOWN_THID
+            return -407; // KE_UNKNOWN_THID (match4p #11334755: TerminateThread of a thread that was never made)
         if (t->state == ThreadState::Dormant)
             return -413; // KE_DORMANT (calllog: TerminateThread of a thread that has ended)
         emit(kOpTerminate, {static_cast<uint32_t>(id), deleted ? 1u : 0u, interruptSafe ? 1u : 0u});
@@ -255,7 +255,7 @@ namespace bozo::ee
     {
         Thread *t = thread(id);
         if (!t)
-            return -406;
+            return -407; // KE_UNKNOWN_THID (match4p #11334756)
         if (t->state != ThreadState::Dormant)
             return -405;
         emit(kOpTerminate, {static_cast<uint32_t>(id), 1u});
@@ -357,10 +357,12 @@ namespace bozo::ee
 
     int32_t Kernel::deleteSema(int32_t id, bool interruptSafe)
     {
+        // The operation is made (and logged) for an unknown id too (match4p #11334775-6: DeleteSema(8) a second time,
+        // -408 with its sema-delete operation).
+        emit(kOpSemaDelete, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
         Semaphore *s = sema(id);
         if (!s)
             return -408; // KE_UNKNOWN_SEMID
-        emit(kOpSemaDelete, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
         const std::deque<int32_t> waiters = s->waiters;
         semas_.erase(id);
         Nested n(*this);
@@ -468,7 +470,10 @@ namespace bozo::ee
         const auto before = list.size();
         list.erase(std::remove_if(list.begin(), list.end(), [&](const InterruptHandler &h) { return h.id == id; }),
                    list.end());
-        return list.size() != before ? 0 : -1;
+        // 0 whether or not it was there (match4p #11334761: the movie player torn down a second time removes its
+        // DMAC handler 9 again; the reference answers 0).
+        (void)before;
+        return 0;
     }
 
     int32_t Kernel::causeEnable(bool dmac, uint32_t cause, bool on)

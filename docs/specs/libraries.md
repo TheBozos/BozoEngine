@@ -450,6 +450,20 @@ Every picture of both logs then equals the reference's on every byte.
 #6587721: 1). That is why some movies end with one empty delivery and others not (boot's first movie: one; its second
 and third: none).
 
+Two more cases (phase 4 M5, the story runs):
+- **The last picture taken late.** A movie the game plays a picture a game frame (story's seventh, the Junkyard's
+  intro: picture 45 taken at `base + 91`, one vblank after its slot) is not over at `base + 92` (#11644213: 0); the
+  game then gets an empty delivery and 1 (#11644909). So while the last picture was taken after `base + 2 x delivered`,
+  0. Every other movie of boot, match1p and story took its last picture at `base + 2 x n` or earlier.
+- **An aborted playback.** A skipped movie (TMB's `videoDecAbort`, then `videoDecFlush` appending a sequence end to the
+  IPU ring BozoEngine's libmpeg never reads) never reaches its stream's end: the port says so
+  (`MpegState::aborted`, TMB's videoDecAbort override) and sceMpegIsEnd answers 1 from then on (story #9723777 the
+  abort, #9723802 one more picture, #9723824: 1 with 7 of the stream's pictures never delivered).
+
+The demux's read-ahead limit counts a picture from its first header: a sequence or GOP header whole in the stream
+counts its coded picture before its picture start code arrives (stage-level0 #11640007, the Midtown Suburbs movie:
+0xd000 bytes taken, where picture 42's header is whole and its start code not yet).
+
 ### 9.6 The movie's sound
 
 The PCM stream's packets go to a `MovieSoundSink` (`Libraries::movieSound`; none: dropped), for the future mixer. TMB's

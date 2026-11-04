@@ -118,7 +118,15 @@ namespace bozo::libs
             const int port = static_cast<int>(g.arg(0));
             if (!ready(l, port) || g.arg(1) != 0)
             {
-                finish(l, kFnGetInfo, -10);
+                // A multitap slot (slot 1-3: no multitap on the card ports): no card there, its type, free clusters and
+                // format 0, the result -4 (match4p #228107-#228109: TMB looks at slots 1-3 once its pads' multitap is
+                // open).
+                const bool slot = g.arg(1) != 0;
+                if (slot)
+                    for (uint32_t k = 2; k <= 4; ++k)
+                        if (g.arg(k))
+                            g.write32(g.arg(k), 0);
+                finish(l, kFnGetInfo, slot ? -4 : -10);
                 g.ret(0);
                 return;
             }

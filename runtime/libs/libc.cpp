@@ -190,7 +190,9 @@ namespace bozo::libs
                 break;
             }
             case 'c': n = std::snprintf(buf, sizeof(buf), (spec + 'c').c_str(), static_cast<int>(static_cast<uint8_t>(g.arg(slot++)))); break;
-            case 'p': n = std::snprintf(buf, sizeof(buf), "0x%x", g.arg(slot++)); break;
+            // %p as the reference's host printed it: 16 hex digits, no 0x (match4p #16615141: "toc starts at
+            // 0000000000496c00", 70 characters).
+            case 'p': n = std::snprintf(buf, sizeof(buf), "%016x", g.arg(slot++)); break;
             case 's':
             {
                 const uint32_t p = g.arg(slot++);

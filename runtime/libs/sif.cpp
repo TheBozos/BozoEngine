@@ -183,8 +183,9 @@ namespace bozo::libs
         void allocIopHeap(Libraries &l, Guest &g) { g.retU(l.sif.heap.allocate(g.arg(0))); }
         void freeIopHeap(Libraries &l, Guest &g)
         {
-            l.sif.heap.release(g.arg(0));
-            g.ret(0);
+            // -1 for a block that is not allocated (match4p #11334788: the movie player's stream buffer freed a second
+            // time).
+            g.ret(l.sif.heap.release(g.arg(0)) ? 0 : -1);
         }
 
         // sceSifLoadModule(path, args, argp): nothing is loaded (the driver behind each module is native); the module
