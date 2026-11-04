@@ -57,8 +57,8 @@ namespace bozo::vu0
 
     // ---- Flags (Q11) ----
     // The MAC flags of an FMAC instruction's result: for each field (x = bit 3 ... w = bit 0 of each nibble) Z (bits
-    // 0-3: the result is +/-0), S (4-7: its sign bit), U (8-11: it underflowed to 0), O (12-15: it overflowed, or its
-    // exponent is 255, beyond IEEE single's range); fields outside dest are 0. The status flag's Z, S, U, O (bits 0-3)
+    // 0-3: the result is +/-0), S (4-7: its sign bit), U (8-11: it underflowed to 0), O (12-15: it overflowed, or it
+    // is the largest magnitude, 0x7fffffff); fields outside dest are 0. The status flag's Z, S, U, O (bits 0-3)
     // are the OR of the MAC's, and its sticky copies (bits 6-9) accumulate them; I, D (4, 5) and their sticky bits
     // (10, 11) are the divider's. All as the reference captures show them (r5900.md Q11).
     inline void setFlags(R5900Context *ctx, uint32_t dest, const uint32_t r[4], const uint32_t fl[4])
@@ -74,7 +74,11 @@ namespace bozo::vu0
                     mac |= 1u << (bit + 4);
                 if (fl[i] & ps2f::kFlagU)
                     mac |= 1u << (bit + 8);
-                if ((fl[i] & ps2f::kFlagO) || ps2f::expOf(r[i]) == 255)
+                // O: an overflow, or a result at the largest magnitude (the saturated value): 0xffffffff plus a small
+                // number flags it (match1p capture #670, 0x1335c8: status 0x2c0; stage-level3 #15818358), 0xfffffffe
+                // plus a small number or times 1.0 does not (stage-level3 #15807299, match4p #76722184:
+                // mathfDotProduct in BuildRadarStuff, status 0xc2 / 0xc0). Other exponent-255 results are ordinary.
+                if ((fl[i] & ps2f::kFlagO) || (r[i] & ps2f::kMax) == ps2f::kMax)
                     mac |= 1u << (bit + 12);
             }
         ctx->vu0_mac = mac;
