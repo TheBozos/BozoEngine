@@ -216,11 +216,25 @@ Native: `scePadInit`, `scePadPortOpen`, `scePadGetState`, `scePadGetReqState`, `
 `scePadRead`. (The Logitech wheel's `lgDevInit` and `input*Lg*` are the game's own functions over the USB driver, port
 overrides in the reference: they stay with the log.)
 
-The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0; no multitap (slots 1-3 report nothing).
-Their state comes from a `PadInput` (`bozo/libs/pad.h`): `ScriptInput` reads the reference runs' frame-keyed scripts
-(`harness.md` section 1, `reference/tmb/scripts/*_frames.txt`: `frame:BUTTON/frames`, the button held for the reads
-made at game frames [frame, frame + frames), port 1 unless given). A PC input source (keyboard, gamepads) implements the
-same interface later; `rumble()` receives the motor levels the game sets.
+The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0. A game's multitap library is its port's
+(TMB's `sceMtap*` overrides open one in port 1 at its first frame, in every reference run: `PadState::multitap`).
+
+Players (`padPlayer`): with the multitap, port 1's slots 0-3 are players 1-4 and port 2 has no player; without it, port 1
+slot 0 is player 1 and port 2 slot 0 player 2. Sockets:
+- port 1 slot 0 and port 2 slot 0 always hold a controller (port 2's idle when no player is on it: behind the
+  multitap, as the reference's boot and match1p read it every frame, idle);
+- a multitap slot 1-3 holds one only when its player has an input (a script, or a PC gamepad), else it reports nothing
+  (`scePadGetState` 0, `scePadRead` 0), as the reference's runs without PS2X_PAD2..4_SCRIPT;
+- slots 1-3 without the multitap: nothing.
+
+Their state comes from a `PadInput` (`bozo/libs/pad.h`), by player: `ScriptInput` reads the reference runs'
+frame-keyed scripts (`harness.md` section 1, `reference/tmb/scripts/*_frames.txt`: `frame:BUTTON/frames`, the button
+held for the reads made at game frames [frame, frame + frames), player 1 unless given; players 2-4 have a controller
+only with a script, as the reference's `PS2X_PAD2_SCRIPT`..`PS2X_PAD4_SCRIPT` in `det4p.env`). The PC's devices
+(`bozo/app/device_pad.h`, milestone M2) implement it in a window: keyboard, mouse and gamepads through `input.ini`.
+`rumble(player, small, large)` receives the motors the game sets: `scePadSetActDirect`'s six bytes through
+`scePadSetActAlign`'s alignment (byte i drives the small motor, on when non-zero, if its alignment is 0; the large one,
+0-255, if 1; none if 0xff).
 
 | Function | Native answer (settled on the records) |
 |---|---|

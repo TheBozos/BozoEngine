@@ -11,6 +11,7 @@
 #include "bozo/port.h"
 #include "bozo/reference.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -25,7 +26,8 @@ namespace bozo::host
         std::string elf;     // the game's executable (its symbols bind the libraries)
         std::string iso;     // the disc image (the CD library reads it; 989SND's banks)
         uint32_t frames = 0; // stop after this many game frames (0: never)
-        std::string padScript; // a frame-keyed pad script for port 1 (libraries.md section 6), empty: no input
+        std::string padScript; // a frame-keyed pad script for player 1 (libraries.md section 6), empty: no input
+        std::array<std::string, 3> playerScripts; // players 2-4's scripts (with a multitap: 3 and 4), empty: none
         std::string cardDir;   // the memory cards' folder (empty: fresh formatted cards in memory)
         std::string out;       // a PS2XREF1 record of the run (empty: none)
         bool quiet = false;

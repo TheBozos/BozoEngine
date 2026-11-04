@@ -34,13 +34,16 @@ namespace bozo::host
         libs_.sndNative = true;
         libs_.cd.imagePath = opt_.iso;
         libs_.mc.hostDirectory = opt_.cardDir;
-        if (!opt_.padScript.empty())
+        for (int player = 0; player < 4; ++player)
         {
-            std::ifstream in(opt_.padScript, std::ios::binary);
+            const std::string &path = player == 0 ? opt_.padScript : opt_.playerScripts[static_cast<size_t>(player - 1)];
+            if (path.empty())
+                continue;
+            std::ifstream in(path, std::ios::binary);
             const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (!in || !padScript_.load(0, text, error))
+            if (!in || !padScript_.load(player, text, error))
             {
-                error = "pad script " + opt_.padScript + ": " + (error.empty() ? "cannot read it" : error);
+                error = "pad script " + path + ": " + (error.empty() ? "cannot read it" : error);
                 return false;
             }
             libs_.pad.input = &padScript_;

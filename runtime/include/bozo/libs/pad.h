@@ -1,5 +1,6 @@
-// libpad as the native runtime answers it: two DualShock 2 controllers on ports 1 and 2 (no multitap in TMB's runs),
-// their state from an input source: a frame-keyed script (the reference runs' format) or, later, the PC's devices.
+// libpad as the native runtime answers it: DualShock 2 controllers in ports 1 and 2, and with a multitap in port 1
+// (the game's sceMtap library, answered by its port, sets PadState::multitap) four players on that port's slots. Their
+// state comes from an input source: a frame-keyed script (the reference runs' format) or the PC's devices.
 // Spec: docs/specs/libraries.md section 6.
 #pragma once
 
@@ -20,38 +21,48 @@ namespace bozo::libs
         kPadTriangle = 1u << 12, kPadCircle = 1u << 13, kPadCross = 1u << 14, kPadSquare = 1u << 15,
     };
 
-    // What a controller reports at one read.
+    // The pressure bytes' order in the pad data, as the reference fills it: right, left, up, down, triangle, circle,
+    // cross, square, L1, L2, R1, R2.
+    constexpr uint16_t kPadPressureOrder[12] = {kPadRight, kPadLeft, kPadUp,   kPadDown, kPadTriangle, kPadCircle,
+                                                kPadCross, kPadSquare, kPadL1, kPadL2,   kPadR1,       kPadR2};
+
+    // What a player's controller reports at one read.
     struct PadInputState
     {
+        // Whether the player has a controller. The pads in ports 1 and 2 are always there; this decides only for the
+        // multitap's slots 2-4 (players 2-4).
         bool connected = false;
         uint16_t buttons = 0;                    // PadButton bits
         uint8_t rx = 0x80, ry = 0x80, lx = 0x80, ly = 0x80;
-        // Pressure (0-255) in the pad data's order as the reference fills it: right, left, up, down, triangle,
-        // circle, cross, square, L1, L2, R1, R2.
-        std::array<uint8_t, 12> pressure{};
+        std::array<uint8_t, 12> pressure{};      // kPadPressureOrder; 0-255
     };
 
-    // Where controller state comes from. `frame` is the game frames ended so far.
+    // Where controller state comes from, by player (0-3). `frame` is the game frames ended so far.
     class PadInput
     {
     public:
         virtual ~PadInput() = default;
-        virtual void read(uint32_t frame, int port, int slot, PadInputState &out) = 0;
-        // Vibration the game asks for (the actuators' levels as it sets them): for the PC controller's rumble.
-        virtual void rumble(int /*port*/, int /*slot*/, const uint8_t /*levels*/[6]) {}
+        virtual void read(uint32_t frame, int player, PadInputState &out) = 0;
+        // The vibration the game sets (scePadSetActDirect through scePadSetActAlign): the small motor (on / off) and
+        // the large one (0-255), for the PC controller's rumble.
+        virtual void rumble(int /*player*/, bool /*small*/, uint8_t /*large*/) {}
     };
+
+    // The player a socket is (libraries.md section 6): with the multitap, port 1's slots are players 1-4 and port 2
+    // has no player (its pad is there, idle); without, port 1 slot 0 is player 1 and port 2 slot 0 player 2. -1: none.
+    int padPlayer(int port, int slot, bool multitap);
 
     // A frame-keyed script: "frame:BUTTON/frames" entries separated by commas (harness.md section 1); the button is
     // held for reads at frames [frame, frame + frames). Buttons: CROSS CIRCLE SQUARE TRIANGLE L1 R1 L2 R2 UP DOWN
-    // LEFT RIGHT START SELECT L3 R3. Ports 1 and 2 are connected, slot 0 only; a port without a script is idle.
-    // The D-pad also moves the left stick to its end (as the reference's input does) and every button pressed reports
-    // full pressure.
+    // LEFT RIGHT START SELECT L3 R3. Player 1 always has a controller; players 2-4 only when they have a script (as
+    // the reference's PS2X_PAD2_SCRIPT..PS2X_PAD4_SCRIPT). The D-pad also moves the left stick to its end (as the
+    // reference's input does) and every button pressed reports full pressure.
     class ScriptInput final : public PadInput
     {
     public:
-        // Parses `text` as port `port`'s script; false with `error` on a malformed entry.
-        bool load(int port, const std::string &text, std::string &error);
-        void read(uint32_t frame, int port, int slot, PadInputState &out) override;
+        // Parses `text` as player `player`'s script (0-3); false with `error` on a malformed entry.
+        bool load(int player, const std::string &text, std::string &error);
+        void read(uint32_t frame, int player, PadInputState &out) override;
 
     private:
         struct Press
@@ -64,7 +75,7 @@ namespace bozo::libs
 
     struct PadState
     {
-        PadInput *input = nullptr; // null: both ports connected and idle
+        PadInput *input = nullptr; // null: the pads in ports 1 and 2 connected and idle, no multitap slot used
 
         struct Port
         {
@@ -75,14 +86,15 @@ namespace bozo::libs
             bool pressureMode = false;  // scePadEnterPressMode
             bool busy = false;          // a mode command in progress
             uint32_t commandFrame = 0;  // the frame it was given in
-            uint8_t align[6] = {};      // scePadSetActAlign
+            uint8_t align[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}; // scePadSetActAlign (0xff: no motor)
             uint8_t direct[6] = {};     // scePadSetActDirect: the motor levels
         };
         std::array<std::array<Port, 4>, 2> ports{};
         bool initialized = false;
         uint64_t reads = 0;
+        std::array<std::array<uint64_t, 4>, 2> socketReads{}; // the reads that found a controller, by port and slot
         // A multitap in port 1 (sceMtapPortOpen through a port's override: the game's sceMtap library is answered by
-        // the port). The slots behind it (players 2-4 on port 1) come with the PC's pads (milestone M2).
+        // the port): players 2-4 on its slots 1-3, port 2's pad idle.
         bool multitap = false;
     };
 }

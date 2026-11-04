@@ -133,10 +133,10 @@ int bozo::run::main(int argc, char **argv)
         }
         else if (a == "--pad-script")
         {
-            // [port=]file: port 1 or 2 (1 when omitted)
+            // [player=]file: player 1 to 4 (1 when omitted; without a multitap player 2 is port 2's pad)
             std::string v = value();
             int port = 0;
-            if (v.size() > 2 && v[1] == '=' && (v[0] == '1' || v[0] == '2'))
+            if (v.size() > 2 && v[1] == '=' && v[0] >= '1' && v[0] <= '4')
             {
                 port = v[0] - '1';
                 v = v.substr(2);

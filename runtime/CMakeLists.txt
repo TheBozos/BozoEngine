@@ -65,8 +65,9 @@ target_compile_options(bozo_host PRIVATE -Wall -Wextra)
 # under that rounding mode, never folded or fused (libs/vu0.cpp).
 set_source_files_properties(libs/vu0.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math;-ffp-contract=off")
 
-# The real-time platform layer (bozo/app/: window.h, device_pad.h, png.h) on SDL3, static, pinned to release 3.4.20
-# (zlib licence). Downloaded at configure unless FETCHCONTENT_SOURCE_DIR_SDL3 names a source tree of that release.
+# The real-time platform layer (bozo/app/: window.h, device_pad.h, input_bindings.h, app.h, png.h) on SDL3, static,
+# pinned to release 3.4.20 (zlib licence). Downloaded at configure unless FETCHCONTENT_SOURCE_DIR_SDL3 names a source
+# tree of that release.
 if(BOZO_APP)
   include(FetchContent)
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -89,6 +90,8 @@ if(BOZO_APP)
   add_library(bozo_app STATIC
     app/window.cpp
     app/device_pad.cpp
+    app/input_bindings.cpp
+    app/app.cpp
     app/png.cpp)
   target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs SDL3::SDL3-static)
   target_compile_options(bozo_app PRIVATE -Wall -Wextra)

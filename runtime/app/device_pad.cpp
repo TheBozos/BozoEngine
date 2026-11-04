@@ -1,138 +1,292 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The Bozos (boubou666 and Arzaroth). MIT licence (see LICENSE at the repository root).
 //
-// The keyboard and gamepad as a DualShock 2 (bozo/app/device_pad.h).
+// The keyboard, mouse and gamepads as the players' DualShock 2s (bozo/app/device_pad.h). Written for BozoEngine on
+// SDL3; the gamepad order, the players' gamepads and the mouse's handling follow the team's fork (ps2_pad.cpp's
+// gamepad discovery, ps2_input_bindings.cpp's frameUpdate).
 #include "bozo/app/device_pad.h"
+
+#include "bozo/app/app.h"
+#include "bozo/app/input_bindings.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <cmath>
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace bozo::app
 {
-    struct DevicePad::Gamepad
-    {
-        SDL_Gamepad *pad = nullptr;
-        SDL_JoystickID id = 0;
-    };
-
     namespace
     {
-        struct KeyBinding
+        bool envOn(const char *name)
         {
-            SDL_Scancode a, b;
-            uint16_t button;
-        };
-        constexpr KeyBinding kKeys[] = {
-            {SDL_SCANCODE_UP, SDL_SCANCODE_W, libs::kPadUp},           {SDL_SCANCODE_DOWN, SDL_SCANCODE_S, libs::kPadDown},
-            {SDL_SCANCODE_LEFT, SDL_SCANCODE_A, libs::kPadLeft},       {SDL_SCANCODE_RIGHT, SDL_SCANCODE_D, libs::kPadRight},
-            {SDL_SCANCODE_X, SDL_SCANCODE_SPACE, libs::kPadCross},     {SDL_SCANCODE_C, SDL_SCANCODE_ESCAPE, libs::kPadCircle},
-            {SDL_SCANCODE_Z, SDL_SCANCODE_KP_0, libs::kPadSquare},     {SDL_SCANCODE_V, SDL_SCANCODE_KP_1, libs::kPadTriangle},
-            {SDL_SCANCODE_Q, SDL_SCANCODE_UNKNOWN, libs::kPadL1},      {SDL_SCANCODE_E, SDL_SCANCODE_UNKNOWN, libs::kPadR1},
-            {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_UNKNOWN, libs::kPadL2}, {SDL_SCANCODE_RSHIFT, SDL_SCANCODE_UNKNOWN, libs::kPadR2},
-            {SDL_SCANCODE_RETURN, SDL_SCANCODE_UNKNOWN, libs::kPadStart}, {SDL_SCANCODE_TAB, SDL_SCANCODE_UNKNOWN, libs::kPadSelect},
-            {SDL_SCANCODE_F, SDL_SCANCODE_UNKNOWN, libs::kPadL3},      {SDL_SCANCODE_G, SDL_SCANCODE_UNKNOWN, libs::kPadR3},
-        };
-        struct PadBinding
-        {
-            SDL_GamepadButton button;
-            uint16_t ps2;
-        };
-        constexpr PadBinding kPadButtons[] = {
-            {SDL_GAMEPAD_BUTTON_SOUTH, libs::kPadCross},         {SDL_GAMEPAD_BUTTON_EAST, libs::kPadCircle},
-            {SDL_GAMEPAD_BUTTON_WEST, libs::kPadSquare},         {SDL_GAMEPAD_BUTTON_NORTH, libs::kPadTriangle},
-            {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, libs::kPadL1},    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, libs::kPadR1},
-            {SDL_GAMEPAD_BUTTON_START, libs::kPadStart},         {SDL_GAMEPAD_BUTTON_BACK, libs::kPadSelect},
-            {SDL_GAMEPAD_BUTTON_LEFT_STICK, libs::kPadL3},       {SDL_GAMEPAD_BUTTON_RIGHT_STICK, libs::kPadR3},
-            {SDL_GAMEPAD_BUTTON_DPAD_UP, libs::kPadUp},          {SDL_GAMEPAD_BUTTON_DPAD_DOWN, libs::kPadDown},
-            {SDL_GAMEPAD_BUTTON_DPAD_LEFT, libs::kPadLeft},      {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, libs::kPadRight},
-        };
-
-        uint8_t stickByte(int16_t axis) { return static_cast<uint8_t>(std::clamp((static_cast<int>(axis) + 32768) >> 8, 0, 255)); }
+            const char *v = std::getenv(name);
+            return v && v[0] == '1';
+        }
     }
 
-    DevicePad::DevicePad() : gamepad_(new Gamepad) {}
+    struct DevicePad::Impl
+    {
+        static constexpr int kPlaces = 4;
+        // The gamepads in the order they took their places (a pulled-out one leaves its place empty).
+        std::array<SDL_Gamepad *, kPlaces> gamepads{};
+        std::array<SDL_JoystickID, kPlaces> ids{};
+        bool mappingsLoaded = false;
+        bool listChanged = true;
+
+        // The mouse: motion since the last update, smoothed speed, the wheel's last notch.
+        float dx = 0.0f, dy = 0.0f, speedX = 0.0f, speedY = 0.0f;
+        uint64_t wheelUpUntil = 0, wheelDownUntil = 0; // SDL_GetTicks
+        bool captured = false;
+
+        // What the game reads (game thread), written each update (window thread).
+        std::mutex mutex;
+        std::array<libs::PadInputState, input::kPlayers> states{};
+
+        // The rumble the game asks for, per player: small << 8 | large; what was sent, and when.
+        std::array<std::atomic<uint32_t>, input::kPlayers> wanted{};
+        std::array<uint32_t, input::kPlayers> sent{};
+        std::array<uint64_t, input::kPlayers> sentAt{};
+        std::array<SDL_Gamepad *, input::kPlayers> rumbling{};
+        bool rumbleOn = true;
+        bool background = false;
+
+        // The gamepad of a player: the one input.ini names, else the player's among the connected ones (player n the
+        // nth, as the fork gave port n the nth raylib gamepad).
+        SDL_Gamepad *gamepadOf(int player, int chosen) const
+        {
+            if (chosen >= 0 && chosen < kPlaces)
+                return gamepads[static_cast<size_t>(chosen)];
+            int n = 0;
+            for (SDL_Gamepad *g : gamepads)
+                if (g && n++ == player)
+                    return g;
+            return nullptr;
+        }
+
+        void loadMappings()
+        {
+            mappingsLoaded = true;
+            std::vector<std::filesystem::path> candidates;
+            if (const char *path = std::getenv("PS2X_GAMEPAD_DB"); path && *path)
+                candidates.emplace_back(path);
+            else
+            {
+                candidates.push_back(executableDirectory() / "gamecontrollerdb.txt");
+                if (!userDirectory().empty())
+                    candidates.push_back(userDirectory() / "gamecontrollerdb.txt");
+            }
+            std::error_code ec;
+            for (const std::filesystem::path &path : candidates)
+                if (std::filesystem::is_regular_file(path, ec))
+                {
+                    const int added = SDL_AddGamepadMappingsFromFile(path.string().c_str());
+                    std::fprintf(stderr, "[pad] %d gamepad mappings loaded from %s\n", added, path.string().c_str());
+                    return;
+                }
+        }
+
+        void logList()
+        {
+            listChanged = false;
+            int n = 0;
+            for (int place = 0; place < kPlaces; ++place)
+                if (SDL_Gamepad *g = gamepads[static_cast<size_t>(place)])
+                {
+                    const char *name = SDL_GetGamepadName(g);
+                    std::fprintf(stderr, "[pad] gamepad %d: %s (player %d unless input.ini chooses)\n", place, name ? name : "?", ++n);
+                }
+            if (n == 0)
+                std::fprintf(stderr, "[pad] no gamepad: the keyboard is player 1\n");
+        }
+    };
+
+    DevicePad::DevicePad() : impl_(new Impl)
+    {
+        const char *rumble = std::getenv("PS2X_RUMBLE");
+        impl_->rumbleOn = !(rumble && rumble[0] == '0');
+        impl_->background = envOn("PS2X_INPUT_BACKGROUND");
+        if (impl_->background)
+            SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    }
 
     DevicePad::~DevicePad()
     {
-        if (gamepad_->pad)
-            SDL_CloseGamepad(gamepad_->pad);
-        delete gamepad_;
+        for (SDL_Gamepad *g : impl_->gamepads)
+            if (g)
+            {
+                SDL_RumbleGamepad(g, 0, 0, 0);
+                SDL_CloseGamepad(g);
+            }
+        delete impl_;
     }
 
     void DevicePad::handle(const SDL_Event &event)
     {
-        if (event.type == SDL_EVENT_GAMEPAD_ADDED && !gamepad_->pad)
+        Impl &m = *impl_;
+        switch (event.type)
         {
-            gamepad_->pad = SDL_OpenGamepad(event.gdevice.which);
-            gamepad_->id = event.gdevice.which;
+        case SDL_EVENT_GAMEPAD_ADDED:
+        {
+            for (int place = 0; place < Impl::kPlaces; ++place)
+                if (m.gamepads[static_cast<size_t>(place)] && m.ids[static_cast<size_t>(place)] == event.gdevice.which)
+                    return; // already open
+            for (int place = 0; place < Impl::kPlaces; ++place)
+                if (!m.gamepads[static_cast<size_t>(place)])
+                {
+                    if (SDL_Gamepad *g = SDL_OpenGamepad(event.gdevice.which))
+                    {
+                        m.gamepads[static_cast<size_t>(place)] = g;
+                        m.ids[static_cast<size_t>(place)] = event.gdevice.which;
+                        m.listChanged = true;
+                    }
+                    else
+                        std::fprintf(stderr, "[pad] a gamepad could not be opened: %s\n", SDL_GetError());
+                    return;
+                }
+            std::fprintf(stderr, "[pad] a fifth gamepad is not used (four players at most)\n");
+            break;
         }
-        else if (event.type == SDL_EVENT_GAMEPAD_REMOVED && gamepad_->pad && event.gdevice.which == gamepad_->id)
-        {
-            SDL_CloseGamepad(gamepad_->pad);
-            gamepad_->pad = nullptr;
+        case SDL_EVENT_GAMEPAD_REMOVED:
+            for (int place = 0; place < Impl::kPlaces; ++place)
+                if (m.gamepads[static_cast<size_t>(place)] && m.ids[static_cast<size_t>(place)] == event.gdevice.which)
+                {
+                    for (SDL_Gamepad *&r : m.rumbling)
+                        if (r == m.gamepads[static_cast<size_t>(place)])
+                            r = nullptr;
+                    SDL_CloseGamepad(m.gamepads[static_cast<size_t>(place)]);
+                    m.gamepads[static_cast<size_t>(place)] = nullptr;
+                    m.listChanged = true;
+                }
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            m.dx += event.motion.xrel;
+            m.dy += event.motion.yrel;
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            // A wheel notch holds its binding pressed for a moment (the game polls the pad at its own pace).
+            if (event.wheel.y > 0.0f)
+                m.wheelUpUntil = SDL_GetTicks() + 120;
+            else if (event.wheel.y < 0.0f)
+                m.wheelDownUntil = SDL_GetTicks() + 120;
+            break;
+        default:
+            break;
         }
     }
 
     void DevicePad::update(bool focused)
     {
-        uint16_t buttons = 0;
-        int lx = 0x80, ly = 0x80, rx = 0x80, ry = 0x80;
-        if (focused)
+        Impl &m = *impl_;
+        if (!m.mappingsLoaded)
+            m.loadMappings();
+        if (m.listChanged)
+            m.logList();
+        const bool allowed = focused || m.background;
+
+        input::Config &config = input::config(); // input.ini, loaded at the first update
+        input::MouseSettings mouse;
+        std::array<int, input::kPlayers> chosen{};
         {
-            const bool *keys = SDL_GetKeyboardState(nullptr);
-            for (const KeyBinding &k : kKeys)
-                if (keys[k.a] || (k.b != SDL_SCANCODE_UNKNOWN && keys[k.b]))
-                    buttons |= k.button;
-            // The D-pad keys also move the left stick to its end; I J K L the right stick.
-            lx = buttons & libs::kPadLeft ? 0x00 : buttons & libs::kPadRight ? 0xff : 0x80;
-            ly = buttons & libs::kPadUp ? 0x00 : buttons & libs::kPadDown ? 0xff : 0x80;
-            rx = keys[SDL_SCANCODE_J] ? 0x00 : keys[SDL_SCANCODE_L] ? 0xff : 0x80;
-            ry = keys[SDL_SCANCODE_I] ? 0x00 : keys[SDL_SCANCODE_K] ? 0xff : 0x80;
+            std::lock_guard<std::mutex> lock(input::configMutex());
+            mouse = config.mouse;
+            for (int player = 0; player < input::kPlayers; ++player)
+                chosen[static_cast<size_t>(player)] = config.players[player].gamepad;
         }
-        if (SDL_Gamepad *pad = gamepad_->pad)
+
+        // Cursor capture while playing: the motion is then unbounded (no screen edge), and the cursor hidden.
+        const bool capture = mouse.capture && focused;
+        if (capture != m.captured)
         {
-            for (const PadBinding &b : kPadButtons)
-                if (SDL_GetGamepadButton(pad, b.button))
-                    buttons |= b.ps2;
-            if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8000)
-                buttons |= libs::kPadL2;
-            if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000)
-                buttons |= libs::kPadR2;
-            const auto stick = [&](SDL_GamepadAxis axis, int &value)
+            if (SDL_Window *w = SDL_GetKeyboardFocus())
+                SDL_SetWindowRelativeMouseMode(w, capture);
+            m.captured = capture;
+        }
+        // Mouse speed (pixels a loop, smoothed over a few) as stick deflection.
+        m.speedX = m.speedX * 0.5f + m.dx * 0.5f;
+        m.speedY = m.speedY * 0.5f + m.dy * 0.5f;
+        m.dx = m.dy = 0.0f;
+        const float scale = mouse.sensitivity / 10.0f;
+
+        input::Devices devices;
+        int keyCount = 0;
+        const bool *keys = SDL_GetKeyboardState(&keyCount);
+        const uint64_t now = SDL_GetTicks();
+        if (allowed)
+        {
+            devices.keys = keys;
+            devices.keyCount = keyCount;
+            devices.mouseButtons = SDL_GetMouseState(nullptr, nullptr);
+            devices.mouseX = std::clamp(m.speedX * scale, -1.0f, 1.0f);
+            devices.mouseY = std::clamp(m.speedY * scale * (mouse.invertY ? -1.0f : 1.0f), -1.0f, 1.0f);
+            devices.wheelUp = now < m.wheelUpUntil;
+            devices.wheelDown = now < m.wheelDownUntil;
+        }
+
+        std::array<libs::PadInputState, input::kPlayers> states{};
+        std::array<SDL_Gamepad *, input::kPlayers> pads{};
+        for (int player = 0; player < input::kPlayers; ++player)
+        {
+            SDL_Gamepad *g = m.gamepadOf(player, chosen[static_cast<size_t>(player)]);
+            pads[static_cast<size_t>(player)] = g;
+            // Players 2-4 only with a gamepad of their own, never the keyboard (as the fork).
+            if (allowed && (player == 0 || g))
+                states[static_cast<size_t>(player)] = input::padState(player, devices, g);
+            states[static_cast<size_t>(player)].connected = player == 0 || g != nullptr;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m.mutex);
+            m.states = states;
+        }
+
+        // Rumble: what the game asks, sent when it changes and again before the last one runs out; nothing while the
+        // window is in the background.
+        for (int player = 0; player < input::kPlayers; ++player)
+        {
+            SDL_Gamepad *g = pads[static_cast<size_t>(player)];
+            uint32_t want = m.rumbleOn && allowed ? m.wanted[static_cast<size_t>(player)].load(std::memory_order_relaxed) : 0;
+            SDL_Gamepad *&was = m.rumbling[static_cast<size_t>(player)];
+            if (was && was != g)
             {
-                const int16_t v = SDL_GetGamepadAxis(pad, axis);
-                if (std::abs(static_cast<int>(v)) > 6000) // a resting stick's drift stays centred
-                    value = stickByte(v);
-            };
-            stick(SDL_GAMEPAD_AXIS_LEFTX, lx);
-            stick(SDL_GAMEPAD_AXIS_LEFTY, ly);
-            stick(SDL_GAMEPAD_AXIS_RIGHTX, rx);
-            stick(SDL_GAMEPAD_AXIS_RIGHTY, ry);
+                SDL_RumbleGamepad(was, 0, 0, 0);
+                was = nullptr;
+                m.sent[static_cast<size_t>(player)] = 0;
+            }
+            if (!g)
+                continue;
+            const bool again = want && now - m.sentAt[static_cast<size_t>(player)] > 1000;
+            if (want == m.sent[static_cast<size_t>(player)] && !again)
+                continue;
+            const uint16_t low = static_cast<uint16_t>((want & 0xFF) * 257u);
+            const uint16_t high = (want >> 8) ? 0xFFFF : 0;
+            SDL_RumbleGamepad(g, low, high, want ? 2000 : 0);
+            m.sent[static_cast<size_t>(player)] = want;
+            m.sentAt[static_cast<size_t>(player)] = now;
+            was = want ? g : nullptr;
         }
-        state_.store(static_cast<uint64_t>(buttons) | static_cast<uint64_t>(lx) << 16 | static_cast<uint64_t>(ly) << 24 |
-                         static_cast<uint64_t>(rx) << 32 | static_cast<uint64_t>(ry) << 40,
-                     std::memory_order_relaxed);
     }
 
-    void DevicePad::read(uint32_t, int port, int slot, libs::PadInputState &out)
+    void DevicePad::read(uint32_t, int player, libs::PadInputState &out)
     {
-        out = libs::PadInputState{};
-        out.connected = slot == 0 && (port == 0 || port == 1); // port 2: connected, idle
-        if (port != 0 || slot != 0)
+        if (player < 0 || player >= input::kPlayers)
+        {
+            out = libs::PadInputState{};
             return;
-        const uint64_t s = state_.load(std::memory_order_relaxed);
-        out.buttons = static_cast<uint16_t>(s);
-        out.lx = static_cast<uint8_t>(s >> 16);
-        out.ly = static_cast<uint8_t>(s >> 24);
-        out.rx = static_cast<uint8_t>(s >> 32);
-        out.ry = static_cast<uint8_t>(s >> 40);
-        // Pressure in the pad data's order: right, left, up, down, triangle, circle, cross, square, L1, L2, R1, R2.
-        constexpr uint16_t kOrder[12] = {libs::kPadRight, libs::kPadLeft,  libs::kPadUp,    libs::kPadDown,
-                                         libs::kPadTriangle, libs::kPadCircle, libs::kPadCross, libs::kPadSquare,
-                                         libs::kPadL1,    libs::kPadL2,    libs::kPadR1,    libs::kPadR2};
-        for (int i = 0; i < 12; ++i)
-            out.pressure[i] = out.buttons & kOrder[i] ? 0xff : 0x00;
+        }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        out = impl_->states[static_cast<size_t>(player)];
+    }
+
+    void DevicePad::rumble(int player, bool small, uint8_t large)
+    {
+        if (player >= 0 && player < input::kPlayers)
+            impl_->wanted[static_cast<size_t>(player)].store((small ? 0x100u : 0u) | large, std::memory_order_relaxed);
     }
 }

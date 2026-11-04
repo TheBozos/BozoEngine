@@ -1,5 +1,6 @@
-// libpad (libraries.md section 6): two DualShock 2 controllers, answered as the reference does in its deterministic
-// runs, their buttons from a PadInput (a frame-keyed script in the checks).
+// libpad (libraries.md section 6): the DualShock 2 controllers in ports 1 and 2 and a multitap's slots, answered as the
+// reference does in its deterministic runs, their buttons from a PadInput (a frame-keyed script in the checks, the PC's
+// devices in a window).
 #include "bozo/libs/libraries.h"
 
 #include <algorithm>
@@ -25,9 +26,16 @@ namespace bozo::libs
         }
     }
 
-    bool ScriptInput::load(int port, const std::string &text, std::string &error)
+    int padPlayer(int port, int slot, bool multitap)
     {
-        std::vector<Press> &list = presses_[port];
+        if (port == 0)
+            return multitap ? (slot >= 0 && slot < 4 ? slot : -1) : (slot == 0 ? 0 : -1);
+        return port == 1 && slot == 0 && !multitap ? 1 : -1;
+    }
+
+    bool ScriptInput::load(int player, const std::string &text, std::string &error)
+    {
+        std::vector<Press> &list = presses_[player];
         size_t at = 0;
         while (at < text.size())
         {
@@ -59,13 +67,11 @@ namespace bozo::libs
         return true;
     }
 
-    void ScriptInput::read(uint32_t frame, int port, int slot, PadInputState &out)
+    void ScriptInput::read(uint32_t frame, int player, PadInputState &out)
     {
         out = PadInputState{};
-        out.connected = slot == 0 && (port == 0 || port == 1);
-        if (!out.connected)
-            return;
-        auto it = presses_.find(port);
+        auto it = presses_.find(player);
+        out.connected = player == 0 || it != presses_.end();
         if (it == presses_.end())
             return;
         for (const Press &p : it->second)
@@ -82,10 +88,8 @@ namespace bozo::libs
             out.ly = 0xFF;
         // The reference's order puts R1 after L2 (match1p: L1 at byte 16, R1 at byte 18); L2 and R2 are never pressed
         // in the reference runs, so their places (17, 19) are the remaining ones.
-        static const uint16_t order[12] = {kPadRight, kPadLeft,   kPadUp, kPadDown, kPadTriangle, kPadCircle,
-                                           kPadCross, kPadSquare, kPadL1, kPadL2,   kPadR1,       kPadR2};
         for (int i = 0; i < 12; ++i)
-            out.pressure[i] = (out.buttons & order[i]) ? 0xFF : 0x00;
+            out.pressure[static_cast<size_t>(i)] = (out.buttons & kPadPressureOrder[i]) ? 0xFF : 0x00;
     }
 
     // ---- libpad --------------------------------------------------------------------------------------------------
@@ -98,13 +102,15 @@ namespace bozo::libs
             return p < 2 && s < 4 ? &l.pad.ports[p][s] : nullptr;
         }
 
+        // A socket's controller: the pads in ports 1 and 2 are always there (idle when no player is on them: port 2's
+        // behind a multitap); a multitap slot has one when its player has an input.
         PadInputState current(Libraries &l, int p, int s)
         {
             PadInputState st;
-            if (l.pad.input)
-                l.pad.input->read(l.framesEnded, p, s, st);
-            else
-                st.connected = s == 0 && (p == 0 || p == 1);
+            const int player = padPlayer(p, s, l.pad.multitap);
+            if (player >= 0 && l.pad.input)
+                l.pad.input->read(l.framesEnded, player, st);
+            st.connected = (s == 0 && (p == 0 || p == 1)) || (player >= 0 && st.connected);
             return st;
         }
 
@@ -140,7 +146,8 @@ namespace bozo::libs
             g.ret(1);
         }
 
-        // scePadGetState(port, slot): 6 (stable), 5 (executing a command), 0 (nothing there: slots 1-3).
+        // scePadGetState(port, slot): 6 (stable), 5 (executing a command), 0 (nothing there: a slot without a multitap,
+        // or a multitap slot whose player has no controller).
         void getState(Libraries &l, Guest &g)
         {
             PadState::Port *pt = port(l, g);
@@ -206,8 +213,21 @@ namespace bozo::libs
             {
                 for (int i = 0; i < 6; ++i)
                     pt->direct[i] = g.read8(g.arg(2) + static_cast<uint32_t>(i));
-                if (l.pad.input)
-                    l.pad.input->rumble(static_cast<int>(g.arg(0)), static_cast<int>(g.arg(1)), pt->direct);
+                // The motors the alignment gives each byte: 0 the small one (on / off), 1 the large one (0-255).
+                const int player = padPlayer(static_cast<int>(g.arg(0)), static_cast<int>(g.arg(1)), l.pad.multitap);
+                if (l.pad.input && player >= 0)
+                {
+                    bool small = false;
+                    uint8_t large = 0;
+                    for (int i = 0; i < 6; ++i)
+                    {
+                        if (pt->align[i] == 0)
+                            small = small || pt->direct[i] != 0;
+                        else if (pt->align[i] == 1)
+                            large = std::max(large, pt->direct[i]);
+                    }
+                    l.pad.input->rumble(player, small, large);
+                }
             }
             g.ret(1);
         }
@@ -236,6 +256,7 @@ namespace bozo::libs
                 return;
             }
             ++l.pad.reads;
+            ++l.pad.socketReads[g.arg(0)][g.arg(1)];
             uint8_t d[20] = {};
             const uint16_t released = static_cast<uint16_t>(~st.buttons);
             d[0] = 0;
