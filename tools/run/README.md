@@ -32,7 +32,10 @@ frame end inside it, and whether it returned or left to the dispatcher ([`kernel
 section 3b). Its code is generated with the externals `bozo-externals` writes from the ELF and the port's override list
 (`tools/externals`); at startup every registered override must be one of them. `--overrides log` answers them from the
 log as before. The summary adds `port overrides:` (calls, the out-calls made inside them, divergences) and `draws`
-(the renderer's draw lists against the reference's, reported only).
+(the renderer's draw lists against the reference's: checked on every frame but the log's last, which the log ends
+before the port's frame end publishes; phase 4 M5). TMB's `tmb-check --window --capture-frames n,...` shows the same
+pinned run in BozoEngine's window and saves the picture of each chosen frame, the run held there until it is read back
+(`run::setFrameHook`, `WindowOptions::onCaptured`).
 
 ```sh
 build/bozo/tmb-check D:/BozoCaptures/tmb/calllog/boot.clg --ref <BozoEngine>/reference/tmb/records/boot.ref --pinned \

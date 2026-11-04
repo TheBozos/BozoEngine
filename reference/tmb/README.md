@@ -75,6 +75,25 @@ folder. They hold game memory, so they are kept outside the repository, in `D:\B
 |---|---|---|---|---|---|---|
 | `boot` | `ref_boot.env` | 3000 | 4,650,558 | 2,432,936 | 194 MB | `b7745379...b6ab1f3aea` |
 | `match1p` | `det1p.env` | 16000 | 74,615,923 | 63,675,806 | 3.46 GB | `3c0baeb8...73698f11` |
+| `story` | `ref_story.env` | 11000 | 40,608,019 | 33,414,935 | 1.84 GB | `e046822b...2853c5dd` |
+| `save` | `ref_save.env` | 20000 | 65,104,895 | 53,889,583 | 3.04 GB | `736ee269...d8904792` |
+| `match4p` | `det4p.env` | 17000 | 87,437,930 | 76,421,081 | 4.97 GB | `3f62e0d9...1381d1db` |
+| `stage-level0` | `ref_0.env` | 11000 | 54,205,000 | 46,438,334 | 2.57 GB | `bc781ed5...d7a8ab46` |
+| `stage-level2` | `ref_2.env` | 11000 | 49,742,332 | 42,279,624 | 2.41 GB | `eaaf8aef...0c553947` |
+| `stage-level5` | `ref_5.env` | 11000 | 50,850,869 | 42,995,577 | 2.27 GB | `be9abc0b...4268d1ea` |
+| `stage-level6` | `ref_6.env` | 11000 | 32,995,788 | 26,238,711 | 1.39 GB | `7f68b15a...ee1637aa` |
+| `stage-level14` | `ref_14.env` | 11000 | 34,064,002 | 27,019,295 | 1.47 GB | `93ec6ee9...1cbb80a0` |
+| `stage-level3` | `ref_3.env` | 11000 | 43,897,973 | 36,385,003 | 1.83 GB | `f5e6fed2...82dec463` |
+| `stage-level16` | `ref_16.env` | 11000 | 43,976,847 | 37,316,873 | 1.86 GB | `0942199e...3e12a3a6` |
+| `stage-level4` | `ref_4.env` | 11000 | 52,010,924 | 44,193,622 | 2.12 GB | `0eade185...c3c3a059` |
+| `stage-level13` | `ref_13.env` | 11000 | 45,523,473 | 38,773,954 | 1.98 GB | `369069ea...034c143b` |
+| `stage-level20` | `ref_20.env` | 11000 | 32,671,886 | 22,962,916 | 1.21 GB | `04f53b45...7179a008` |
+
+The thirteen rows after match1p were recorded 2026-11-04 (phase 4 M5) on the same build (fork `harness/calllog`
+4e5ef52, TMB_Recomp c83a924), deterministic mode, fresh user folder, four at a time (between 28 and 86 minutes each);
+each one's reference record is identical to the stored `.ref` on every field, and each recording also wrote the fork's
+sound (`PS2X_AUDIO_RECORD`). `boot` recorded again the same way gives the same file as `boot.clg` but for the run name.
+How BozoEngine fares on them: `docs/phase4-m5-report.md`.
 
 Checked on the reference build (`calllog.md` section 9): a second recording is the same file (but for the run name);
 the strict recording is the same; the substitution check matches all 4,650,558 records with every window's effects
