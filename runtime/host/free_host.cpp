@@ -96,6 +96,8 @@ namespace bozo::host
             if (const ee::KernelCall k = ee::kernelCallByName(name); k != ee::KernelCall::None)
             {
                 d.bindKernelCall(a, k);
+                if (name.find("FlushCache") != std::string::npos)
+                    flushCacheAt_.insert(a);
                 continue;
             }
             // A library BozoEngine implements; anything else (an override address the port registered nothing at, a
@@ -290,7 +292,7 @@ namespace bozo::host
     void FreeHost::kernelCallEnd(ee::Dispatcher &, R5900Context *, uint32_t target, bool)
     {
         ++stats_.kernelCalls;
-        if (auto n = names_.find(target); n != names_.end() && n->second.find("FlushCache") != std::string::npos)
+        if (flushCacheAt_.count(target))
             libs_.io.flushCache();
     }
 
