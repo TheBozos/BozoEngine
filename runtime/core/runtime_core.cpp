@@ -164,10 +164,6 @@ namespace bozo::port
 
 void bozo_io_write(R5900Context *ctx, Runtime *rt, uint32_t address, uint32_t size, uint64_t value)
 {
-    // A port's patch of the game's register stores: a store it keeps the game from making (bozo/port.h).
-    if (const bozo::port::StorePatch patch = bozo::port::storePatch();
-        patch && size <= 4 && patch(ctx->pc, address, static_cast<uint32_t>(value)))
-        return;
     const uint64_t v[2] = {value, 0};
     rt->services->ioWrite(ctx, rt, address, size, v);
 }

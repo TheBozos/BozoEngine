@@ -65,6 +65,7 @@ namespace bozo::libs
         bool store = false;
         uint64_t value = 0;        // a store's value; a load's result
         uint32_t timerPending = 0; // the timer-poll cycles pending (in: before the access; out: after it)
+        uint32_t pc = 0;           // the store's instruction, when the generated code set it (a port's store patch)
     };
 
     // Whether the model answers an access (a register it knows, of a size it answers).

@@ -29,9 +29,31 @@ namespace bozo::vu0
 
     // ---- Arithmetic of one field ----
     // VU0's adder rounds to nearest even (unlike the FPU's, ops_fpu.h); its multiplier is the FPU's.
-    inline uint32_t addf(uint32_t a, uint32_t b, uint32_t &fl) { return ps2f::addNearest(a, b, fl); }
-    inline uint32_t subf(uint32_t a, uint32_t b, uint32_t &fl) { return ps2f::subNearest(a, b, fl); }
-    inline uint32_t mulf(uint32_t a, uint32_t b, uint32_t &fl) { return ps2f::mul(a, b, fl); }
+    // A result below the smallest normal becomes zero without the U flag (a sum that cancels, a product of a tiny
+    // factor): the reference never sets U (nor its sticky bit) in TMB's runs (match1p #41542199: vu0MulMatrix3x3's
+    // first mul inside TMB's aiUpdateInputs override, its z product underflowing to 0, status 0x2c2 where U would make
+    // it 0x3c2).
+    inline uint32_t addf(uint32_t a, uint32_t b, uint32_t &fl)
+    {
+        uint32_t f = 0;
+        const uint32_t r = ps2f::addNearest(a, b, f);
+        fl |= f & ~(ps2f::kFlagU | ps2f::kFlagSU);
+        return r;
+    }
+    inline uint32_t subf(uint32_t a, uint32_t b, uint32_t &fl)
+    {
+        uint32_t f = 0;
+        const uint32_t r = ps2f::subNearest(a, b, f);
+        fl |= f & ~(ps2f::kFlagU | ps2f::kFlagSU);
+        return r;
+    }
+    inline uint32_t mulf(uint32_t a, uint32_t b, uint32_t &fl)
+    {
+        uint32_t f = 0;
+        const uint32_t r = ps2f::mul(a, b, f);
+        fl |= f & ~(ps2f::kFlagU | ps2f::kFlagSU);
+        return r;
+    }
 
     // ---- Flags (Q11) ----
     // The MAC flags of an FMAC instruction's result: for each field (x = bit 3 ... w = bit 0 of each nibble) Z (bits

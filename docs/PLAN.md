@@ -175,6 +175,10 @@ Each phase ends with its exit check. Estimates are for focused work, in weeks.
 - Both builds side by side for a release cycle; players get the new one when the comparison is clean on every
   stage and arena and a few people have played it.
 - Exit: a TMB release built on BozoEngine, the fork retired for TMB.
+- **Status (2026-11-04): milestone M0 done** ([`phase4-m0-notes.md`](phase4-m0-notes.md)): TMB's `runtime/` builds on
+  BozoEngine (TMB_Recomp `bozo/m0`); with its overrides running natively, boot and match1p `--pinned` match every
+  record and every frame (ram, scratchpad, calls, threads); with no log, the free headless run reaches the title, and
+  with the 1P pad script a match.
 
 **Phase 5: the other ports (each when ready).**
 - CoN, VP2S, SC3, JC2, DC and the rest move when their native path no longer needs the fork's emulation, each with its

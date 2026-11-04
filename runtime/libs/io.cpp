@@ -4,6 +4,7 @@
 
 #include "bozo/ee/dispatcher.h"
 #include "bozo/libs/libraries.h"
+#include "bozo/port.h"
 
 namespace bozo::libs
 {
@@ -231,8 +232,15 @@ namespace bozo::libs
         void access(Libraries &l, Guest &)
         {
             IoAccess &a = l.ioAccess;
+            // A port's patch of the game's register stores (bozo/port.h): the store is still the game's out-call, its
+            // effect is not made (match1p #62516600: TMB's dialog kick, logged, no completion after it).
             if (a.store)
+            {
+                if (const port::StorePatch patch = port::storePatch();
+                    patch && a.size <= 4 && patch(a.pc, a.address, static_cast<uint32_t>(a.value)))
+                    return;
                 ioStore(l, a.address, a.size, a.value);
+            }
             else
                 a.value = ioLoad(l, a.address, a.size, a.timerPending);
         }

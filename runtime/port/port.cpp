@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <format>
 #include <set>
 
 namespace bozo::port
@@ -128,6 +129,6 @@ namespace bozo::port
     {
         if (!rt->port->callLibrary(rt, ctx, address))
             static_cast<ee::Dispatcher *>(rt->services)->host().fault(dispatcher(rt), ctx,
-                "an override calls the library at 0x" + std::to_string(address) + ", which nothing native answers");
+                std::format("an override calls the library at 0x{:x}, which nothing native answers", address));
     }
 }

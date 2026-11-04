@@ -247,7 +247,7 @@ namespace bozo::host
             ++stats_.ioUnknown;
             return;
         }
-        libs_.ioAccess = libs::IoAccess{address, size, true, value[0], d_->timerPending()};
+        libs_.ioAccess = libs::IoAccess{address, size, true, value[0], d_->timerPending(), ctx->pc};
         libs::Guest g(d_->runtime(), ctx);
         libs::Libraries::ioFunction().handler(libs_, g);
         d_->setTimerPending(libs_.ioAccess.timerPending);

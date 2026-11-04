@@ -125,4 +125,7 @@ with `--trace-from <index - k> --trace-checkpoints` to see BozoEngine's checkpoi
 | boot, batch B3 (SIF and 989SND native too) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (1,537,679 calls native, 3,591 of 3,592 989SND replies native, 0 divergences) | 21 s |
 | match1p, batch B3 | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (53,026,840 calls native, 119,225 of 122,519 989SND replies native, 0 divergences) | 287 s |
 
+| boot, TMB's overrides native too (`tmb-check`, phase 4) | `--pinned` | 3000 of 3000 | 4,650,558 of 4,650,558 (743,917 override calls native, 0 divergences) | 32 s |
+| match1p, TMB's overrides native too (`tmb-check`) | `--pinned` | 16000 of 16000 | 74,615,923 of 74,615,923 (7,282,624 override calls native, 0 divergences) | 403 s |
+
 What stops match1p in free mode: `kernel.md` section 9 (K4), the reference's EE time.

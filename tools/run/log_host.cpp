@@ -571,7 +571,7 @@ namespace bozo::run
         log_.advance();
         if ((opt_.native & libs::kIo) && libs::ioKnown(address, size, true))
         {
-            libs_.ioAccess = libs::IoAccess{address, size, true, value[0], c.timerBefore};
+            libs_.ioAccess = libs::IoAccess{address, size, true, value[0], c.timerBefore, ctx->pc};
             answer(ctx, r, c, false, &libs::Libraries::ioFunction());
             return;
         }
@@ -994,7 +994,7 @@ namespace bozo::run
                     nullptr);
             return;
         }
-        libs_.ioAccess = libs::IoAccess{address, size, store, store ? value[0] : 0, d_->timerPending()};
+        libs_.ioAccess = libs::IoAccess{address, size, store, store ? value[0] : 0, d_->timerPending(), ctx->pc};
         libs::Guest g(d_->runtime(), ctx);
         libs::Libraries::ioFunction().handler(libs_, g);
         d_->setTimerPending(libs_.ioAccess.timerPending);
@@ -1003,6 +1003,10 @@ namespace bozo::run
             value[0] = libs_.ioAccess.value;
             value[1] = 0;
         }
+        if (log_.peek() && log_.peek()->index >= opt_.traceFrom)
+            std::printf("    (inner io: %llx, %u timer-poll cycles pending, at cycle %llu)\n",
+                        static_cast<unsigned long long>(value[0]), d_->timerPending(),
+                        static_cast<unsigned long long>(d_->now(ctx)));
     }
 
     void LogHost::runOverride(R5900Context *ctx, const Record &r, const Call &logged, port::Function fn)

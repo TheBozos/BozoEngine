@@ -161,13 +161,15 @@ calls of the SIF: native since batch B3 (section 14).
 
 Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
 `sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`,
-`sceGsExecLoadImage`. (`sceGsExecStoreImage` is not called in TMB's runs; the reference had `sceGsSyncV` and
-`sceGsSetDefLoadImage` as port overrides, kind 2 in the logs, the others as library stubs.)
+`sceGsExecLoadImage`, `sceGsExecStoreImage`. (The reference had `sceGsSyncV` and `sceGsSetDefLoadImage` as port
+overrides, kind 2 in the logs, the others as library stubs.)
 
 Phase 4 (TMB's overrides native, `kernel.md` section 3b) reached what only ran inside overrides before:
 `sceGsExecLoadImage(lp, src)` returns 0 and uploads nothing (boot: 86 calls, all inside `texmResInit` /
 `texmLoadResTexture`); `sceGsSetDefLoadImage`'s image tag counts T8H, T4HL and T4HH (0x1b, 0x24, 0x2c) as 32-bit
-texels (match1p #16897863).
+texels (match1p #16897863); `sceGsExecStoreImage(sp, dst)` reads GS memory there is none of: the image (its size from
+the packet's TRXREG and format) as zeros, 0 (TMB's lens flares outside a match, through its override: match1p frame
+13736).
 
 There is no GS. The SetDef functions build, in guest memory, the packets the game sends later (the sends themselves are
 DMA and GIF stores, answered from the log until the native renderer takes the draws); the native library writes them
@@ -497,6 +499,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 |---|---|---|
 | 0x10000000 | T0_COUNT | the count written last plus the periods since (T0_MODE 0x82: BUSCLK/256, a count every 512 EE cycles); a load that reads the same count as the previous one (a poll) leaves the period, 512 cycles, pending (charged at the next checkpoint: `calllog.md` section 2) |
 | 0x10000010 | T0_MODE | kept (0x82) |
+| (any store) | a port's store patch | a store the port's patch names (`bozo::port::setStorePatch`, by its instruction: the externals' `store` lines) is made as an out-call without its effect (match1p #62516600: TMB's dialog kick, logged, no completion after it) |
 | 0x12001000 | GS CSR (loads) | FIELD (bit 13) the vblank count's parity, nothing else (TMB's vblankHandler reads it inside its override: boot #729700 on). A port's own access (`bozo::port::ioRead32` / `ioWrite32`) is not the game's: a store of its does not complete channel 4's transfer (match1p #14450438); a T0 read of its is a poll as the game's, a T0 write of its keeps the last read (#34736003), and the EE time the port charges (`bozo::port::accountCycles`, TMB's frame end) takes the poll's pending cycles as a checkpoint would (#17538393, #17541951) |
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
 | 0x10009000-30 | VIF1 | as VIF0 (D_STAT bit 1): TMB's 3D packets, 2.5M kicks in match1p |

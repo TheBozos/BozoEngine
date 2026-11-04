@@ -114,8 +114,10 @@ namespace bozo::port
     bool realTime(Runtime *rt);
 
     // ---- Hooks a port sets ------------------------------------------------------------------------------------------
-    // The game's stores to hardware registers: true for a store the game is not to make (as if the instruction were
-    // patched out: a DMA kick of something the port draws itself). ctx->pc is the store's instruction.
+    // The game's stores to hardware registers: true for a store whose effect is not to be made (as if the instruction
+    // were patched out: a DMA kick of something the port draws itself). The store is still an out-call (the reference
+    // logged it); the I/O library leaves it without effect. `pc` is the store's instruction when the generated code set
+    // it (a "store 0xADDR" line of the externals).
     using StorePatch = bool (*)(uint32_t pc, uint32_t address, uint32_t value);
     void setStorePatch(StorePatch patch);
     StorePatch storePatch();

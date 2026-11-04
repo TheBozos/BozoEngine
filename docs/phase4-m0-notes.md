@@ -61,15 +61,20 @@ Generated code changed for this (BozoEngine's own ABI, `abi.md` section 3): `boz
 
 | Run | Frames | Records | ram, scratchpad, calls, threads | Overrides | Time |
 |---|---|---|---|---|---|
-| boot `--pinned`, TMB's overrides native | 3000 of 3000 | 4,650,558 of 4,650,558 | every frame | 743,917 calls (4,730 nested), 1,090,695 out-calls inside, 2,999 frame ends, 0 divergences | 32 s |
+| boot `--pinned`, TMB's overrides native | 3000 of 3000 | 4,650,558 of 4,650,558 | every frame | 743,917 calls (4,730 nested), 1,090,692 out-calls inside, 2,999 frame ends, 0 divergences | 32 s |
+| match1p `--pinned` (`ch1p_frames.txt`), TMB's overrides native | 16000 of 16000 | 74,615,923 of 74,615,923 | every frame | 7,282,624 calls (152,779 nested), 3,823,185 out-calls inside, 15,999 frame ends, 0 divergences | 403 s |
 
-The free run (`tmb-headless`, no log, every library native, BozoEngine's own clock): the movies play (1,607 vblank
-handler calls, 772 PCM callbacks, 3 videoDecFlush), the shell's loop `uiMain__Fv` ends every frame from frame 3, its
-screen (gp - 0x3d2c) is 8 from frame 3 and 0 (`uiTitle_Main__Fv`, the title) from frame 1116 to the end of an 8000-frame
-run; about 900 frames a second.
+`bozo-run` without a port still matches boot and match1p (pinned); the 9,232 capture samples still match.
 
-Draws (reported, not required yet): boot's first 1,615 frames' draw lists equal the reference's (logos, movie pictures);
-from frame 1615 they differ (the shell's 2D, whose font comes from the texture pack this build did not have).
+The free run (`tmb-headless`, no log, every library native, BozoEngine's own clock, no window): the movies play
+(1,607 vblank handler calls, 772 PCM callbacks, 3 videoDecFlush), the shell's loop `uiMain__Fv` ends every frame from
+frame 3, its screen (gp - 0x3d2c) is 8 from frame 3 and 0 (`uiTitle_Main__Fv`, the title) from frame 1116 to the end of
+an 8000-frame run (about 1,000 frames a second). With match1p's pad script it goes through the menus (screens 1, 3, 5,
+7) and from frame 5591 runs the match (`rtMain__Fi` ends every frame, the renderer gets 3D batches) to frame 16000.
+
+Draws (reported, not required yet): the first 1,615 frames' draw lists equal the reference's (logos, movie pictures),
+1,916 of match1p's 16,000; from frame 1615 they differ (the shell's 2D, whose font comes from the texture pack this
+build did not have: the packs live in TMB_Recomp's `generated_us/`, which this work did not use).
 
 ## What M1 needs
 
@@ -79,6 +84,4 @@ from frame 1615 they differ (the shell's 2D, whose font comes from the texture p
 - A real-time host: the free host with the window, `port::Host::realTime()` true (the FramePacer then holds frames to
   the field rate), the vblank on the EE clock as now. `ps2_app`, video settings, input bindings, the F2 panel.
 - The packs built by the toolchain (`native_pack/` moves with them) so the draws are textured; then the `draws` field.
-- `sceGsExecStoreImage`: TMB's override calls the library outside the lens flares' path (never in the logs);
-  BozoEngine has none (no GS memory): `bozo::port::callLibrary` stops the run there.
 - Multitap: `PadState::multitap` is the flag TMB's `mtap*` overrides set; the slots behind it come with the PC pads (M2).

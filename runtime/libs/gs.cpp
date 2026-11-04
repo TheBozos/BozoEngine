@@ -312,6 +312,30 @@ namespace bozo::libs
             g.ret(0);
         }
 
+        // sceGsExecStoreImage(sp, dst): a readback of GS memory as the store packet sp (sceGsSetDefStoreImage's)
+        // describes. There is no GS memory: the image reads as zeros (TMB's lens flares outside a match, the only
+        // caller, through its override: match1p frame 13736, inside the attract demo). Returns 0.
+        void execStoreImage(Libraries &, Guest &g)
+        {
+            const uint32_t sp = g.arg(0), dst = g.arg(1);
+            uint64_t bitbltbuf = 0, trxreg = 0;
+            for (uint32_t q = 0; q < 8u; ++q)
+            {
+                const uint32_t reg = g.read32(sp + q * 16u + 8u) & 0xFFu;
+                const uint64_t value = g.read32(sp + q * 16u) | (static_cast<uint64_t>(g.read32(sp + q * 16u + 4u)) << 32);
+                if (reg == 0x50u)
+                    bitbltbuf = value;
+                else if (reg == 0x52u)
+                    trxreg = value;
+            }
+            const uint32_t psm = (bitbltbuf >> 24) & 0x3Fu, w = trxreg & 0xFFFu, h = (trxreg >> 32) & 0xFFFu;
+            const uint32_t bytes = psm == 0x02u || psm == 0x0Au || psm == 0x32u || psm == 0x3Au ? 2u : psm == 0x01u ? 3u : 4u;
+            const uint32_t size = w * h * bytes;
+            if (size && size <= 0x100000u)
+                g.fill(dst, 0, size);
+            g.ret(0);
+        }
+
         // sceGsSyncV(mode): the game waits for the next vblank, and the game frame ends there. The reference returns
         // 1 when the frames ended by then (this one included) are odd, 0 when even: settled on all of boot's 8 and
         // match1p's 2,290 calls. The wait and the frame end are the runtime's frame boundary.
@@ -335,6 +359,7 @@ namespace bozo::libs
         out.push_back({"sceGsPutDrawEnv", kGs, putDrawEnv});
         out.push_back({"sceGsSyncPath", kGs, syncPath});
         out.push_back({"sceGsExecLoadImage", kGs, execLoadImage});
+        out.push_back({"sceGsExecStoreImage", kGs, execStoreImage});
         Function v{"sceGsSyncV", kGs, syncV};
         v.frameBoundary = true;
         out.push_back(v);
