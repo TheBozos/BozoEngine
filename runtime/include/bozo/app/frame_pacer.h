@@ -49,6 +49,7 @@ public:
         using Clock = std::chrono::steady_clock;
         const uint32_t cap = m_cap.load(std::memory_order_relaxed);
         Clock::time_point now = Clock::now();
+        Clock::time_point due{};
         if (statsWanted() && m_frames.load(std::memory_order_relaxed) != 0u)
             recordWork(std::chrono::duration<double>(now - m_lastReturn).count(), cap, now);
         if (m_frames.load(std::memory_order_relaxed) == 0u)
@@ -56,7 +57,7 @@ public:
         if (cap != 0u && m_paced.load(std::memory_order_relaxed))
         {
             const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / cap));
-            const Clock::time_point due = m_previous + period;
+            due = m_previous + period;
             // Sleep most of the wait, then spin the last stretch: Windows sleeps overshoot by up to a millisecond.
             if (due - now > std::chrono::milliseconds(2))
                 std::this_thread::sleep_until(due - std::chrono::milliseconds(1));
@@ -65,7 +66,10 @@ public:
         }
         const double step = bozo::det::enabled() ? 1.0 / static_cast<double>(cap != 0u ? cap : 60u)
                                                  : std::min(std::chrono::duration<double>(now - m_previous).count(), kMaxStepSeconds);
-        m_previous = now;
+        // The next frame is due a period after this one was: frames on time keep the cap's own schedule (taking the
+        // time the wait woke at instead loses the spin's overshoot every frame: 59.4 frames a second at a cap of 60);
+        // a late one starts it again from now.
+        m_previous = due != Clock::time_point{} && now - due < std::chrono::milliseconds(2) ? due : now;
         m_lastReturn = Clock::now();
         m_lastStep.store(step, std::memory_order_relaxed);
         m_frames.fetch_add(1u, std::memory_order_relaxed);

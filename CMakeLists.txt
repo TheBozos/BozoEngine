@@ -17,6 +17,12 @@ target_include_directories(bozo_runtime_headers INTERFACE ${CMAKE_CURRENT_SOURCE
 # without zlib (the build kit) turns them off. The recompiler and the runtime have no dependency.
 option(BOZO_BUILD_TOOLS "Build the call-log and capture tools (bozo-run, bozo-replay; need zlib)" ON)
 
+# The real-time platform layer (bozo_app: an SDL3 window with an OpenGL 3.3 context, the renderer presenting, the PC's
+# keyboard and gamepad). Off, nothing needs SDL3 (headless runs, the checkers). SDL3 is built static from a pinned
+# release (runtime/CMakeLists.txt); FETCHCONTENT_SOURCE_DIR_SDL3=<folder> builds it from a source tree already there
+# (the build kit's deps/, no network).
+option(BOZO_APP "Build the real-time platform layer (bozo_app: SDL3 window, OpenGL 3.3)" OFF)
+
 add_subdirectory(recompiler)
 add_subdirectory(runtime)
 if(BOZO_BUILD_TOOLS)

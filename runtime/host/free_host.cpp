@@ -261,6 +261,11 @@ namespace bozo::host
 
     void FreeHost::watchdog(R5900Context *ctx)
     {
+        if (stopRequested_.load(std::memory_order_relaxed))
+        {
+            endReason_ = "stopped";
+            throw ee::EndRun{};
+        }
         if (!opt_.stallFields)
             return;
         const uint64_t now = d_->now(ctx);
@@ -359,6 +364,7 @@ namespace bozo::host
         else
             render::Renderer::instance().takeFrameDraws();
         ++stats_.frames;
+        framesEnded_.store(stats_.frames, std::memory_order_relaxed);
         libs_.framesEnded = static_cast<uint32_t>(stats_.frames);
         det::frameCounter().store(stats_.frames, std::memory_order_relaxed);
         if (onFrame)
@@ -366,6 +372,11 @@ namespace bozo::host
         if (opt_.frames && stats_.frames >= opt_.frames)
         {
             endReason_ = std::format("frame limit {} reached", opt_.frames);
+            throw ee::EndRun{};
+        }
+        if (stopRequested_.load(std::memory_order_relaxed))
+        {
+            endReason_ = "stopped";
             throw ee::EndRun{};
         }
     }

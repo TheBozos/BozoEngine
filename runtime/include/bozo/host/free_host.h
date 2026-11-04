@@ -2,7 +2,8 @@
 // BozoEngine itself: the kernel calls by the dispatcher, the library calls by the native libraries (bound by the
 // ELF's symbol names), the port's overrides natively (bozo/port.h), the VU0 microprograms and the hardware registers by
 // their native models. Time is BozoEngine's own (free mode, kernel.md section 4): the vblank's events happen when the
-// EE clock reaches them. Headless: the renderer records what it is given (bozo/render/renderer.h).
+// EE clock reaches them. Headless, the renderer records what it is given (bozo/render/renderer.h); in real time (a
+// window: bozo/app/window.h), the port's frames are held to their rate on the host's clock and presented.
 #pragma once
 
 #include "bozo/ee/dispatcher.h"
@@ -10,6 +11,7 @@
 #include "bozo/port.h"
 #include "bozo/reference.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -29,6 +31,9 @@ namespace bozo::host
         bool quiet = false;
         bool printGameOutput = false; // the game's printf
         uint32_t stallFields = 600;   // end the run when no game frame ended for this many fields of EE time (0: never)
+        // The game on the host's clock (a window): port::Host::realTime() true, deterministic() false (the port holds
+        // its frames to their rate: FramePacer). Off: as fast as the host makes frames, nothing host-timed.
+        bool realTime = false;
     };
 
     struct FreeStats
@@ -61,6 +66,10 @@ namespace bozo::host
         // Out-calls per port override address.
         const std::map<uint32_t, uint64_t> &overrideCalls() const { return perOverride_; }
         std::string endReason() const { return endReason_; }
+        // Any thread: the run ends at the next game frame's end (or the watchdog's next look).
+        void requestStop() { stopRequested_.store(true, std::memory_order_relaxed); }
+        // Any thread: the game frames ended so far.
+        uint64_t framesEnded() const { return framesEnded_.load(std::memory_order_relaxed); }
         libs::Libraries &libraries() override { return libs_; }
 
         // ee::Host
@@ -82,6 +91,8 @@ namespace bozo::host
         // port::Host
         void frameEnd(Runtime *rt, R5900Context *ctx) override;
         bool callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address) override;
+        bool deterministic() const override { return !opt_.realTime; }
+        bool realTime() const override { return opt_.realTime; }
 
     private:
         void runOverride(R5900Context *ctx, uint32_t target, port::Function fn);
@@ -103,5 +114,7 @@ namespace bozo::host
         bool writing_ = false;
         std::string endReason_;
         libs::ScriptInput padScript_;
+        std::atomic<bool> stopRequested_{false};
+        std::atomic<uint64_t> framesEnded_{0};
     };
 }

@@ -8,15 +8,17 @@
 // emulation.
 //
 // Game thread: beginFrame(), draw(...) per mesh, endFrame() publishes the frame; drawOverlay(...) and publishOverlay()
-// the 2D; setBackdrop() a movie's picture. Milestone M0 (phase4-inventory.md section 5) has no GPU: the published lists
-// are recorded and folded into the per-frame draw-list hash of the reference record (drawsOfFrame); M1 brings the
-// present thread on SDL3 and OpenGL 3.3.
+// the 2D; setBackdrop() a movie's picture. The published lists are folded into the per-frame draw-list hash of the
+// reference record (takeFrameDraws). Present thread (the platform layer's, with an OpenGL 3.3 context current and
+// bozo/render/gl.h loaded): present() draws the latest published frame into the window (render/present_gl.cpp, the
+// fork's GPU side moved from raylib's rlgl to plain OpenGL). Headless, nothing presents.
 #pragma once
 
 #include "bozo/render/texture.h"
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -112,7 +114,8 @@ namespace bozo::render
         void clearBackdrop();
         void endFrame();
         // Depth a game reads back (TMB's lens flares): asked for with wantDepth, given at a GS screen point as GS Z from
-        // the frame presented last. False while no GPU presents (M0).
+        // the frame presented last (read back one present late, by tiles around the points asked for). False while
+        // nothing presents (headless) and for a point not read yet.
         void wantDepth();
         bool depthAt(float gsX, float gsY, uint32_t &gsZ);
         // The frame being built's GS Z per unit of z / w.
@@ -184,9 +187,24 @@ namespace bozo::render
             std::vector<Batch> batches;
             std::vector<uint64_t> triangleIds;
             uint64_t serial = 0;
+            double time = 0.0; // when it was published (seconds, the host's steady clock); a held backdrop: 1e300
         };
 
-        // ---- The published frames (the platform layer's side; M0: recorded) ----
+        // ---- Present thread ----
+        // Draws the latest frame (with the movie picture, the display picture and the 2D) into the given rectangle of
+        // the window (pixels from its top left; the current framebuffer, its viewport the window); false when there is
+        // nothing to draw yet.
+        bool present(float x, float y, float width, float height);
+        // Waits up to timeout seconds for a frame (or a movie picture) published after the one counted in seen, and
+        // counts it there: the window shows each game frame once, on the game's clock.
+        bool waitForFrame(uint64_t &seen, double timeout);
+        // The 3D's own resolution against the window rectangle's (0.25 to 4), drawn at that size then filtered to it.
+        void setRenderScale(float scale) { m_renderScale.store(std::clamp(scale, 0.25f, 4.0f), std::memory_order_relaxed); }
+        float renderScale() const { return m_renderScale.load(std::memory_order_relaxed); }
+        // Present thread: frees the GPU objects (before the context goes).
+        void releaseGpu();
+
+        // ---- The published frames ----
         // The latest published 3D frame, overlay and backdrop (null: none yet).
         std::shared_ptr<const Frame> published() const;
         std::shared_ptr<const Frame> publishedOverlay() const;
@@ -201,6 +219,9 @@ namespace bozo::render
         ~Renderer();
         void startBuilding(const Screen &screen);
         void noteDrawList(const Frame &frame, uint64_t kind);
+        struct Gpu;
+        void drawOverlay(const Frame &overlay, float x, float y, float width, float height); // present thread
+        void readDepthTiles(int width, int height, const Screen &screen);                    // present thread
 
         Frame m_building;
         Frame m_overlayBuilding;
@@ -217,6 +238,22 @@ namespace bozo::render
         mutable std::mutex m_mutex;
         std::shared_ptr<const Frame> m_published, m_overlayPublished, m_backdrop;
         uint64_t m_publishes = 0, m_serial = 0;
+        std::condition_variable m_publishedChanged;
         FrameDraws m_draws;
+        std::atomic<float> m_renderScale{1.0f};
+
+        // Present thread.
+        std::shared_ptr<Gpu> m_gpu;
+        std::shared_ptr<const Frame> m_shown;
+        // The window depth read back, by tiles of kDepthTile x kDepthTile pixels (top-down, key ty << 32 | tx; rows
+        // top-down in the tile, 1 past the target's edge): only around the pixels depthAt was asked for lately (the lens
+        // flares' few samples), not the whole frame each present.
+        static constexpr int kDepthTile = 32;
+        std::atomic<double> m_depthWantedAt{-10.0}; // wantDepth()'s time (seconds)
+        std::mutex m_depthMutex;
+        std::unordered_map<uint64_t, std::vector<float>> m_depthTiles; // of the frame presented last (or the one before)
+        std::unordered_map<uint64_t, double> m_depthTilesWanted;       // tile -> when depthAt last asked for it (seconds)
+        int m_depthWidth = 0, m_depthHeight = 0;
+        Screen m_depthScreen;
     };
 }

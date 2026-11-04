@@ -2,12 +2,13 @@
 // Copyright (c) 2026 The Bozos (boubou666 and Arzaroth). MIT licence (see LICENSE at the repository root).
 //
 // The native renderer's game-thread side (bozo/render/renderer.h), moved from the fork's native_renderer.cpp: frames,
-// batches, the overlay and the backdrop, published for the platform layer. Milestone M0 has no GPU: published lists are
-// recorded and hashed as the reference harness does (the `draws` field: TMB_Recomp docs/REFERENCE_HARNESS.md).
+// batches, the overlay and the backdrop, published for the platform layer (render/present_gl.cpp draws them); published
+// lists are hashed as the reference harness does (the `draws` field: TMB_Recomp docs/REFERENCE_HARNESS.md).
 #include "bozo/render/renderer.h"
 
 #include "bozo/hash.h"
 
+#include <chrono>
 #include <cstring>
 
 namespace bozo::render
@@ -47,6 +48,8 @@ namespace bozo::render
         }
 
         constexpr float kScreenSpace[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+        double secondsNow() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
     }
 
     Material::Blend blendOf(uint64_t alpha)
@@ -191,15 +194,17 @@ namespace bozo::render
         auto overlay = std::make_shared<Frame>(std::move(m_overlayBuilding));
         m_overlayBuilding = Frame{};
         overlay->screen = screen;
+        overlay->time = secondsNow();
         std::lock_guard<std::mutex> lock(m_mutex);
         m_overlayPublished = std::move(overlay);
     }
 
     void Renderer::setBackdrop(std::shared_ptr<const Texture> picture, const Screen &screen, float x, float y, float width,
-                               float height, bool)
+                               float height, bool held)
     {
         auto frame = std::make_shared<Frame>();
         frame->screen = screen;
+        frame->time = held ? 1e300 : secondsNow(); // a picture not renewed for 0.2 s is no longer shown, unless held
         Batch batch;
         batch.material.textured = true;
         batch.material.blend = Material::Blend::Opaque;
@@ -223,9 +228,12 @@ namespace bozo::render
         frame->vertices = {corners[0], corners[1], corners[2], corners[1], corners[3], corners[2]};
         frame->batches.push_back(batch);
         noteDrawList(*frame, 3u); // a movie's picture, by its content
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_backdrop = std::move(frame);
-        ++m_publishes;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_backdrop = std::move(frame);
+            ++m_publishes; // a movie's picture: shown when it comes (waitForFrame), as a game frame is
+        }
+        m_publishedChanged.notify_all();
     }
 
     void Renderer::clearBackdrop()
@@ -240,15 +248,23 @@ namespace bozo::render
         auto frame = std::make_shared<Frame>(std::move(m_building));
         startBuilding(Screen{});
         m_key = 0;
-        std::lock_guard<std::mutex> lock(m_mutex);
-        frame->serial = ++m_serial;
-        m_published = std::move(frame);
-        ++m_publishes;
+        frame->time = secondsNow();
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            frame->serial = ++m_serial;
+            m_published = std::move(frame);
+            ++m_publishes;
+        }
+        m_publishedChanged.notify_all();
     }
 
-    void Renderer::wantDepth() {}
-
-    bool Renderer::depthAt(float, float, uint32_t &) { return false; }
+    bool Renderer::waitForFrame(uint64_t &seen, double timeout)
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        const bool fresh = m_publishedChanged.wait_for(lock, std::chrono::duration<double>(timeout), [&] { return m_publishes != seen; });
+        seen = m_publishes;
+        return fresh;
+    }
 
     std::shared_ptr<const Renderer::Frame> Renderer::published() const
     {
