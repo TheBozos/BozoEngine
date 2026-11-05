@@ -389,6 +389,9 @@ int bozo::run::main(int argc, char **argv)
     {
         const run::PinnedStats &p = host.pinnedStats();
         std::printf("pinned: %llu events at the log's points", static_cast<unsigned long long>(p.events));
+        if (p.staleInnerPc)
+            std::printf(" (%llu with a stale inner pc, exact cycle and checkpoint)",
+                        static_cast<unsigned long long>(p.staleInnerPc));
         if (p.shifted)
         {
             std::printf(" (%llu one checkpoint later:", static_cast<unsigned long long>(p.shifted));

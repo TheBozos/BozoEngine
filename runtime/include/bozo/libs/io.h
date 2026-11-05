@@ -71,7 +71,7 @@ namespace bozo::libs
     // Whether the model answers an access (a register it knows, of a size it answers).
     bool ioKnown(uint32_t address, uint32_t size, bool store);
     // A load: its value (the low 64 bits; the upper ones 0) and the timer-poll cycles pending after it.
-    uint64_t ioLoad(Libraries &l, uint32_t address, uint32_t size, uint32_t &timerPending);
+    uint64_t ioLoad(Libraries &l, uint32_t address, uint32_t size, uint32_t &timerPending, uint64_t cycle);
     // A store: the register's new state and what it starts (a transfer's completion: D_STAT, the DMAC interrupt).
-    void ioStore(Libraries &l, uint32_t address, uint32_t size, uint64_t value);
+    void ioStore(Libraries &l, uint32_t address, uint32_t size, uint64_t value, uint64_t cycle);
 }

@@ -195,6 +195,19 @@ static void sifAndSnd()
 
 int main()
 {
+    {
+        // T0 on a temporary guest context must use that call's clock, including its reset epoch.
+        // The thread's own context can still be at an earlier cycle while an override runs the temporary one.
+        bozo::libs::Libraries libs;
+        libs.io.t0Mode = 2; // 576 kHz: 512 EE cycles per tick
+        bozo::libs::ioStore(libs, 0x10000000, 4, 7, 10000);
+        uint32_t pending = 0;
+        eq("T0 advances from the calling context's reset epoch",
+           bozo::libs::ioLoad(libs, 0x10000000, 4, pending, 10000 + 10 * 512), 17);
+        eq("T0 first read is not a poll", pending, 0);
+        bozo::libs::ioLoad(libs, 0x10000000, 4, pending, 10000 + 10 * 512);
+        eq("T0 repeated read charges one tick", pending, 512);
+    }
     sifAndSnd();
     memoryCard();
     heapAndRand();

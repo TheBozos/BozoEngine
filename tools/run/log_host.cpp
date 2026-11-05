@@ -900,6 +900,7 @@ namespace bozo::run
         t.v0 = blocked ? 0 : v0;
         t.flags = blocked ? 1u : 0u;
         innerTraces_.push_back(t);
+
     }
 
     void LogHost::innerLibraryCall(R5900Context *ctx, uint32_t target)
@@ -1689,6 +1690,24 @@ namespace bozo::run
         // call records 0x201418; #18359662 at the inner call records 0x201660; #31601175 at bspPlaneTest2Vec's call,
         // after an inner call returning to 0x201490, records 0x201418).
         const bool pcOk = !ctx || ctx->pc == p->pc || (d.insideInnerCall(ctx) && d.passedLately(p->pc));
+        // An inner recursion's recorded context pc can predate every checkpoint in the ring (stage-level6,
+        // frame 7105). It is metadata, not the instruction executing. Accept that only when both independent
+        // timing coordinates agree exactly and the recorded pc belongs to the current function or its immediate
+        // inner caller (ctx->pc can be the leaf callee's entry). This never moves
+        // an event to another cycle/checkpoint, and a stale pc cannot justify the one-checkpoint adjustment below.
+        const BozoResumeEntry *here = ctx ? d.runtime().functions.resumeEntry(ctx->pc) : nullptr;
+        const BozoResumeEntry *there = ctx ? d.runtime().functions.resumeEntry(p->pc) : nullptr;
+        const BozoResumeEntry *caller = ctx ? d.runtime().functions.resumeEntry(ctx->r[31].uw[0]) : nullptr;
+        const bool staleInnerPc = !pcOk && ctx && d.insideInnerCall(ctx) &&
+                                  n == p->checkpoints && d.now(ctx) == p->cycle && there &&
+                                  (here == there || caller == there);
+        if (staleInnerPc)
+        {
+            ++pinned_.events;
+            ++pinned_.staleInnerPc;
+            armed_ = p->index;
+            return true;
+        }
         if (n == p->checkpoints && pcOk)
         {
             ++pinned_.events;

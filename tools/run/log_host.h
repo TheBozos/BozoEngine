@@ -68,6 +68,7 @@ namespace bozo::run
         uint64_t cycleDiffers = 0;      // records whose cycle differs from BozoEngine's clock
         uint64_t checkpointsDiffer = 0; // records whose checkpoint count differs
         uint64_t shifted = 0;           // taken one checkpoint later than the log's count, at its pc
+        uint64_t staleInnerPc = 0;      // exact cycle/count, but the reference retains another pc in the same inner function
         uint64_t firstCycleRecord = ~0ull, firstCheckpointRecord = ~0ull;
         std::vector<uint64_t> shiftedRecords; // the first 16 of them
     };

@@ -1033,7 +1033,7 @@ namespace itest
                     k.eq("MAC after vadd.x (fields outside dest are 0)", get(c, t0), 0);
                     k.eq("status: sticky bits kept", get(c, t1), 0xC0);
                 });
-            add("FMAC flags: O for a result of exponent 255, and for a saturated one; max/mini leave the flags",
+            add("FMAC flags: exponent 255 is finite; saturation sets O; max/mini leave the flags",
                 {vmul(X, 3, 1, 2), cfc2(v0, 17), cfc2(v1, 16), vmul(Y, 3, 1, 1), cfc2(t0, 17), vmax(XYZW, 4, 2, 2), cfc2(t1, 17)},
                 [](Ctx &c, uint8_t *, Runtime &) {
                     c.vu0_vf[1].u[0] = c.vu0_vf[1].u[1] = 0x7F000000u; // 2^127
@@ -1041,11 +1041,23 @@ namespace itest
                 },
                 [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
                     k.eq("2^128 = 0x7F800000", c.vu0_vf[3].u[0], 0x7F800000u);
-                    k.eq("MAC O.x", get(c, v0), 0x8000);
-                    k.eq("status O and OS", get(c, v1), 0x208);
+                    k.eq("MAC: no overflow at 2^128", get(c, v0), 0);
+                    k.eq("status: no overflow at 2^128", get(c, v1), 0);
                     k.eq("2^254 saturates", c.vu0_vf[3].u[1], 0x7FFFFFFFu);
                     k.eq("MAC O.y", get(c, t0), 0x4000);
                     k.eq("MAC after vmax", get(c, t1), 0x4000);
+                });
+            add("FMAC flags: largest finite magnitude sets O, its predecessor does not",
+                {vadd(XYZW, 3, 1, 2), cfc2(v0, 17), cfc2(v1, 16)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    c.vu0_vf[1].u[0] = 0x7FFFFFFFu;
+                    c.vu0_vf[1].u[1] = 0xFFFFFFFFu;
+                    c.vu0_vf[1].u[2] = 0x7FFFFFFEu;
+                    c.vu0_vf[1].u[3] = 0xFFFFFFFEu;
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    k.eq("MAC O.xy and S.yw", get(c, v0), 0xC050);
+                    k.eq("status S/O and sticky", get(c, v1), 0x28A);
                 });
             add("vdiv by zero: Q = max, status D and DS", {vdiv(1, 0, 2, 0), cfc2(v0, 16)},
                 [](Ctx &c, uint8_t *, Runtime &) { setV(c, 1, 3, 0, 0, 0); setV(c, 2, 0, 0, 0, 0); },

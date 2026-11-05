@@ -7,6 +7,9 @@
 #include "bozo/ee/dispatcher.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace bozo::libs
@@ -435,6 +438,18 @@ namespace bozo::libs
             if (!s.decoded.empty()) // none past the last picture: an empty delivery
             {
                 const YuvPicture &p = s.decoded.front();
+                if (std::getenv("BOZO_TIMING_LOG"))
+                {
+                    const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if (!s.firstPictureNs)
+                        s.firstPictureNs = ns;
+                    if (s.delivered % 30u == 0u)
+                        std::fprintf(stderr, "[mpeg:clock] picture %u at %.6f s, vblank %llu, EE %.6f s\n",
+                                     s.delivered, (ns - s.firstPictureNs) / 1e9,
+                                     static_cast<unsigned long long>(l.dispatcher()->kernel().vblankCount()),
+                                     l.dispatcher()->now() / 294912000.0);
+                }
                 const std::vector<uint8_t> pixels = toGame(p);
                 g.write(rgb, pixels.data(), static_cast<uint32_t>(pixels.size()));
                 // A port that shows the movie itself (bozo/render/movie.h) gets the picture in rows.

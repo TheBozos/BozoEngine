@@ -275,7 +275,14 @@ When an event is near (the next record is one, before the next out-call), every 
   - So BozoEngine counts one 8-cycle checkpoint before the loop that the reference does not. Which one is open
     (section 9, K5).
 
-A count that passes the logged one by more, or a pc that matches neither way, is a divergence. EE time is reported,
+  **Stale inner pc at an exact event point.** The reference's context pc is metadata, and can retain an ancestor's
+  inner return while executing its leaf callee. When the checkpoint count and EE cycle both equal the event's
+  recorded values exactly, pinned mode also accepts a recorded pc in the current function or its immediate caller
+  (`ra`), provided an inner call is active. This is counted separately as `staleInnerPc`; it never authorizes the
+  one-checkpoint adjustment. Stage-level6 frame 7105 is the regression: both clocks and the count agree at
+  bspPlaneTest2Vec's call, while the recorded context retains bspVecTestIn's return at 0x2014f0.
+
+  A count that passes the logged one by more, or a pc that matches neither way, is a divergence. EE time is reported,
 not checked:
 - the records at another cycle, and those at another checkpoint count (the K4 kind: for a CALL, a difference ends
   at the next out-call);
