@@ -99,7 +99,7 @@ namespace bozo::libs
         return false;
     }
 
-    uint64_t ioLoad(Libraries &l, uint32_t address, uint32_t, uint32_t &timerPending)
+    uint64_t ioLoad(Libraries &l, uint32_t address, uint32_t, uint32_t &timerPending, uint64_t cycle)
     {
         IoState &io = l.io;
         const uint32_t a = address & 0x1FFFFFFFu;
@@ -110,7 +110,7 @@ namespace bozo::libs
             // T0_COUNT: the count written last plus the periods since; reading the same count again (a poll loop)
             // charges a period at the next checkpoint (calllog.md section 2).
             const uint64_t period = t0Period(io.t0Mode);
-            const uint64_t now = l.dispatcher()->now();
+            const uint64_t now = cycle;
             const uint32_t count = period ? static_cast<uint32_t>((io.t0Start + (now - io.t0Base) / period) & 0xFFFFu) : io.t0Start;
             if (count == io.t0LastRead)
                 timerPending = static_cast<uint32_t>(period);
@@ -142,7 +142,7 @@ namespace bozo::libs
         return v;
     }
 
-    void ioStore(Libraries &l, uint32_t address, uint32_t, uint64_t value)
+    void ioStore(Libraries &l, uint32_t address, uint32_t, uint64_t value, uint64_t cycle)
     {
         IoState &io = l.io;
         const uint32_t a = address & 0x1FFFFFFFu;
@@ -155,7 +155,7 @@ namespace bozo::libs
         if (a == 0x10000000u)
         {
             io.t0Start = v & 0xFFFFu;
-            io.t0Base = l.dispatcher()->now();
+            io.t0Base = cycle;
             // A restart keeps the last read, the port's (TMB's frame end: match1p #34736003) and the game's alike: the
             // next read of the same count is a poll (stage-level0 #13062314: the game read 0, wrote 0, read 0 again).
         }
@@ -227,7 +227,7 @@ namespace bozo::libs
 
     namespace
     {
-        void access(Libraries &l, Guest &)
+        void access(Libraries &l, Guest &g)
         {
             IoAccess &a = l.ioAccess;
             // A port's patch of the game's register stores (bozo/port.h): the store is still the game's out-call, its
@@ -237,10 +237,10 @@ namespace bozo::libs
                 if (const port::StorePatch patch = port::storePatch();
                     patch && a.size <= 4 && patch(a.pc, a.address, static_cast<uint32_t>(a.value)))
                     return;
-                ioStore(l, a.address, a.size, a.value);
+                ioStore(l, a.address, a.size, a.value, l.now(g));
             }
             else
-                a.value = ioLoad(l, a.address, a.size, a.timerPending);
+                a.value = ioLoad(l, a.address, a.size, a.timerPending, l.now(g));
         }
     }
 

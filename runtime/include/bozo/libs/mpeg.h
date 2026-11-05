@@ -111,6 +111,8 @@ namespace bozo::libs
         uint64_t base = 0;
         // The vblank count the last picture (not an empty delivery) reached the game at.
         uint64_t lastShown = 0;
+        // Diagnostic only (BOZO_TIMING_LOG): host time of the first decoded picture.
+        int64_t firstPictureNs = 0;
         std::unique_ptr<VideoDecoder> decoder;
         std::deque<YuvPicture> decoded;
 

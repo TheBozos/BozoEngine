@@ -29,14 +29,13 @@
 
 namespace
 {
-    // Material::sampleTarget (TMB's heat haze: the frame drawn so far, sampled): off by default, as the fork's native
-    // renderer drew those batches (untextured, their vertex colours and blend: it never sampled the target), so the
-    // picture is the fork's (milestone M5: every match explosion differed). BOZO_HEAT_HAZE=1 samples the target.
+    // Material::sampleTarget (TMB's heat haze: the frame drawn so far, sampled).
+    // Enabled for the original game's distortion; BOZO_HEAT_HAZE=0 restores the older port's picture.
     bool sampleTargetEnabled()
     {
         static const bool on = [] {
             const char *v = std::getenv("BOZO_HEAT_HAZE");
-            return v && *v == '1';
+            return !v || *v != '0';
         }();
         return on;
     }

@@ -142,6 +142,8 @@ namespace bozo::ee
 
     void Dispatcher::markOutcallEnd(const R5900Context *ctx)
     {
+        if (ownContext(ctx))
+            return; // a copied context's checkpoints do not belong to the running thread
         outcallCheckpoints_ = inGuest_ ? ctx->checkpoints : checkpoints_;
     }
 
