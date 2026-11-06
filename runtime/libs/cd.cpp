@@ -78,7 +78,20 @@ namespace bozo::libs
         return std::fread(out, kSectorBytes, n, f_) == n;
     }
 
-    bool DiscImage::findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes)
+    bool DiscImage::layer1Start(uint32_t &start)
+    {
+        uint8_t pvd[kSectorBytes];
+        if (!read(16, 1, pvd))
+            return false;
+        const uint32_t layer0 = uint32_t(pvd[80]) | uint32_t(pvd[81]) << 8 | uint32_t(pvd[82]) << 16 | uint32_t(pvd[83]) << 24;
+        if (layer0 <= 16 || layer0 >= sectors_ || !read(layer0, 1, pvd) || pvd[0] != 1 ||
+            std::string(reinterpret_cast<char *>(pvd + 1), 5) != "CD001")
+            return false;
+        start = layer0 - 16;
+        return true;
+    }
+
+    bool DiscImage::findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes, uint32_t layer)
     {
         const auto word = [](const uint8_t *p) {
             return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -101,9 +114,11 @@ namespace bozo::libs
             at = end + 1;
         }
         if (parts.empty()) return false;
+        uint32_t base = 0;
+        if (layer > 1 || (layer == 1 && !layer1Start(base))) return false;
         uint8_t pvd[kSectorBytes];
-        if (!read(16, 1, pvd) || pvd[156] < 34) return false;
-        uint32_t sector = word(pvd + 158), size = word(pvd + 166);
+        if (!read(base + 16, 1, pvd) || pvd[156] < 34) return false;
+        uint32_t sector = base + word(pvd + 158), size = word(pvd + 166);
         for (size_t part = 0; part < parts.size(); ++part) {
             if (!size || size > 8u * 1024 * 1024) return false;
             const uint32_t count = (size + kSectorBytes - 1) / kSectorBytes;
@@ -120,7 +135,7 @@ namespace bozo::libs
                 const std::string name(reinterpret_cast<const char *>(record + 33), record[32]);
                 if (normal(name) == parts[part]) {
                     if (part + 1 < parts.size() && !(record[25] & 2)) return false;
-                    sector = word(record + 2); size = word(record + 10); found = true; break;
+                    sector = base + word(record + 2); size = word(record + 10); found = true; break;
                 }
                 at += length;
             }
@@ -380,20 +395,35 @@ namespace bozo::libs
     }
 
     namespace {
-        void searchFile(Libraries &l, Guest &g)
+        void searchLayer(Libraries &l, Guest &g, uint32_t layer)
         {
             // sceCdlFILE: sector, byte length, name[16], date[8].
             uint8_t sector[kSectorBytes];
             if (!discRead(l, 16, 1, sector)) { g.ret(0); return; }
             const std::string name = g.string(g.arg(1));
             uint32_t lbn = 0, bytes = 0;
-            if (!l.cd.disc.findFile(name, lbn, bytes)) { g.ret(0); return; }
+            if (!l.cd.disc.findFile(name, lbn, bytes, layer)) { g.ret(0); return; }
             uint8_t result[32] = {};
             std::memcpy(result, &lbn, 4); std::memcpy(result + 4, &bytes, 4);
             const auto slash = name.find_last_of("/\\");
             const auto leaf = name.substr(slash == std::string::npos ? 0 : slash + 1);
             std::memcpy(result + 8, leaf.data(), std::min<size_t>(16, leaf.size()));
             g.write(g.arg(0), result, sizeof(result)); g.ret(1);
+        }
+        void searchFile(Libraries &l, Guest &g) { searchLayer(l, g, 0); }
+        // sceCdLayerSearchFile(file, name, layer).
+        void layerSearchFile(Libraries &l, Guest &g) { searchLayer(l, g, g.arg(2)); }
+        // sceCdReadDvdDualInfo(int *onDual, u_int *layer1Start).
+        void readDvdDualInfo(Libraries &l, Guest &g)
+        {
+            uint8_t sector[kSectorBytes];
+            uint32_t start = 0;
+            const int32_t dual = discRead(l, 16, 1, sector) && l.cd.disc.layer1Start(start) ? 1 : 0;
+            if (!dual)
+                start = 0;
+            g.write(g.arg(0), &dual, sizeof(dual));
+            g.write(g.arg(1), &start, sizeof(start));
+            g.ret(1);
         }
     }
 
@@ -444,6 +474,8 @@ namespace bozo::libs
         out.push_back({"sceWrite", kCd, fsWrite});
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
+        out.push_back({"sceCdLayerSearchFile", kCd, layerSearchFile});
+        out.push_back({"sceCdReadDvdDualInfo", kCd, readDvdDualInfo});
         out.push_back({"sceCdInit", kCd, init});
         out.push_back({"sceCdStatus", kCd, status});
         out.push_back({"sceCdGetReadPos", kCd, readPosition});

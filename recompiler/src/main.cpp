@@ -6,7 +6,8 @@
 // Options: --prefix <name> (file and table names, default "bozo"), --max-file-bytes <n> (split size of the generated
 // .cpp files, default 1 MiB), --files <n> (exactly n .cpp files instead), --externals <file> (addresses the runtime
 // answers: "stub 0xADDR" / "override 0xADDR" lines), --no-comments (no disassembly comment per instruction),
-// --patches <file> (guarded instruction adaptations, analysis image only),
+// --patches <file> (guarded instruction adaptations, analysis image only), --symbols <file> (a symbol map for an ELF
+// without symbols, docs/specs/symbol-map.md),
 // --verbose (list the unresolved jr instructions and the extra entry points).
 #include "analysis.h"
 #include "decoder.h"
@@ -33,7 +34,8 @@ namespace
     int usage()
     {
         std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
-                             "                   [--externals file] [--patches file] [--entries file] [--no-comments] [--verbose]\n"
+                             "                   [--externals file] [--patches file] [--entries file] [--symbols file]\n"
+                             "                   [--no-comments] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -89,6 +91,7 @@ int main(int argc, char **argv)
     std::vector<InstructionPatch> patches;
     bool verbose = false;
     std::string entriesPath;
+    std::vector<std::string> symbolMaps;
     for (int k = 3; k < argc; ++k)
     {
         const std::string a = argv[k];
@@ -96,6 +99,8 @@ int main(int argc, char **argv)
             options.prefix = argv[++k];
         else if (a == "--entries" && k + 1 < argc)
             entriesPath = argv[++k];
+        else if (a == "--symbols" && k + 1 < argc)
+            symbolMaps.push_back(argv[++k]);
         else if (a == "--symbol-prefix" && k + 1 < argc)
             options.symbolPrefix = argv[++k];
         else if (a == "--max-file-bytes" && k + 1 < argc)
@@ -137,6 +142,12 @@ int main(int argc, char **argv)
     }
     if (elf.machine() != 8)
         std::fprintf(stderr, "bozo-recomp: warning: ELF machine %u is not MIPS (8)\n", elf.machine());
+    for (const std::string &path : symbolMaps)
+        if (!elf.loadSymbolMap(path))
+        {
+            std::fprintf(stderr, "bozo-recomp: %s\n", elf.error().c_str());
+            return 1;
+        }
     Program program = programFromElf(elf);
     std::string patchError;
     if (!applyInstructionPatches(program, patches, patchError))
