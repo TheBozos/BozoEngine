@@ -447,7 +447,7 @@ namespace bozo::audio
 
     bool Libsd::handles(uint32_t ordinal)
     {
-        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u);
+        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u) || ordinal == 31u;
     }
 
     bool Libsd::call(uint32_t ordinal, const uint32_t a[5], uint32_t gp, uint32_t &result)
@@ -476,6 +476,7 @@ namespace bozo::audio
         case 23u: result = setEffectAttr(a[0], a[1]); return true;
         case 24u: result = getEffectAttr(a[0], a[1]); return true;
         case 25u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 31u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
         case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
         default: return false;

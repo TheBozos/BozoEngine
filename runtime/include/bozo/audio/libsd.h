@@ -78,7 +78,7 @@ namespace bozo::audio
         uint32_t setIrqCallback(uint32_t function);                                                        // 22
         uint32_t setEffectAttr(uint32_t core, uint32_t attr); // 23: attr {core, mode, depth L/R, delay, feedback}
         uint32_t getEffectAttr(uint32_t core, uint32_t attr); // 24
-        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25
+        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25, and 31 (Clean: waits for it)
 
         // The transfer-end delay (IOP cycles) after a transfer or an input half.
         static constexpr uint32_t kTransferDelay = 2000u;
