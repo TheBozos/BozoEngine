@@ -324,6 +324,55 @@ int main()
         bozo::libs::ioLoad(libs, 0x10000000, 4, pending, 10000 + 10 * 512);
         eq("T0 repeated read charges one tick", pending, 512);
     }
+    {
+        // Timers 1-3 and the compare registers, read from the EE clock.
+        for (uint32_t address : {0x10000020u, 0x10000800u, 0x10000810u, 0x10000820u, 0x10001000u, 0x10001010u, 0x10001020u,
+                                 0x10001800u, 0x10001810u, 0x10001820u})
+            eq("a timer register is known", bozo::libs::ioKnown(address, 4, false), 1);
+        eq("Tn_HOLD is not", bozo::libs::ioKnown(0x10000030u, 4, false), 0);
+        eq("a timer register is a word", bozo::libs::ioKnown(0x10001800u, 2, false), 0);
+
+        bozo::libs::Libraries libs;
+        uint32_t pending = 0;
+        constexpr uint64_t line = 4920115ull * 2 / 525;
+        eq("T3's mode as the kernel leaves it", bozo::libs::ioLoad(libs, 0x10001810, 4, pending, 0), 0x83);
+        eq("T3 counts horizontal blanks from boot", bozo::libs::ioLoad(libs, 0x10001800, 4, pending, 5 * line), 5);
+        eq("T3's first read is not a poll", pending, 0);
+        bozo::libs::ioLoad(libs, 0x10001800, 4, pending, 5 * line + 1);
+        eq("T3's repeated read charges a line", pending, line);
+
+        bozo::libs::ioStore(libs, 0x10001010, 4, 0x82, 1000);
+        bozo::libs::ioStore(libs, 0x10001000, 4, 40, 1000);
+        bozo::libs::ioStore(libs, 0x10001020, 4, 77, 1000);
+        pending = 0;
+        eq("T2 counts at the clock its mode names", bozo::libs::ioLoad(libs, 0x10001000, 4, pending, 1000 + 3 * 512), 43);
+        eq("T2's mode reads back", bozo::libs::ioLoad(libs, 0x10001010, 4, pending, 1000), 0x82);
+        eq("T2's compare reads back", bozo::libs::ioLoad(libs, 0x10001020, 4, pending, 1000), 77);
+        eq("the count wraps at 16 bits", bozo::libs::ioLoad(libs, 0x10001000, 4, pending, 1000 + 0x10000ull * 512), 40);
+    }
+    {
+        // A frame-budget calibration: T0 at BUSCLK/256 measured over 256 changes of T3's count, each poll a few cycles.
+        bozo::libs::Libraries libs;
+        uint64_t cycle = 123456;
+        uint32_t pending = 0;
+        const auto poll = [&] {
+            pending = 0;
+            const uint64_t v = bozo::libs::ioLoad(libs, 0x10001800, 4, pending, cycle);
+            cycle += pending + 40;
+            return v;
+        };
+        bozo::libs::ioStore(libs, 0x10000010, 4, 0x82, cycle);
+        for (uint64_t first = poll(); poll() == first;)
+            ;
+        bozo::libs::ioStore(libs, 0x10000000, 4, 0, cycle);
+        for (int i = 0; i < 256; ++i)
+            for (uint64_t last = poll(); poll() == last;)
+                ;
+        pending = 0;
+        const uint64_t ticks = bozo::libs::ioLoad(libs, 0x10000000, 4, pending, cycle);
+        constexpr uint64_t console = 256ull * (4920115ull * 2 / 525) / 512;
+        eq("T0 over 256 lines is the console's, within 1%", ticks >= console - console / 100 && ticks <= console + console / 100, 1);
+    }
     sifAndSnd();
     memoryCard();
     heapAndRand();

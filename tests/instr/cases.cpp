@@ -691,6 +691,8 @@ namespace itest
         {
             add("syscall goes to the runtime (number in v1)", {addiu(v1, zero, 0x3c), syscall()}, none,
                 [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"syscall 0x3c"}); });
+            add("an interrupt-safe syscall's number is negative in v1", {addiu(v1, zero, -0x43), syscall()}, none,
+                [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"syscall 0xffffffbd"}); });
             add("break goes to the runtime with its code", {brk(7)}, none,
                 [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"break 0x7"}); });
             {
