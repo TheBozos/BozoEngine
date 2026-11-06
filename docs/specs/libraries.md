@@ -54,7 +54,7 @@ calls, threads) with every record of the log matched.
 
 ## 2. The C library (`libc`)
 
-Native: `memcpy`, `memset`, `strlen`, `strchr`, `strcpy`, `strcmp`, `strncat`, `sprintf`, `printf`, `malloc`, `free`,
+Native: `memcpy`, `memset`, `strlen`, `strchr`, `strcpy`, `strcmp`, `strncat`, `sprintf`, `printf`, `scePrintf`, `malloc`, `free`,
 `srand`, `rand`.
 
 Every one returns at once (0 EE cycles) and leaves `v0` as the reference's library calls do: the result sign-extended
@@ -69,7 +69,7 @@ difference of the bytes (the records show only those three). `strncat` returns i
 `sprintf` and `printf` format as the reference: flags, width, precision (`*` too), `h`/`l`/`ll`, and `d i u x X o c
 s p f e g %`. Arguments come from the argument registers in order, one 64-bit register each, a double in one register
 (the EE's 64-bit GPRs), then 64-bit stack slots. TMB's formats are file names (`\LVL\%s.NGP;1%s`), `MEMORY CARD SLOT %d`
-and three debug `printf`s (`%f` included). `printf` writes the text to the host's stdout and returns its length.
+and three debug `printf`s (`%f` included). `printf` (and the SDK's `scePrintf`, the same function) writes the text to the host's stdout and returns its length.
 
 ### 2.2 The heap
 
