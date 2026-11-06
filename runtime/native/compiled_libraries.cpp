@@ -1117,15 +1117,16 @@ namespace bozo::native::irx
                 if (!exclusions.empty() && exclusions.back().owner != logicalTask())
                     throw std::runtime_error("native callback exclusion owner mismatch");
                 write(a0, token);
-                exclusions.push_back({logicalTask(),token});
+                if (token) exclusions.push_back({logicalTask(),token});
                 ret(token ? 0u : uint32_t(-102));
                 return;
             }
             if (n == 18)
             {
-                if (exclusions.empty() || exclusions.back().owner != logicalTask() || exclusions.back().token != a0)
+                if (exclusions.empty() || exclusions.back().owner != logicalTask() || a0 > 1u)
                     throw std::runtime_error("unbalanced native callback exclusion release");
-                exclusions.pop_back();ret();return;
+                if (a0) exclusions.pop_back();
+                ret();return;
             }
             if (n == 4)
             {
