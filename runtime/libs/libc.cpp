@@ -239,8 +239,34 @@ namespace bozo::libs
         return out;
     }
 
+    namespace
+    {
+        void ttyWrite(Libraries &l, Guest &g)
+        {
+            const uint32_t n = g.arg(1);
+            if (l.printOutput && n)
+            {
+                std::fwrite(g.in(g.arg(0), n), 1, n, stdout);
+                std::fflush(stdout);
+            }
+            g.retU(n);
+        }
+
+        void answerZero(Libraries &, Guest &g) { g.ret(0); }
+        void answerOne(Libraries &, Guest &g) { g.ret(1); }
+        void noDebugger(Libraries &, Guest &g) { g.ret(-1); }
+    }
+
     void addLibc(std::vector<Function> &out)
     {
+        out.push_back({"sceTtyInit", kLibc, answerOne});
+        out.push_back({"sceTtyWrite", kLibc, ttyWrite});
+        out.push_back({"sceTtyRead", kLibc, answerZero});
+        out.push_back({"sceTtyHandler", kLibc, answerZero});
+        for (const char *name : {"sceDeci2Open", "sceDeci2GrpOpen", "sceDeci2ReqSend", "sceDeci2Poll", "sceDeci2ExRecv",
+                                 "sceDeci2ExSend", "sceDeci2ExReqSend", "sceDeci2ExLock", "sceDeci2ExUnLock",
+                                 "sceDeci2Close", "sceDeci2GrpClose", "Deci2Call"})
+            out.push_back({name, kLibc, noDebugger});
         out.push_back({"memcpy", kLibc, memcpy_});
         out.push_back({"memset", kLibc, memset_});
         out.push_back({"strlen", kLibc, strlen_});

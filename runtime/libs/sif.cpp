@@ -216,6 +216,34 @@ namespace bozo::libs
             if (l.sif.moduleLoader) { g.ret(l.sif.moduleLoader(g.string(g.arg(0)))); return; }
             g.ret(static_cast<int32_t>(++l.sif.modules));
         }
+        void nothing(Libraries &, Guest &g) { g.ret(0); }
+
+        void isAliveIop(Libraries &, Guest &g) { g.ret(1); }
+
+        // sceSifAllocSysMemory(type, size, address): a block of the IOP's memory, as sceSifAllocIopHeap.
+        void allocSysMemory(Libraries &l, Guest &g)
+        {
+            g.retU(l.sif.allocateBuffer ? l.sif.allocateBuffer(g.arg(1)) : l.sif.heap.allocate(g.arg(1)));
+        }
+
+        // A module from EE memory: nothing is loaded either, the next id.
+        void loadModuleBuffer(Libraries &l, Guest &g) { g.ret(static_cast<int32_t>(++l.sif.modules)); }
+
+        // The ...StartModule forms give the module's start result (0, resident) through their fourth argument.
+        void loadStartModule(Libraries &l, Guest &g)
+        {
+            if (g.arg(3))
+                g.write32(g.arg(3), 0);
+            loadModule(l, g);
+        }
+
+        void loadStartModuleBuffer(Libraries &l, Guest &g)
+        {
+            if (g.arg(3))
+                g.write32(g.arg(3), 0);
+            loadModuleBuffer(l, g);
+        }
+
         // sceSifRebootIop(image): the IOP starts again with no module; 1. sceSifSyncIop(): 1 (the IOP is up).
         void rebootIop(Libraries &l, Guest &g)
         {
@@ -256,6 +284,18 @@ namespace bozo::libs
     void addSif(std::vector<Function> &out)
     {
         out.push_back({"sceSifInitRpc", kSif, initRpc});
+        out.push_back({"sceSifExitRpc", kSif, nothing});
+        out.push_back({"sceSifExitCmd", kSif, nothing});
+        out.push_back({"sceSifLoadFileReset", kSif, nothing});
+        out.push_back({"sceSifWriteBackDCache", kSif, nothing});
+        out.push_back({"sceSifResetIop", kSif, rebootIop});
+        out.push_back({"sceSifIsAliveIop", kSif, isAliveIop});
+        out.push_back({"sceSifAllocSysMemory", kSif, allocSysMemory});
+        out.push_back({"sceSifFreeSysMemory", kSif, freeIopHeap});
+        out.push_back({"sceSifLoadStartModule", kSif, loadStartModule});
+        out.push_back({"sceSifLoadModuleBuffer", kSif, loadModuleBuffer});
+        out.push_back({"_sceSifLoadModuleBuffer", kSif, loadModuleBuffer});
+        out.push_back({"sceSifLoadStartModuleBuffer", kSif, loadStartModuleBuffer});
         out.push_back({"sceSifBindRpc", kSif, bindRpc});
         out.push_back({"sceSifCallRpc", kSif, callRpc, false, false, true});
         out.push_back({"sceSifCheckStatRpc", kSif, checkStatRpc});
