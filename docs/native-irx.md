@@ -28,6 +28,13 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+The compiled-library `sysclib:14` binding implements bounded native `memset`, returning the original
+destination and truncating its fill value to one byte. The complete span is checked before writing.
+`library_memory` covers empty/small/large/unaligned spans, surrounding bytes, rejected overflow and
+reset/independent hosts. The ordinal and ABI were checked against
+[PS2SDK's declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/sysclib/include/sysclib.h);
+no SDK implementation was copied.
+
 `CompiledLibraries::bindNative(address, callback)` replaces an admitted linked game entry with a
 per-host C++ algorithm. Install bindings before starting any library. Closures can capture typed port
 state, such as a native input source, without process-global dispatch state. Unadmitted images, unknown

@@ -442,6 +442,12 @@ namespace bozo::native::irx
                 ret(a0);
                 return;
             }
+            if (n == 14)
+            {
+                std::memset(memory.data() + physical(a0, a2), static_cast<unsigned char>(a1), a2);
+                ret(a0);
+                return;
+            }
             if (n == 27)
             {
                 ret(static_cast<uint32_t>(string(a0, 0x100000).size()));
