@@ -57,6 +57,13 @@ int main()
         return 4;
     if (call(999, 0x200000) != -1)
         return 5;
+    const uint32_t atZero = 0x5a5a5a5a;
+    std::memcpy(d.runtime().memory.ram(), &atZero, 4);
+    if (call(other, 0) != 0x10)
+        return 11;
+    std::memcpy(words, d.runtime().memory.ram(), 4);
+    if (words[0] != atZero)
+        return 12;
     try
     {
         call(0, 0x12000000);
@@ -69,5 +76,7 @@ int main()
         return 7;
     if (bozo::ee::kernelCallByName("iInvalidDCache") != bozo::ee::KernelCall::iFlushCache)
         return 8;
+    if (bozo::ee::kernelCallByName("_InitSys") != bozo::ee::KernelCall::InitSys)
+        return 9;
     return 0;
 }

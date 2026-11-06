@@ -115,6 +115,31 @@ namespace bozo
                 continue;
             p.symbols.push_back({sym.name, sym.value, sym.size, sym.type == 2u});
         }
+        // A sized data object (STT_OBJECT) inside an executable section (a writable code segment holding a game's
+        // tables) is data: it leaves the code ranges and joins the data ones.
+        std::vector<AddressRange> objects;
+        for (const auto &sym : elf.symbols())
+            if (sym.type == 1u && sym.size != 0)
+                objects.push_back({sym.value, sym.value + sym.size, sym.name});
+        std::sort(objects.begin(), objects.end(), [](const AddressRange &a, const AddressRange &b) { return a.start < b.start; });
+        std::vector<AddressRange> code;
+        for (const auto &r : p.code)
+        {
+            uint32_t at = r.start;
+            for (const auto &o : objects)
+            {
+                if (o.end <= at || o.start >= r.end)
+                    continue;
+                const uint32_t start = std::max(o.start, at), end = std::min(o.end, r.end);
+                if (start > at)
+                    code.push_back({at, start, r.name});
+                p.data.push_back({start, end, r.name});
+                at = std::max(at, end);
+            }
+            if (at < r.end)
+                code.push_back({at, r.end, r.name});
+        }
+        p.code = std::move(code);
         return p;
     }
 }
