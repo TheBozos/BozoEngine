@@ -69,5 +69,7 @@ int main()
         return 7;
     if (bozo::ee::kernelCallByName("iInvalidDCache") != bozo::ee::KernelCall::iFlushCache)
         return 8;
+    if (d.cop0Read(&ctx, &d.runtime(), 9) != static_cast<uint32_t>(d.cycle()))
+        return 9;
     return 0;
 }
