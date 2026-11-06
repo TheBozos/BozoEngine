@@ -99,6 +99,15 @@ void counter(Env &e){
 }
 const Entry entries[]={{0xf000,strings},{0xf030,sleepBody},{0xf038,sleepBody},{0xf040,exitBody},{0xf048,exitBody},
     {0xf050,frameBody}};
+void arguments(Env &e){
+    check(e.cpu.gpr[4]==3,"a module's argc counts its name");
+    const uint32_t argv=e.cpu.gpr[5];
+    check(get(e,e.r32(argv))=="args.irx" && get(e,e.r32(argv+4))=="thpri=39" && get(e,e.r32(argv+8))=="spucore=2","a module's argv");
+    check(e.r32(argv+12)==0,"argv ends with a null");
+    e.cpu.gpr[2]=0;e.cpu.pc=e.cpu.gpr[31];
+}
+const Entry argumentEntries[]={{0xa000,arguments}};
+const Registration argumentRegistration("args.irx;1",0x5ea,0xa000,0x100,argumentEntries,1);
 const Entry threadEntries[]={{0x9000,threads}},lifeEntries[]={{0x9400,lifecycle}},timerEntries[]={{0x9800,timers}},
     counterEntries[]={{0x9c00,counter}};
 const Registration registration("services",0x5e5,0xf000,0x1000,entries,std::size(entries));
@@ -119,7 +128,10 @@ void run(){
     host.addImage({"life",0x5e7,0x9400,0x9400,0,std::vector<uint8_t>(0x100),{},{},false});
     host.addImage({"timers",0x5e8,0x9800,0x9800,0,std::vector<uint8_t>(0x100),{},{},false});
     host.addImage({"counter",0x5e9,0x9c00,0x9c00,0,std::vector<uint8_t>(0x100),{},{},false});
+    host.addImage({"args.irx;1",0x5ea,0xa000,0xa000,0,std::vector<uint8_t>(0x100),{},{},false});
     host.advanceTo(0);
+    const std::string given[]={"thpri=39","spucore=2"};
+    host.startImage("args.irx;1",given);
     host.startImage("services");
     host.startImage("threads");
     check(exits==1,"tasks ran after their start");
