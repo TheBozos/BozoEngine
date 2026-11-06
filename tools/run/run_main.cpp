@@ -96,6 +96,15 @@ int bozo::run::main(int argc, char **argv)
             opt.quiet = true;
         else if (a == "--pinned")
             opt.pinned = true;
+        else if (a == "--native-call")
+        {
+            const std::string v = value();
+            const size_t equals = v.find('='), colon = v.find(':');
+            if (equals == std::string::npos || colon == std::string::npos || colon < equals)
+                return usage();
+            opt.nativeCalls.push_back({v.substr(0, equals), static_cast<uint32_t>(std::stoul(v.substr(equals + 1, colon - equals - 1), nullptr, 0)),
+                                       std::stoull(v.substr(colon + 1), nullptr, 0)});
+        }
         else if (a == "--overrides")
         {
             const std::string v = value();
@@ -388,6 +397,9 @@ int bozo::run::main(int argc, char **argv)
     if (opt.pinned)
     {
         const run::PinnedStats &p = host.pinnedStats();
+        if (host.nativeCallRecords())
+            std::printf("native calls: %llu records of the reference's guest code not compared (their kernel operations made again)\n",
+                        static_cast<unsigned long long>(host.nativeCallRecords()));
         std::printf("pinned: %llu events at the log's points", static_cast<unsigned long long>(p.events));
         if (p.staleInnerPc)
             std::printf(" (%llu with a stale inner pc, exact cycle and checkpoint)",

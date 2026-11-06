@@ -25,6 +25,16 @@ namespace bozo::run
         uint32_t frames = 0;           // stop after this many frames (0: the log's frame limit)
         uint64_t traceFrom = ~0ull;    // print every record matched from this record index
         bool traceCheckpoints = false; // and every checkpoint passed from there
+        // A function the reference ran as guest code and this run leaves out, with no record of its own: at the address
+        // it returns 0, the kernel operations of the log's records up to `until` are made again and every other record
+        // is dropped, counted in nativeCallRecords.
+        struct NativeCall
+        {
+            std::string name;
+            uint32_t address = 0;
+            uint64_t until = 0;
+        };
+        std::vector<NativeCall> nativeCalls;
         uint32_t maxErrors = 1;        // stop at the n-th divergence (cycle mismatches are resynced to go on)
         bool quiet = false;
         // Pinned mode (kernel.md section 4): the vblank's events are taken at the log's points (out-calls before,
@@ -107,6 +117,7 @@ namespace bozo::run
         uint64_t recordsMatched() const { return matched_; }
         uint64_t calls() const { return seq_; }
         uint64_t kernelCalls() const { return kernelCalls_; }
+        uint64_t nativeCallRecords() const { return nativeCallRecords_; }
         bool completed() const { return completed_; }
         uint32_t frame() const { return frame_; }
 
@@ -198,6 +209,9 @@ namespace bozo::run
         uint32_t frame_ = 0;  // frames ended so far
         uint64_t matched_ = 0;
         uint64_t kernelCalls_ = 0;
+        uint64_t nativeCallRecords_ = 0;
+        bool replayingNativeCall_ = false;
+        void runNativeCall(R5900Context *ctx, const Options::NativeCall &call);
         uint32_t errors_ = 0;
         bool completed_ = false;
         FieldStats stats_;
