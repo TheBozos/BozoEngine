@@ -106,8 +106,14 @@ namespace bozo::host
         bool callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address) override;
         bool deterministic() const override { return !opt_.realTime; }
         bool realTime() const override { return opt_.realTime; }
+        bool nativeGraphics() const override { return instructionHandler_ != nullptr; }
+        bool nativeInstruction(uint8_t *ram, R5900Context *ctx, Runtime *rt, uint32_t pc) override
+        {
+            return instructionHandler_ && instructionHandler_(ram, ctx, rt, pc);
+        }
 
     private:
+        port::InstructionHandler instructionHandler_ = nullptr;
         void runOverride(R5900Context *ctx, uint32_t target, port::Function fn);
         // Ends the run when no frame ended for opt_.stallFields fields (a wait that never ends), saying where.
         void watchdog(R5900Context *ctx);

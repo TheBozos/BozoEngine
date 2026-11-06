@@ -34,6 +34,9 @@ bozo-recomp <elf> --census
   `stub 0xADDR` (a native library or kernel function: every transfer to it goes through `bozo_call_indirect`) or
   `override 0xADDR` (a port function: calls go through `bozo_call_indirect`, a direct jump runs the guest code).
   See [`docs/specs/replay.md`](../docs/specs/replay.md) section 2.
+    `native 0xADDR` selects an instruction to be replaced by the port's inline native handler, including in delay
+    slots. A handled BC0 test means native submission is complete. An unhandled instruction executes its original
+    operation, preserving the historical checker path. Replacements cannot block or change PC/RA.
 - `--census` only decodes the code and prints how many times each instruction appears, and any word it cannot
   decode (exit code 1 if there is one).
 - `--verbose` lists the extra entry points and the `jr` instructions the analysis could not resolve.

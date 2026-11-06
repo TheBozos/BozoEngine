@@ -22,6 +22,9 @@ struct Runtime
     uint32_t cop0[32] = {};
     bool interruptsEnabled = true;
     bool cop0Condition = true;
+    bool nativeHandled = false;
+    uint32_t nativeCalls = 0;
+    uint32_t lastNativePc = 0, lastIoPc = 0;
     uint32_t vpuStat = 0;
 };
 

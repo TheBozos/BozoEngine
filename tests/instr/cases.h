@@ -53,6 +53,7 @@ namespace itest
         std::vector<uint32_t> callee; // the second function (empty: none)
         std::vector<std::pair<uint32_t, uint32_t>> data; // (address, word) put in guest RAM before the run
         int calleeExternal = 0; // 1: the callee's address is a "stub" external, 2: an "override" (EmitOptions::externals)
+        std::vector<uint32_t> nativeOffsets; // instruction offsets answered by the port's native operation
         std::function<void(R5900Context &, uint8_t *, Runtime &)> setup;
         std::function<void(Checker &, R5900Context &, uint8_t *, Runtime &)> check;
     };

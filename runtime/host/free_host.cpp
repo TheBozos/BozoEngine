@@ -30,6 +30,9 @@ namespace bozo::host
                          std::string &error)
     {
         d_ = &d;
+        instructionHandler_ = registry ? registry->instructionHandler() : nullptr;
+        if (nativeGraphics())
+            std::fprintf(stderr, "[graphics] native submission/completion; retired graphics registers and DMA polls are guarded\n");
         // Stops jump back to the dispatcher (nothing on the way holds anything to destroy: dispatcher.h), and no frame
         // keeps the context words only the call-log host compares.
         d.jumpStops = true;
@@ -245,6 +248,8 @@ namespace bozo::host
 
     void FreeHost::ioRead(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2])
     {
+        if (nativeGraphics() && libs::graphicsIo(address))
+            fault(*d_, ctx, std::format("native graphics reached a retired register read at 0x{:x}", address));
         ++stats_.ioAccesses;
         watchdog(ctx);
         value[0] = value[1] = 0;
@@ -262,6 +267,8 @@ namespace bozo::host
 
     void FreeHost::ioWrite(ee::Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2])
     {
+        if (nativeGraphics() && libs::graphicsIo(address))
+            fault(*d_, ctx, std::format("native graphics reached a retired register write at 0x{:x}", address));
         ++stats_.ioAccesses;
         if (!libs::ioKnown(address, size, true))
         {
@@ -276,6 +283,8 @@ namespace bozo::host
 
     bool FreeHost::cop0Condition(ee::Dispatcher &, R5900Context *ctx)
     {
+        if (nativeGraphics())
+            fault(*d_, ctx, "native graphics reached the retired DMA completion condition");
         watchdog(ctx);
         return libs_.io.cpcond0();
     }
@@ -301,11 +310,14 @@ namespace bozo::host
     void FreeHost::kernelCallEnd(ee::Dispatcher &, R5900Context *, uint32_t target, bool)
     {
         ++stats_.kernelCalls;
-        if (flushCacheAt_.count(target))
+        if (!nativeGraphics() && flushCacheAt_.count(target))
             libs_.io.flushCache();
     }
 
-    bool FreeHost::dmacStatusSet(uint32_t cause) { return cause < 10 && (libs_.io.stat & (1u << cause)) != 0; }
+    bool FreeHost::dmacStatusSet(uint32_t cause)
+    {
+        return !(nativeGraphics() && cause < 3) && cause < 10 && (libs_.io.stat & (1u << cause)) != 0;
+    }
 
     void FreeHost::waitCompleted(ee::Dispatcher &, ee::Thread &t)
     {

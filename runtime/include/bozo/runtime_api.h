@@ -5,6 +5,10 @@
 
 #include "bozo/context.h"
 
+// A statically selected instruction replaced by the port. False: execute its original operation (e.g. a checker).
+// For a BC0 instruction, true means the native operation is complete, without querying a DMA condition register.
+bool bozo_native_instruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc);
+
 // ---- Functions -----------------------------------------------------------------------------------------------------
 // The function table the recompiler emits: every guest function (and every extra entry point) by address, sorted.
 struct BozoFunctionEntry

@@ -30,6 +30,7 @@ namespace bozo::libs
 namespace bozo::port
 {
     using Function = RecompiledFunction;
+    using InstructionHandler = bool (*)(uint8_t *, R5900Context *, Runtime *, uint32_t pc);
 
     // The port's overrides, as its install function registers them.
     class Registry
@@ -39,9 +40,13 @@ namespace bozo::port
         void registerFunction(uint32_t address, Function fn);
         const std::vector<BozoFunctionEntry> &functions() const { return functions_; }
         Function find(uint32_t address) const;
+        // Native instruction replacements run inline, including in delay slots. They must not block or change pc/ra.
+        void nativeGraphics(InstructionHandler handler) { instructionHandler_ = handler; }
+        InstructionHandler instructionHandler() const { return instructionHandler_; }
 
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
+        InstructionHandler instructionHandler_ = nullptr;
     };
 
     // A port: its game and how to install it. One per executable (BOZO_PORT).
@@ -75,6 +80,8 @@ namespace bozo::port
         // Whether the game runs on the host's clock (a window, sound): its frames are held to their rate. A headless or
         // checked run goes as fast as the host makes frames.
         virtual bool realTime() const { return false; }
+        virtual bool nativeGraphics() const { return false; }
+        virtual bool nativeInstruction(uint8_t *, R5900Context *, Runtime *, uint32_t) { return false; }
         // The library function BozoEngine answers at `address` (a stub of the generated code), made for an override
         // that calls the original (calling the guest code there would run the game's own library, which the
         // reference never did). False when nothing native answers there.
@@ -112,6 +119,7 @@ namespace bozo::port
     void callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address);
     bool deterministic(Runtime *rt);
     bool realTime(Runtime *rt);
+    inline bool nativeGraphics(Runtime *rt) { return rt->port && rt->port->nativeGraphics(); }
 
     // ---- Hooks a port sets ------------------------------------------------------------------------------------------
     // The game's stores to hardware registers: true for a store whose effect is not to be made (as if the instruction

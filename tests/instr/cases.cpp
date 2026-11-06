@@ -345,6 +345,27 @@ namespace itest
                     k.eq("v0", get(c, v0), 0);
                     k.events(rt, {"io-read 0x10000000", "io-write 0x10000010"});
                 });
+            for (bool handled : {false, true})
+                for (bool delaySlot : {false, true})
+                {
+                    Asm s;
+                    if (delaySlot)
+                        s.branch(beq(zero, zero), "done")(sw(a1, 0, a0)).label("done")(addiu(v0, zero, 7));
+                    else
+                        s(sw(a1, 0, a0))(addiu(v0, zero, 7));
+                    add(std::string("native output ") + (handled ? "handled" : "checker fallback") + (delaySlot ? " in delay slot" : " inline"),
+                        s.finish(), [handled](Ctx &c, uint8_t *, Runtime &rt) {
+                            set(c, a0, 0x1000a000); set(c, a1, 0x145); rt.nativeHandled = handled;
+                        }, [handled](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                            k.eq("native calls", rt.nativeCalls, 1);
+                            k.eq("continued after replacement", get(c, v0), 7);
+                            k.eq("returned to caller", c.pc, kReturnSentinel);
+                            if (!handled)
+                                k.eq("checker retains the store's pc", rt.lastIoPc, rt.lastNativePc);
+                            k.events(rt, handled ? std::vector<std::string>{} : std::vector<std::string>{"io-write 0x1000a000"});
+                        });
+                    g_cases.back().nativeOffsets = {delaySlot ? 4u : 0u};
+                }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -653,6 +674,19 @@ namespace itest
                 s.branch(bc0f(), "t")(nop)(addiu(v0, zero, 1)).label("t")(nop);
                 add("bc0f reads the runtime's condition", s.finish(), [](Ctx &, uint8_t *, Runtime &rt) { rt.cop0Condition = true; },
                     [](Checker &k, Ctx &c, uint8_t *, Runtime &) { k.eq("v0 (not taken)", get(c, v0), 1); });
+            }
+            for (bool handled : {false, true})
+            {
+                Asm s;
+                s.branch(bc0f(), "done")(addiu(v1, zero, 9))(addiu(v0, zero, 1)).label("done")(nop);
+                add(std::string("native completion ") + (handled ? "ready" : "checker fallback"), s.finish(),
+                    [handled](Ctx &, uint8_t *, Runtime &rt) { rt.nativeHandled = handled; rt.cop0Condition = false; },
+                    [handled](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                        k.eq("native calls", rt.nativeCalls, 1);
+                        k.eq("completion branch", get(c, v0), handled ? 1 : 0);
+                        k.eq("delay slot", get(c, v1), 9);
+                    });
+                g_cases.back().nativeOffsets = {0};
             }
             add("mtsab/mtsah set SA in bits; mfsa reads it", {mtsab(a0, 1), mfsa(v0), mtsah(a0, 0), mfsa(v1)},
                 [](Ctx &c, uint8_t *, Runtime &) { set(c, a0, 0x13); },
