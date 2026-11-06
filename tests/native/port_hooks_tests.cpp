@@ -118,9 +118,6 @@ int main()
         host.vu0Microprogram(d, &ctx, 0x278);
         expect(lastCall == 0, "no port program: the built-in table answers");
     }
-    std::filesystem::remove_all(dir);
-    if (failures == 0)
-        std::printf("port hooks tests passed\n");
     {
         bozo::port::Registry registry;
         registry.transfersAlwaysDone();
@@ -131,5 +128,8 @@ int main()
         R5900Context ctx;
         expect(host.cop0Condition(d, &ctx), "a port's transfers are always done");
     }
+    std::filesystem::remove_all(dir);
+    if (failures == 0)
+        std::printf("port hooks tests passed\n");
     return failures == 0 ? 0 : 1;
 }
