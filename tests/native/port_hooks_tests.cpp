@@ -146,6 +146,24 @@ int main()
         expect(host.setUp(d, nullptr, 0, &registry, error), "set up, transfers always done");
         R5900Context ctx;
         expect(host.cop0Condition(d, &ctx), "a port's transfers are always done");
+        expect(host.stats().ioSites.empty(), "BC0 is profiled only when asked");
+    }
+    {
+        bozo::port::Registry registry;
+        registry.transfersAlwaysDone();
+        bozo::host::FreeOptions profiled = options;
+        profiled.profileIo = true;
+        bozo::host::FreeHost host(profiled);
+        bozo::ee::Dispatcher d(host);
+        std::string error;
+        expect(host.setUp(d, nullptr, 0, &registry, error), "set up, profiling");
+        R5900Context ctx;
+        ctx.pc = 0x123450;
+        host.cop0Condition(d, &ctx);
+        host.cop0Condition(d, &ctx);
+        const auto &sites = host.stats().ioSites;
+        const auto site = sites.find({0x123450u, bozo::host::kCop0ConditionSite});
+        expect(site != sites.end() && site->second[0] == 2, "BC0 is counted by site as reads of its pseudo address");
     }
     std::filesystem::remove_all(dir);
     if (failures == 0)

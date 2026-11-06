@@ -644,6 +644,7 @@ is made and no timer interrupt is raised; the OVFF and EQUF bits of a mode stay 
 waits on them (libkernel's timer library: `kernel.md` K3) does not work through these registers.
 
 `FreeOptions::profileIo` collects remaining device accesses by guest PC and address in `FreeStats::ioSites`.
+BC0F and BC0T count there too, as reads of `kCop0ConditionSite`.
 It is off by default. Ports can use it to find callers that still need native adaptation; the existing native
 graphics guard rejects any attempt to access retired graphics devices before the compatibility path runs.
 
