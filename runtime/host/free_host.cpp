@@ -71,6 +71,11 @@ namespace bozo::host
             error = opt_.elf + ": " + elf.error();
             return false;
         }
+        if (!opt_.symbolMap.empty() && !elf.loadSymbolMap(opt_.symbolMap))
+        {
+            error = opt_.elf + ": " + elf.error();
+            return false;
+        }
         // Guest memory as the reference's boot leaves it (the call logs' INIT): the ELF's segments, and two words of
         // the boot's own at 0x2f0 and 0x2f8.
         uint8_t *ram = d.runtime().memory.ram();
