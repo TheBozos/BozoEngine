@@ -112,6 +112,94 @@ namespace bozo::ee
         return it == names.end() ? KernelCall::None : it->second;
     }
 
+    KernelCall kernelCallBySyscall(int32_t number)
+    {
+        static const std::map<int32_t, KernelCall> numbers = {
+            {1, KernelCall::ResetEE},
+            {2, KernelCall::SetGsCrt},
+            {16, KernelCall::AddIntcHandler},
+            {17, KernelCall::RemoveIntcHandler},
+            {18, KernelCall::AddDmacHandler},
+            {19, KernelCall::RemoveDmacHandler},
+            {20, KernelCall::EnableIntc},
+            {21, KernelCall::DisableIntc},
+            {22, KernelCall::EnableDmac},
+            {23, KernelCall::DisableDmac},
+            {-26, KernelCall::iEnableIntc},
+            {-27, KernelCall::iDisableIntc},
+            {-28, KernelCall::iEnableDmac},
+            {-29, KernelCall::iDisableDmac},
+            {32, KernelCall::CreateThread},
+            {33, KernelCall::DeleteThread},
+            {34, KernelCall::StartThread},
+            {35, KernelCall::ExitThread},
+            {36, KernelCall::ExitDeleteThread},
+            {37, KernelCall::TerminateThread},
+            {-38, KernelCall::iTerminateThread},
+            {41, KernelCall::ChangeThreadPriority},
+            {-42, KernelCall::iChangeThreadPriority},
+            {43, KernelCall::RotateThreadReadyQueue},
+            {-44, KernelCall::iRotateThreadReadyQueue},
+            {45, KernelCall::ReleaseWaitThread},
+            {-46, KernelCall::iReleaseWaitThread},
+            {47, KernelCall::GetThreadId},
+            {-47, KernelCall::GetThreadId},
+            {48, KernelCall::ReferThreadStatus},
+            {-49, KernelCall::iReferThreadStatus},
+            {50, KernelCall::SleepThread},
+            {51, KernelCall::WakeupThread},
+            {-52, KernelCall::iWakeupThread},
+            {53, KernelCall::CancelWakeupThread},
+            {-54, KernelCall::iCancelWakeupThread},
+            {55, KernelCall::SuspendThread},
+            {-56, KernelCall::iSuspendThread},
+            {57, KernelCall::ResumeThread},
+            {-58, KernelCall::iResumeThread},
+            {62, KernelCall::EndOfHeap},
+            {64, KernelCall::CreateSema},
+            {65, KernelCall::DeleteSema},
+            {66, KernelCall::SignalSema},
+            {-67, KernelCall::iSignalSema},
+            {68, KernelCall::WaitSema},
+            {69, KernelCall::PollSema},
+            {-70, KernelCall::iPollSema},
+            {71, KernelCall::ReferSemaStatus},
+            {-72, KernelCall::iReferSemaStatus},
+            {74, KernelCall::SetOsdConfigParam},
+            {75, KernelCall::GetOsdConfigParam},
+            {97, KernelCall::EnableCache},
+            {98, KernelCall::DisableCache},
+            {100, KernelCall::FlushCache},
+            {-104, KernelCall::iFlushCache},
+            {110, KernelCall::SetOsdConfigParam2},
+            {111, KernelCall::GetOsdConfigParam2},
+            {112, KernelCall::GsGetIMR},
+            {-112, KernelCall::iGsGetIMR},
+            {113, KernelCall::GsPutIMR},
+            {-113, KernelCall::iGsPutIMR},
+            {115, KernelCall::SetVSyncFlag},
+            {127, KernelCall::GetMemorySize},
+            {252, KernelCall::SetAlarm},
+            {253, KernelCall::ReleaseAlarm},
+            {-254, KernelCall::iSetAlarm},
+            {-255, KernelCall::iReleaseAlarm},
+        };
+        auto it = numbers.find(number);
+        return it == numbers.end() ? KernelCall::None : it->second;
+    }
+
+    const char *librarySyscall(int32_t number)
+    {
+        switch (number)
+        {
+        case 118:
+        case -118: return "sceSifDmaStat";
+        case 119:
+        case -119: return "sceSifSetDma";
+        default: return nullptr;
+        }
+    }
+
     Dispatcher::Dispatcher(Host &host) : host_(host) { rt_.services = this; }
 
     void Dispatcher::setFunctions(const BozoFunctionEntry *table, size_t count, const BozoResumeEntry *resume,
@@ -282,23 +370,53 @@ namespace bozo::ee
 
     void Dispatcher::syscall(uint8_t *, R5900Context *ctx, Runtime *, uint32_t)
     {
-        const uint32_t number = ctx->r[3].uw[0];
+        const int32_t number = ctx->r[3].sw[0];
         const uint32_t at = ctx->pc + 4; // a syscall is known by its return address (the log's target)
-        if (number != 60 && number != 61)
+        const KernelCall call = kernelCallBySyscall(number);
+        const char *library = librarySyscall(number);
+        if (number != 60 && number != 61 && call == KernelCall::None && !library)
         {
-            host_.fault(*this, ctx, std::format("syscall {} at 0x{:x}: not implemented", static_cast<int32_t>(number), at));
+            host_.fault(*this, ctx, std::format("syscall {} at 0x{:x}: no native kernel service has this number", number,
+                                                ctx->pc));
             return;
         }
         host_.kernelCallBegin(*this, ctx, at, 3);
+        bool stopping = false;
         if (number == 60) // SetupThread(gp, stack, stack size, args, root): the main thread's stack
             ret(ctx, static_cast<int32_t>(kernel_.threadSetup(arg(ctx, 1), arg(ctx, 2), arg(ctx, 0))));
-        else // SetupHeap(start, size): the heap starts at the end of the program, aligned to 16 bytes
+        else if (number == 61) // SetupHeap(start, size): the heap starts at the end of the program, aligned to 16 bytes
         {
             heapStart_ = (arg(ctx, 0) + 15u) & ~15u;
+            heapSize_ = static_cast<int32_t>(arg(ctx, 1));
             ret(ctx, static_cast<int32_t>(heapStart_));
         }
-        host_.kernelCallEnd(*this, ctx, at, false);
+        else if (call != KernelCall::None)
+        {
+            syscall_ = number;
+            stopping = kernelCall(call, ctx);
+            syscall_ = 0;
+        }
+        else if (!host_.librarySyscall(*this, ctx, library))
+        {
+            host_.fault(*this, ctx, std::format("syscall {} ({}) at 0x{:x}: the host has no native answer", number,
+                                                library, ctx->pc));
+            return;
+        }
+        host_.kernelCallEnd(*this, ctx, at, stopping);
         markOutcallEnd(ctx);
+        if (stopping)
+        {
+            // The thread goes on after the syscall; after a libkernel wrapper's (`syscall; jr ra`), at its return
+            // address, the only resume entry there.
+            uint32_t next = at, word = 0;
+            if (const uint8_t *p = rt_.memory.hostPointer(at, 4))
+            {
+                std::memcpy(&word, p, 4);
+                if (word == 0x03E00008u)
+                    next = ctx->r[31].uw[0];
+            }
+            leave(ctx, next);
+        }
         updateLimit(ctx);
     }
 
@@ -710,6 +828,42 @@ namespace bozo::ee
         }
     }
 
+    // ---- The native frame boundary --------------------------------------------------------------------------------
+
+    void Dispatcher::frameCompleted()
+    {
+        ++framesCompleted_;
+        if (vsyncFlag_)
+            if (uint8_t *p = rt_.memory.hostPointer(vsyncFlag_, 4))
+            {
+                const uint32_t one = 1;
+                std::memcpy(p, &one, 4);
+            }
+        if (vsyncCsr_)
+            if (uint8_t *p = rt_.memory.hostPointer(vsyncCsr_, 8))
+            {
+                const uint64_t field = (framesCompleted_ & 1u) << 13;
+                std::memcpy(p, &field, 8);
+            }
+        if (syncVCallback_)
+        {
+            QueuedHandler h;
+            h.kind = kInvokeGsCallback;
+            h.pc = syncVCallback_;
+            h.a[0] = 2; // INTC cause of the vblank's start, what libgraph's handler receives
+            h.gp = syncVGp_;
+            kernel_.queue(h);
+        }
+    }
+
+    uint32_t Dispatcher::setSyncVCallback(uint32_t pc, uint32_t gp)
+    {
+        const uint32_t old = syncVCallback_;
+        syncVCallback_ = pc;
+        syncVGp_ = gp;
+        return old;
+    }
+
     // ---- Kernel calls ------------------------------------------------------------------------------------------
 
     bool Dispatcher::kernelCall(KernelCall call, R5900Context *ctx)
@@ -842,8 +996,81 @@ namespace bozo::ee
         case KernelCall::EnableCache:
         case KernelCall::DisableCache: ret(ctx, 0); return false;
         case KernelCall::GetMemorySize: ret(ctx, 0x2000000); return false;
+        case KernelCall::SetVSyncFlag:
+            vsyncFlag_ = arg(ctx, 0);
+            vsyncCsr_ = arg(ctx, 1);
+            ret(ctx, 0);
+            return false;
+        case KernelCall::SetAlarm:
+        case KernelCall::iSetAlarm:
+            ret(ctx, k.setAlarm(now(ctx) + (arg(ctx, 0) & 0xFFFFu) * k.hblank(), arg(ctx, 1), arg(ctx, 2), ctx->r[28].uw[0],
+                                call == KernelCall::iSetAlarm));
+            return false;
+        case KernelCall::ReleaseAlarm:
+        case KernelCall::iReleaseAlarm: ret(ctx, k.releaseAlarm(a0, call == KernelCall::iReleaseAlarm)); return false;
+        case KernelCall::SuspendThread: ret(ctx, k.suspendThread(a0, false)); return false;
+        case KernelCall::iSuspendThread: ret(ctx, k.suspendThread(a0, true)); return false;
+        case KernelCall::ResumeThread:
+            ret(ctx, k.resumeThread(a0, false));
+            return k.transfer(false);
+        case KernelCall::iResumeThread: ret(ctx, k.resumeThread(a0, true)); return false;
+        case KernelCall::EndOfHeap:
+        {
+            const Thread *main = k.thread(1);
+            if (heapSize_ >= 0)
+                ret(ctx, static_cast<int32_t>(heapStart_ + static_cast<uint32_t>(heapSize_)));
+            else
+                ret(ctx, static_cast<int32_t>(main && main->stack ? main->stack : 0x2000000u));
+            return false;
+        }
+        case KernelCall::GsGetIMR:
+        case KernelCall::iGsGetIMR: ret(ctx, static_cast<int32_t>(gsImr_)); return false;
+        case KernelCall::GsPutIMR:
+        case KernelCall::iGsPutIMR:
+        {
+            const uint64_t old = gsImr_;
+            gsImr_ = ctx->r[4].ud[0];
+            ret(ctx, static_cast<int32_t>(old));
+            return false;
+        }
+        case KernelCall::SetGsCrt: ret(ctx, 0); return false;
+        case KernelCall::GetOsdConfigParam:
+        case KernelCall::SetOsdConfigParam:
+        {
+            uint8_t *p = rt_.memory.hostPointer(arg(ctx, 0), 4);
+            if (!p)
+            {
+                host_.fault(*this, ctx, "OSD configuration word outside guest memory");
+                return false;
+            }
+            if (call == KernelCall::GetOsdConfigParam)
+                std::memcpy(p, &osdConfig, 4);
+            else
+                std::memcpy(&osdConfig, p, 4);
+            ret(ctx, 0);
+            return false;
+        }
+        case KernelCall::GetOsdConfigParam2:
+        case KernelCall::SetOsdConfigParam2:
+        {
+            const uint32_t size = arg(ctx, 1), offset = arg(ctx, 2);
+            uint8_t *p = rt_.memory.hostPointer(arg(ctx, 0), size);
+            if (!p || offset > osdConfig2.size() || size > osdConfig2.size() - offset)
+            {
+                host_.fault(*this, ctx, std::format("OSD configuration block access ({} bytes at {}) out of range", size, offset));
+                return false;
+            }
+            if (call == KernelCall::GetOsdConfigParam2)
+                std::memcpy(p, osdConfig2.data() + offset, size);
+            else
+                std::memcpy(osdConfig2.data() + offset, p, size);
+            ret(ctx, 0);
+            return false;
+        }
         default:
-            host_.fault(*this, ctx, std::format("kernel call {} at 0x{:x}: not implemented yet", static_cast<int>(call), ctx->pc));
+            host_.fault(*this, ctx, syscall_ ? std::format("syscall {} (kernel call {}) at 0x{:x}: not implemented yet", syscall_,
+                                                         static_cast<int>(call), ctx->pc)
+                                             : std::format("kernel call {} at 0x{:x}: not implemented yet", static_cast<int>(call), ctx->pc));
             return false;
         }
     }
