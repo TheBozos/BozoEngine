@@ -59,6 +59,10 @@ namespace bozo::native::irx
             int32_t waitingSema = 0;
             bool sleeping = false;
             uint64_t due = 0;
+            // An RPC request served on this task: its parked RpcLoop state, kept while the handler runs above it.
+            bool serving = false, replied = false;
+            NativeCpu parked{};
+            uint32_t reply = 0;
         };
         std::map<int32_t, Task> tasks;
         int32_t nextTask = 1, current = 0, callbackTask = 0;
@@ -348,6 +352,78 @@ namespace bozo::native::irx
                     function,cpu.pc,env.executed,env.budget,calls));
             return cpu.gpr[2];
         }
+        // An RPC request runs on its server task, as RpcLoop runs it: the handler may wait (DelayThread, semaphores),
+        // the host's clock then goes on to the next deadline until the handler returns and the task parks again.
+        uint32_t serve(int32_t server, uint32_t function, uint32_t gp, uint32_t a0, uint32_t a1, uint32_t a2)
+        {
+            if (!server || current || invokeDepth)
+                return invoke(function, gp, a0, a1, a2, server);
+            if (!tasks.contains(server) || tasks.at(server).done)
+                throw std::runtime_error("native RPC owner task is not available");
+            {
+                auto &t = tasks.at(server);
+                if (t.serving || !t.waiting)
+                    throw std::runtime_error("native RPC server task is not parked in its RPC loop");
+                t.parked = t.cpu;
+                t.cpu.pc = function;
+                t.cpu.gpr[28] = gp;
+                t.cpu.gpr[31] = kReturn;
+                t.cpu.gpr[29] = (t.parked.gpr[29] - 0x40u) & ~15u;
+                t.cpu.gpr[4] = a0;
+                t.cpu.gpr[5] = a1;
+                t.cpu.gpr[6] = a2;
+                t.serving = true;
+                t.replied = false;
+                t.waiting = false;
+                t.due = 0;
+            }
+            struct Restore
+            {
+                Impl &host;
+                int32_t server;
+                bool armed = true;
+                ~Restore()
+                {
+                    if (!armed || !host.tasks.contains(server))
+                        return;
+                    auto &t = host.tasks.at(server);
+                    if (t.serving)
+                    {
+                        t.cpu = t.parked;
+                        t.serving = false;
+                        t.waiting = true;
+                        t.due = 0;
+                    }
+                    t.replied = false;
+                    host.current = 0;
+                }
+            } restore{*this, server};
+            for (unsigned work = 0;; ++work)
+            {
+                runReady();
+                auto &t = tasks.at(server);
+                if (t.replied)
+                {
+                    t.replied = false;
+                    restore.armed = false;
+                    return t.reply;
+                }
+                if (work >= 100000)
+                    throw std::runtime_error("native RPC handler made no progress");
+                uint64_t next = UINT64_MAX;
+                for (const auto &[id, task] : tasks)
+                    if (!task.done && task.waiting && task.due)
+                        next = std::min(next, task.due);
+                for (const auto &[id, timer] : timers)
+                    if (timer.mode && timer.compare)
+                        next = std::min(next, timer.due);
+                for (const auto &event : events)
+                    next = std::min(next, event.due);
+                if (next == UINT64_MAX)
+                    throw std::runtime_error(std::format("native RPC handler 0x{:x} waits with nothing to wake it", function));
+                advance(std::max(next, cycle));
+            }
+        }
         void runReady()
         {
             if (!exclusions.empty()) return;
@@ -368,7 +444,18 @@ namespace bozo::native::irx
                     current = id;
                     Environment env(*this, task.cpu);
                     if (env.call(task.cpu.pc, kReturn))
-                        task.done = true;
+                    {
+                        if (task.serving)
+                        {
+                            task.reply = task.cpu.gpr[2];
+                            task.cpu = task.parked;
+                            task.serving = false;
+                            task.replied = true;
+                            task.waiting = true;
+                        }
+                        else
+                            task.done = true;
+                    }
                     cycle += env.executed;
                     current = 0;
                     ran = true;
@@ -1086,7 +1173,7 @@ namespace bozo::native::irx
                 {
                     syncEe(libraries.now(guest));
                     copy(buffer, guest.in(request.send, request.sendBytes), request.sendBytes);
-                    const uint32_t reply = invoke(function, gp, request.command, buffer, request.sendBytes, ownerTask);
+                    const uint32_t reply = serve(ownerTask, function, gp, request.command, buffer, request.sendBytes);
                     if (request.receiveBytes)
                     {
                         try
