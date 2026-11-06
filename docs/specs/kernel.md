@@ -372,6 +372,15 @@ synthetic threads through blocking, higher-priority wakeup/preemption and exact 
 adds no clock, device state, polling, alarm or deadline implementation. Other games' full routes are not qualified
 by this test. Sleeping inside an interrupt handler returns -1 rather than blocking the handler's owning thread.
 
+**Native callback deadlines.** `scheduleDeadline(key, cycle, QueuedHandler)` schedules one native callback per
+key in the scheduler's absolute clock domain. Replacing/cancelling affects pending deadlines only, never an
+already queued callback. Due callbacks use the existing handler queue and execute at ordinary safe dispatcher
+boundaries; they also wake an idle scheduler before its next field. Field events win equal-cycle ties and callback
+ties use ascending keys. Invalid infinite deadlines or zero callback addresses reject before replacement. No
+hardware counter, compare register, polling or SDK-specific alarm record is modeled. The native `deadlines` test
+covers replacement/cancellation, ordering, payload/ownership isolation, and actual running/idle dispatcher routes.
+This API does not itself implement any console SDK's SetAlarm or cancellation ABI.
+
 **K3.** Not reached by TMB: alarms, event flags,
 suspend/resume, `SetVSyncFlag` and the GS vsync callback (the kernel records the
 operation and has no effect yet for those `calllog.md` lists but TMB never makes).

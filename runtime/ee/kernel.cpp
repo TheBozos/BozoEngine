@@ -4,6 +4,7 @@
 #include <bit>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace bozo::ee
 {
@@ -28,7 +29,7 @@ namespace bozo::ee
             "rotate", "suspend", "resume", "wakeup", "cancel-wakeup", "release-wait", "sema-create", "sema-delete",
             "signal", "poll-sema", "wait-sema", "flag-create", "flag-delete", "flag-set", "flag-clear", "flag-poll",
             "flag-wait", "alarm-set", "alarm-cancel", "handler-add", "handler-remove", "handler-enable", "cause-enable",
-            "vsync-flag", "gs-vsync-callback", "field-rate", "thread-setup", "transfer"};
+            "vsync-flag", "gs-vsync-callback", "field-rate", "thread-setup", "transfer", "deadline-set", "deadline-cancel"};
         return op < kOpCount ? names[op] : "?";
     }
 
@@ -714,6 +715,17 @@ namespace bozo::ee
         case kOpFieldRate: fieldRate(arg(0), arg(1)); break;
         case kOpThreadSetup: threadSetup(arg(0), arg(1), arg(2)); break;
         case kOpTransfer: transfer(arg(0) != 0); break;
+        case kOpDeadlineSet:
+        {
+            QueuedHandler h;
+            h.kind=static_cast<uint16_t>(arg(1)); h.pc=arg(2);
+            for(uint32_t i=0;i<4;++i) h.a[i]=arg(3+i);
+            h.gp=arg(7); h.sp=arg(8); h.ra=arg(9); h.completion=arg(10)!=0;
+            h.tag=static_cast<uint64_t>(arg(11)) | (static_cast<uint64_t>(arg(12))<<32);
+            scheduleDeadline(arg(0),wide,h);
+            break;
+        }
+        case kOpDeadlineCancel: cancelDeadline(arg(0)); break;
         default:
             // Not used by TMB (alarms, event flags, suspend/resume...): recorded as made, no effect yet.
             {
@@ -762,6 +774,29 @@ namespace bozo::ee
         raise(false, kIntcVblankEnd);
     }
 
+    uint64_t Kernel::nextEvent() const
+    {
+        uint64_t next=std::min(nextStart_,nextEnd_);
+        for(const auto &[key,deadline]:deadlines_)
+            next=std::min(next,deadline.cycle);
+        return next;
+    }
+
+    void Kernel::scheduleDeadline(uint32_t key,uint64_t cycle,const QueuedHandler &h)
+    {
+        if(cycle==~0ull || !h.pc)
+            throw std::invalid_argument("native deadline requires a finite cycle and callback");
+        emit(kOpDeadlineSet,{key,h.kind,h.pc,h.a[0],h.a[1],h.a[2],h.a[3],h.gp,h.sp,h.ra,
+                            h.completion?1u:0u,static_cast<uint32_t>(h.tag),static_cast<uint32_t>(h.tag>>32)},cycle);
+        deadlines_[key]={cycle,h};
+    }
+
+    bool Kernel::cancelDeadline(uint32_t key)
+    {
+        emit(kOpDeadlineCancel,{key});
+        return deadlines_.erase(key)!=0;
+    }
+
     void Kernel::processEvents(uint64_t cycle)
     {
         while (nextEvent() <= cycle)
@@ -770,6 +805,19 @@ namespace bozo::ee
 
     void Kernel::processNextEvent()
     {
+        auto first=deadlines_.end();
+        for(auto it=deadlines_.begin();it!=deadlines_.end();++it)
+            if(first==deadlines_.end() || it->second.cycle<first->second.cycle)
+                first=it;
+        // Existing field events win equal-cycle ties; callback ties use key order.
+        if(first!=deadlines_.end() && first->second.cycle<std::min(nextStart_,nextEnd_))
+        {
+            const auto handler=first->second.handler;
+            deadlines_.erase(first);
+            Nested n(*this);
+            queue(handler);
+            return;
+        }
         if (nextStart_ <= nextEnd_)
             vblankStart();
         else
