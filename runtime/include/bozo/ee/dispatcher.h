@@ -88,7 +88,7 @@ namespace bozo::ee
         EnableIntc, DisableIntc, EnableDmac, DisableDmac, iEnableIntc, iDisableIntc, iEnableDmac, iDisableDmac,
         FlushCache, iFlushCache, EnableCache, DisableCache, EndOfHeap, GetMemorySize, GsGetIMR, GsPutIMR, iGsGetIMR,
         iGsPutIMR, SetGsCrt, ResetEE, GetOsdConfigParam, SetOsdConfigParam, GetOsdConfigParam2, SetOsdConfigParam2,
-        SetVSyncFlag, SetAlarm, iSetAlarm, ReleaseAlarm, iReleaseAlarm,
+        SetVSyncFlag, SetAlarm, iSetAlarm, ReleaseAlarm, iReleaseAlarm, InitSys,
     };
     // The kernel call a symbol name stands for (a leading "ps2_" and leading "_" are ignored), None if it is not one.
     KernelCall kernelCallByName(const std::string &name);

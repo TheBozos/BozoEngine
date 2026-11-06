@@ -13,6 +13,7 @@ target_compile_options(bozo_runtime_core PRIVATE -Wall -Wextra)
 # computes in single precision, never fused (the samples must stay the reference's).
 add_library(bozo_audio STATIC
   audio/mixer.cpp
+  audio/port_stream.cpp
   audio/libsd.cpp
   audio/wav.cpp)
 target_include_directories(bozo_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

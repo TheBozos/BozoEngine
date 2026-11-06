@@ -5,10 +5,11 @@
 // - override: every address of `--overrides` files (a port's registrations: TMB_Recomp's tools/tmb_overrides_list.py);
 // - store: the store instructions of those files that a port's store patch needs to tell apart (bozo/port.h).
 //
-//   bozo-externals <elf> <out.txt> [--overrides file]... [--stubs file]... [--check <log.clg>...]
+//   bozo-externals <elf> <out.txt> [--overrides file]... [--stubs file]... [--symbols file]... [--check <log.clg>...]
 //
 // An overrides file holds "override 0xADDR" and "store 0xADDR" lines (anything after '#' is a comment); a stubs file
-// one symbol name per line. --check compares the stubs with a call log's NAME chunk (the reference's stubs: a pinned
+// one symbol name per line; a symbol map names the functions of an ELF without symbols (docs/specs/symbol-map.md), read
+// like the ELF's own. --check compares the stubs with a call log's NAME chunk (the reference's stubs: a pinned
 // check needs the same set) and lists the differences.
 #include "elf.h"
 
@@ -31,7 +32,7 @@ namespace
 {
     int usage()
     {
-        std::fprintf(stderr, "usage: bozo-externals <elf> <out.txt> [--overrides file]... [--stubs file]... [--check log.clg]...\n");
+        std::fprintf(stderr, "usage: bozo-externals <elf> <out.txt> [--overrides file]... [--stubs file]... [--symbols file]... [--check log.clg]...\n");
         return 2;
     }
 
@@ -54,7 +55,7 @@ int main(int argc, char **argv)
     if (argc < 3)
         return usage();
     const std::string elfPath = argv[1], outPath = argv[2];
-    std::vector<std::string> overrideFiles, stubFiles, checkLogs;
+    std::vector<std::string> overrideFiles, stubFiles, checkLogs, symbolMaps;
     for (int k = 3; k < argc; ++k)
     {
         const std::string a = argv[k];
@@ -62,6 +63,8 @@ int main(int argc, char **argv)
             return usage();
         if (a == "--overrides")
             overrideFiles.push_back(argv[++k]);
+        else if (a == "--symbols")
+            symbolMaps.push_back(argv[++k]);
         else if (a == "--stubs")
             stubFiles.push_back(argv[++k]);
         else if (a == "--check")
@@ -76,6 +79,12 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "%s: %s\n", elfPath.c_str(), elf.error().c_str());
         return 2;
     }
+    for (const std::string &path : symbolMaps)
+        if (!elf.loadSymbolMap(path))
+        {
+            std::fprintf(stderr, "%s: %s\n", elfPath.c_str(), elf.error().c_str());
+            return 2;
+        }
 
     // Names a port answers as stubs (beyond the native libraries).
     std::set<std::string> extraStubs;
