@@ -28,6 +28,15 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+Native RPC servers retain the task that registered them. Their compiled callbacks use separate bounded
+callback stacks while thread identity, current priority (`thbase:42`) and status refer to that logical
+owner. Changing its priority updates the same native task record. The parked RPC loop is not resumed
+or released by dispatch; callback context restores on return or exception. A bare root priority query
+returns illegal-context (-100). The `library_rpc_context` suite checks priority save/change/restore,
+identity/status, parked-worker preservation, failure cleanup, reset and independent servers. The ordinal
+is confirmed by [PS2SDK's export declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/src/exports.tab);
+no kernel implementation was copied. Blocking inside a root RPC callback remains unsupported.
+
 The compiled-library `sysclib:14` binding implements bounded native `memset`, returning the original
 destination and truncating its fill value to one byte. The complete span is checked before writing.
 `library_memory` covers empty/small/large/unaligned spans, surrounding bytes, rejected overflow and

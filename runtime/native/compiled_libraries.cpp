@@ -61,7 +61,8 @@ namespace bozo::native::irx
             uint64_t due = 0;
         };
         std::map<int32_t, Task> tasks;
-        int32_t nextTask = 1, current = 0;
+        int32_t nextTask = 1, current = 0, callbackTask = 0;
+        int32_t logicalTask() const { return current ? current : callbackTask; }
         uint32_t nextStack = 0x1fe000, invokeDepth = 0;
         struct Interrupt
         {
@@ -242,8 +243,11 @@ namespace bozo::native::irx
             cpu.gpr[6] = a2;
             return cpu;
         }
-        uint32_t invoke(uint32_t function, uint32_t gp, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0)
+        uint32_t invoke(uint32_t function, uint32_t gp, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0,
+                        int32_t ownerTask = 0)
         {
+            if (ownerTask && (!tasks.contains(ownerTask) || tasks.at(ownerTask).done))
+                throw std::runtime_error("native RPC owner task is not available");
             // Root calls and callbacks use a separate, bounded stack arena. Creating a persistent task
             // during a root call must never let the next callback overwrite that task's suspended stack.
             if (invokeDepth >= 4)
@@ -259,15 +263,17 @@ namespace bozo::native::irx
             struct Scope
             {
                 Impl &host;
-                int32_t saved;
+                int32_t saved, savedCallback;
                 ~Scope()
                 {
                     host.current = saved;
+                    host.callbackTask = savedCallback;
                     --host.invokeDepth;
                 }
-            } scope{*this, current};
+            } scope{*this, current, callbackTask};
             Environment env(*this, cpu);
             current = 0;
+            callbackTask = ownerTask;
             const bool done = env.call(function, kReturn);
             cycle += env.executed;
             if (!done)
@@ -558,7 +564,7 @@ namespace bozo::native::irx
             }
             if (n == 14 || n == 15)
             {
-                const auto it = tasks.find(a0 ? int32_t(a0) : current);
+                const auto it = tasks.find(a0 ? int32_t(a0) : logicalTask());
                 if (it == tasks.end())
                 {
                     ret(0xffffffffu);
@@ -570,12 +576,18 @@ namespace bozo::native::irx
             } // host callbacks remain cooperative; no preemption inside a native call
             if (n == 20)
             {
-                ret(uint32_t(current));
+                ret(uint32_t(logicalTask()));
+                return;
+            }
+            if (n == 42)
+            {
+                const auto it = tasks.find(logicalTask());
+                ret(it == tasks.end() ? uint32_t(-100) : it->second.priority);
                 return;
             }
             if (n == 22 || n == 23)
             {
-                const auto it = tasks.find(a0 ? int32_t(a0) : current);
+                const auto it = tasks.find(a0 ? int32_t(a0) : logicalTask());
                 if (it == tasks.end())
                 {
                     ret(0xffffffffu);
@@ -584,7 +596,7 @@ namespace bozo::native::irx
                 // IOP iop_thread_info: attributes, options, status, entry, stack, stack size, GP, priorities and waits.
                 const auto &t = it->second;
                 const uint32_t status = !t.started || t.done            ? 0x10u
-                                        : int32_t(it->first) == current ? 1u
+                                        : int32_t(it->first) == logicalTask() ? 1u
                                         : t.waiting                     ? 4u
                                                                         : 2u;
                 const uint32_t words[17] = {t.attr,
@@ -765,12 +777,13 @@ namespace bozo::native::irx
             if (n == 17)
             {
                 const uint32_t function = a2, buffer = a3, gp = c.gpr[28];
-                libraries.sif.servers[a1] = [this, function, buffer, gp](libs::Libraries &, libs::Guest &guest,
+                const int32_t ownerTask = logicalTask();
+                libraries.sif.servers[a1] = [this, function, buffer, gp, ownerTask](libs::Libraries &, libs::Guest &guest,
                                                                          const libs::NativeRpcRequest &request)
                 {
                     syncEe(libraries.now(guest));
                     copy(buffer, guest.in(request.send, request.sendBytes), request.sendBytes);
-                    const uint32_t reply = invoke(function, gp, request.command, buffer, request.sendBytes);
+                    const uint32_t reply = invoke(function, gp, request.command, buffer, request.sendBytes, ownerTask);
                     if (request.receiveBytes)
                     {
                         try
@@ -955,6 +968,7 @@ namespace bozo::native::irx
         p.nextSema = 1;
         p.nextTimer = 1;
         p.current = 0;
+        p.callbackTask = 0;
         p.cycle = 0;
         p.origin = false;
         std::fill(p.memory.begin(), p.memory.end(), 0);
