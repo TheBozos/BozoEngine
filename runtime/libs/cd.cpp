@@ -78,7 +78,20 @@ namespace bozo::libs
         return std::fread(out, kSectorBytes, n, f_) == n;
     }
 
-    bool DiscImage::findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes)
+    bool DiscImage::layer1Start(uint32_t &start)
+    {
+        uint8_t pvd[kSectorBytes];
+        if (!read(16, 1, pvd))
+            return false;
+        const uint32_t layer0 = uint32_t(pvd[80]) | uint32_t(pvd[81]) << 8 | uint32_t(pvd[82]) << 16 | uint32_t(pvd[83]) << 24;
+        if (layer0 <= 16 || layer0 >= sectors_ || !read(layer0, 1, pvd) || pvd[0] != 1 ||
+            std::string(reinterpret_cast<char *>(pvd + 1), 5) != "CD001")
+            return false;
+        start = layer0 - 16;
+        return true;
+    }
+
+    bool DiscImage::findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes, uint32_t layer)
     {
         const auto word = [](const uint8_t *p) {
             return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -101,9 +114,11 @@ namespace bozo::libs
             at = end + 1;
         }
         if (parts.empty()) return false;
+        uint32_t base = 0;
+        if (layer > 1 || (layer == 1 && !layer1Start(base))) return false;
         uint8_t pvd[kSectorBytes];
-        if (!read(16, 1, pvd) || pvd[156] < 34) return false;
-        uint32_t sector = word(pvd + 158), size = word(pvd + 166);
+        if (!read(base + 16, 1, pvd) || pvd[156] < 34) return false;
+        uint32_t sector = base + word(pvd + 158), size = word(pvd + 166);
         for (size_t part = 0; part < parts.size(); ++part) {
             if (!size || size > 8u * 1024 * 1024) return false;
             const uint32_t count = (size + kSectorBytes - 1) / kSectorBytes;
@@ -120,7 +135,7 @@ namespace bozo::libs
                 const std::string name(reinterpret_cast<const char *>(record + 33), record[32]);
                 if (normal(name) == parts[part]) {
                     if (part + 1 < parts.size() && !(record[25] & 2)) return false;
-                    sector = word(record + 2); size = word(record + 10); found = true; break;
+                    sector = base + word(record + 2); size = word(record + 10); found = true; break;
                 }
                 at += length;
             }
@@ -147,7 +162,7 @@ namespace bozo::libs
     namespace
     {
         // Copies `count` sectors from `lbn` to guest memory at `to`. False when the disc cannot be read.
-        bool sectorsTo(Libraries &l, Guest &g, uint32_t lbn, uint32_t count, uint32_t to)
+        bool sectors(Libraries &l, uint32_t lbn, uint32_t count, std::vector<uint8_t> &data)
         {
             CdState &cd = l.cd;
             if (!cd.disc.isOpen())
@@ -156,8 +171,14 @@ namespace bozo::libs
                 if (cd.imagePath.empty() || !cd.disc.open(cd.imagePath, err))
                     return false;
             }
-            std::vector<uint8_t> data(static_cast<size_t>(count) * kSectorBytes);
-            if (!cd.disc.read(lbn, count, data.data()))
+            data.resize(static_cast<size_t>(count) * kSectorBytes);
+            return cd.disc.read(lbn, count, data.data());
+        }
+
+        bool sectorsTo(Libraries &l, Guest &g, uint32_t lbn, uint32_t count, uint32_t to)
+        {
+            std::vector<uint8_t> data;
+            if (!sectors(l, lbn, count, data))
                 return false;
             g.write(to, data.data(), static_cast<uint32_t>(data.size()));
             return true;
@@ -184,6 +205,40 @@ namespace bozo::libs
         void mmode(Libraries &, Guest &g) { g.ret(1); }
         void diskReady(Libraries &, Guest &g) { g.ret(2); }
         void fsReset(Libraries &, Guest &g) { g.ret(0); }
+
+        void ncmdDiskReady(Libraries &l, Guest &g) { g.ret(l.now(g) < l.cd.readEnd ? 6 : 2); }
+        void syncS(Libraries &, Guest &g) { g.ret(0); }
+        void diskType(Libraries &l, Guest &g) { g.ret(l.cd.disc.isOpen() || !l.cd.imagePath.empty() ? 0x14 : 0); }
+
+        void breakCommand(Libraries &l, Guest &g)
+        {
+            const uint64_t now = l.now(g);
+            if (now < l.cd.readEnd)
+            {
+                l.cd.readEnd = now;
+                l.cd.error = 1;
+            }
+            g.ret(1);
+        }
+
+        void seek(Libraries &l, Guest &g)
+        {
+            CdState &cd = l.cd;
+            cd.error = 0;
+            g.cycles = l.callCycles(kSeekCycles);
+            cd.readEnd = l.now(g) + g.cycles;
+            if (cd.callback)
+            {
+                ee::QueuedHandler h;
+                h.kind = ee::kInvokeLibraryCall;
+                h.pc = cd.callback;
+                h.gp = cd.callbackGp;
+                h.sp = cd.callbackStack;
+                h.a[0] = 4;
+                l.queueHandler(h, {});
+            }
+            g.ret(1);
+        }
 
         void callback(Libraries &l, Guest &g)
         {
@@ -228,13 +283,9 @@ namespace bozo::libs
             g.ret(1);
         }
 
-        // sceCdRead(lbn, sectors, buffer, mode): the sectors are in the buffer when it returns, after a drive's time;
-        // 1 (0 when the disc cannot be read).
-        void read(Libraries &l, Guest &g)
+        void readEnds(Libraries &l, Guest &g, bool ok, uint32_t n)
         {
-            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
             CdState &cd = l.cd;
-            const bool ok = sectorsTo(l, g, lbn, n, to);
             cd.error = ok ? 0 : -1;
             cd.readBytes=ok?n*kSectorBytes:0;
             g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
@@ -249,6 +300,26 @@ namespace bozo::libs
                 l.queueHandler(h,{});
             }
             g.ret(ok ? 1 : 0);
+        }
+
+        // sceCdRead(lbn, sectors, buffer, mode): the sectors are in the buffer when it returns, after a drive's time;
+        // 1 (0 when the disc cannot be read).
+        void read(Libraries &l, Guest &g)
+        {
+            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
+            readEnds(l, g, sectorsTo(l, g, lbn, n, to), n);
+        }
+
+        // sceCdReadIOPm(lbn, sectors, IOP buffer, mode): as sceCdRead, into the memory of the port's compiled modules
+        // (SifState::transfer); 0 without such memory.
+        void readIop(Libraries &l, Guest &g)
+        {
+            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
+            std::vector<uint8_t> data;
+            const bool ok = l.sif.transfer && sectors(l, lbn, n, data);
+            if (ok)
+                l.sif.transfer(to, data.data(), static_cast<uint32_t>(data.size()));
+            readEnds(l, g, ok, n);
         }
 
         // sceCdSync(mode): mode 0 waits for the read to finish (a vblank wait, its v0 0), then 0; mode 1: 1 while a
@@ -358,20 +429,35 @@ namespace bozo::libs
     }
 
     namespace {
-        void searchFile(Libraries &l, Guest &g)
+        void searchLayer(Libraries &l, Guest &g, uint32_t layer)
         {
             // sceCdlFILE: sector, byte length, name[16], date[8].
             uint8_t sector[kSectorBytes];
             if (!discRead(l, 16, 1, sector)) { g.ret(0); return; }
             const std::string name = g.string(g.arg(1));
             uint32_t lbn = 0, bytes = 0;
-            if (!l.cd.disc.findFile(name, lbn, bytes)) { g.ret(0); return; }
+            if (!l.cd.disc.findFile(name, lbn, bytes, layer)) { g.ret(0); return; }
             uint8_t result[32] = {};
             std::memcpy(result, &lbn, 4); std::memcpy(result + 4, &bytes, 4);
             const auto slash = name.find_last_of("/\\");
             const auto leaf = name.substr(slash == std::string::npos ? 0 : slash + 1);
             std::memcpy(result + 8, leaf.data(), std::min<size_t>(16, leaf.size()));
             g.write(g.arg(0), result, sizeof(result)); g.ret(1);
+        }
+        void searchFile(Libraries &l, Guest &g) { searchLayer(l, g, 0); }
+        // sceCdLayerSearchFile(file, name, layer).
+        void layerSearchFile(Libraries &l, Guest &g) { searchLayer(l, g, g.arg(2)); }
+        // sceCdReadDvdDualInfo(int *onDual, u_int *layer1Start).
+        void readDvdDualInfo(Libraries &l, Guest &g)
+        {
+            uint8_t sector[kSectorBytes];
+            uint32_t start = 0;
+            const int32_t dual = discRead(l, 16, 1, sector) && l.cd.disc.layer1Start(start) ? 1 : 0;
+            if (!dual)
+                start = 0;
+            g.write(g.arg(0), &dual, sizeof(dual));
+            g.write(g.arg(1), &start, sizeof(start));
+            g.ret(1);
         }
     }
 
@@ -422,6 +508,8 @@ namespace bozo::libs
         out.push_back({"sceWrite", kCd, fsWrite});
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
+        out.push_back({"sceCdLayerSearchFile", kCd, layerSearchFile});
+        out.push_back({"sceCdReadDvdDualInfo", kCd, readDvdDualInfo});
         out.push_back({"sceCdInit", kCd, init});
         out.push_back({"sceCdStatus", kCd, status});
         out.push_back({"sceCdGetReadPos", kCd, readPosition});
@@ -429,9 +517,15 @@ namespace bozo::libs
         out.push_back({"sceCdInitEeCB", kCd, initCallback});
         out.push_back({"sceCdMmode", kCd, mmode});
         out.push_back({"sceCdDiskReady", kCd, diskReady});
+        out.push_back({"sceCdNcmdDiskReady", kCd, ncmdDiskReady});
+        out.push_back({"sceCdSyncS", kCd, syncS});
+        out.push_back({"sceCdGetDiskType", kCd, diskType});
+        out.push_back({"sceCdBreak", kCd, breakCommand});
+        out.push_back({"sceCdSeek", kCd, seek, false, true});
         out.push_back({"sceFsReset", kCd, fsReset});
         out.push_back({"sceCdReadClock", kCd, readClock});
         out.push_back({"sceCdRead", kCd, read, false, true});
+        out.push_back({"sceCdReadIOPm", kCd, readIop, false, true});
         out.push_back({"sceCdSync", kCd, sync, false, true});
         out.push_back({"sceCdGetError", kCd, getError});
         out.push_back({"sceCdStInit", kCd, stInit});

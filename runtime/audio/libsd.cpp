@@ -4,6 +4,9 @@
 // libsd at its API on the native mixer (bozo/audio/libsd.h; behaviour: docs/specs/libraries.md section 15.14).
 #include "bozo/audio/libsd.h"
 
+#include <array>
+#include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace bozo::audio
@@ -32,11 +35,30 @@ namespace bozo::audio
         {
             return static_cast<int>((entry >> 1u) & 0x1Fu) % Mixer::kVoices;
         }
+
+        // 32768 * 2^(i / 12) for the 12 semitones, then 32768 * 2^(i / 1536) for the 128 fine steps, rounded down: the
+        // SDK's two tables, one after the other.
+        uint32_t pitchStep(int32_t index)
+        {
+            static const std::array<uint16_t, 140> table = []
+            {
+                std::array<uint16_t, 140> t{};
+                for (int i = 0; i < 12; ++i)
+                    t[i] = static_cast<uint16_t>(std::floor(32768.0 * std::exp2(i / 12.0)));
+                for (int i = 0; i < 128; ++i)
+                    t[12 + i] = static_cast<uint16_t>(std::floor(32768.0 * std::exp2(i / 1536.0)));
+                return t;
+            }();
+            if (index < 0 || index >= static_cast<int32_t>(table.size()))
+                throw std::runtime_error("libsd note conversion outside its pitch tables");
+            return table[static_cast<size_t>(index)];
+        }
     }
 
     Libsd::Libsd(Mixer &mixer, LibsdHost &host) : m_mixer(mixer), m_host(host)
     {
-        m_mixer.setInputHalfCallback([this](int group, int) { transferDone(static_cast<uint32_t>(group)); });
+        m_mixer.setInputHalfCallback([this](int group, int half)
+                                     { inputHalf(static_cast<uint32_t>(group), static_cast<uint32_t>(half)); });
     }
 
     Libsd::~Libsd()
@@ -304,6 +326,20 @@ namespace bozo::audio
             m_host.interruptCall(callback.function, 0u, 0u, callback.gp, kTransferDelay);
     }
 
+    // Each half is kept until a status read answers it: a driver reading the status after its handler, once the
+    // input has moved on, still learns which half to refill.
+    void Libsd::inputHalf(uint32_t channel, uint32_t half)
+    {
+        uint32_t &pending = m_state.halvesPending[channel];
+        if (pending == 2u)
+        {
+            m_state.halves[channel][0] = m_state.halves[channel][1];
+            pending = 1u;
+        }
+        m_state.halves[channel][pending++] = half;
+        transferDone(channel);
+    }
+
     uint32_t Libsd::voiceTrans(uint32_t channel, uint32_t mode, uint32_t iop, uint32_t sound, uint32_t size)
     {
         sync();
@@ -348,6 +384,7 @@ namespace bozo::audio
         {
             const uint32_t position = blockPosition(channel);
             m_mixer.stopInput(static_cast<int>(channel));
+            m_state.halvesPending[channel] = 0u;
             return position;
         }
         case 1u:
@@ -360,6 +397,7 @@ namespace bozo::audio
             const uint32_t offset = (mode & 3u) == 3u && start >= iop ? start - iop : 0u;
             m_state.blockBuffer[channel] = iop;
             m_state.blockSize[channel] = size;
+            m_state.halvesPending[channel] = 0u;
             m_mixer.startInput(static_cast<int>(channel), m_host.iopRam() + at, size, offset, (mode & 0x10u) != 0u);
             return 0u;
         }
@@ -370,6 +408,14 @@ namespace bozo::audio
     {
         sync();
         channel &= 1u;
+        if (m_state.halvesPending[channel] != 0u)
+        {
+            const uint32_t half = m_state.halves[channel][0];
+            m_state.halves[channel][0] = m_state.halves[channel][1];
+            --m_state.halvesPending[channel];
+            const uint32_t second = half == 0u ? 1u : 0u;
+            return (second << 24u) | (m_state.blockBuffer[channel] + second * (m_state.blockSize[channel] / 2u));
+        }
         if (!m_mixer.inputPlaying(static_cast<int>(channel)))
             return 0u;
         const uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));
@@ -423,6 +469,46 @@ namespace bozo::audio
         return 0u;
     }
 
+    uint32_t Libsd::setEffectMode(uint32_t core, uint32_t attr)
+    {
+        sync();
+        core &= 1u;
+        const uint32_t mode = r32(attr + 4u);
+        if ((mode & 0xFFu) >= 10u)
+            return static_cast<uint32_t>(-100);
+        auto &effect = m_state.effect[core];
+        effect.mode = mode & 0xFFu;
+        effect.delay = 0u;
+        effect.feedback = 0u;
+        const int group = static_cast<int>(core);
+        m_mixer.setEffectVolume(group, 0, 0u);
+        m_mixer.setEffectVolume(group, 1, 0u);
+        m_mixer.setEffect(group, static_cast<int>(effect.mode), 0u, 0u, m_state.effectEnd[core]);
+        if ((mode & 0x100u) != 0u)
+            m_mixer.clearEffectArea(static_cast<int>(effect.mode), m_state.effectEnd[core]);
+        return 0u;
+    }
+
+    uint32_t Libsd::setEffectModeParams(uint32_t core, uint32_t attr)
+    {
+        sync();
+        core &= 1u;
+        auto &effect = m_state.effect[core];
+        const uint32_t mode = r8(attr + 4u);
+        if (mode >= 10u || mode != effect.mode)
+            return static_cast<uint32_t>(-100);
+        const int group = static_cast<int>(core);
+        if (mode == 7u || mode == 8u)
+        {
+            effect.delay = r32(attr + 0xCu);
+            effect.feedback = r32(attr + 0x10u);
+            m_mixer.setEffect(group, static_cast<int>(mode), effect.delay, effect.feedback, m_state.effectEnd[core]);
+        }
+        m_mixer.setEffectVolume(group, 0, r16(attr + 8u));
+        m_mixer.setEffectVolume(group, 1, r16(attr + 0xAu));
+        return 0u;
+    }
+
     uint32_t Libsd::getEffectAttr(uint32_t core, uint32_t attr)
     {
         sync();
@@ -445,9 +531,80 @@ namespace bozo::audio
         return 0u;
     }
 
+    uint32_t Libsd::transIntrHandlerArgument(uint32_t channel)
+    {
+        return m_state.transHandler[channel & 1u].argument;
+    }
+
+    uint32_t Libsd::stopTrans(uint32_t channel)
+    {
+        sync();
+        channel &= 1u;
+        m_mixer.stopInput(static_cast<int>(channel));
+        m_state.halvesPending[channel] = 0u;
+        return 0u;
+    }
+
+    uint32_t Libsd::note2Pitch(uint32_t centerNote, uint32_t centerFine, uint32_t note, uint32_t fineArgument)
+    {
+        const int32_t fine = static_cast<int16_t>(fineArgument) + static_cast<int32_t>(centerFine & 0xFFFFu);
+        const int32_t carry = (fine < 0 ? fine + 127 : fine) >> 7;
+        const int32_t semitones = static_cast<int16_t>(note + static_cast<uint32_t>(carry) - centerNote);
+        const int32_t octave = semitones / 12;
+        int32_t shift = octave - 2, index = semitones - octave * 12, fineIndex = fine - carry * 128;
+        if (index < 0 || (index == 0 && fineIndex < 0))
+        {
+            index += 12;
+            shift = octave - 3;
+        }
+        if (fineIndex < 0)
+        {
+            index += carry - 1;
+            fineIndex += (carry + 1) * 128;
+        }
+        const uint32_t product = pitchStep(static_cast<int16_t>(index)) * pitchStep(12 + fineIndex);
+        uint32_t pitch = static_cast<uint32_t>(static_cast<int32_t>(product) >> 16);
+        if (static_cast<int16_t>(shift) < 0)
+        {
+            const uint32_t down = static_cast<uint32_t>(-static_cast<int16_t>(shift));
+            pitch = (pitch + (1u << ((down - 1u) & 31u))) >> (down & 31u);
+        }
+        return pitch & 0xFFFFu;
+    }
+
+    uint32_t Libsd::pitch2Note(uint32_t centerNote, uint32_t centerFine, uint32_t pitch)
+    {
+        uint32_t p = pitch & 0xFFFFu;
+        if (p >= 0x4000u)
+            p = 0x3FFFu;
+        int32_t top = 0;
+        for (int32_t bit = 0; bit < 14; ++bit)
+            if (((p >> bit) & 1u) != 0u)
+                top = bit;
+        const uint32_t normal = (p << (15 - top)) & 0xFFFFu;
+        int32_t semitone = 0;
+        for (int32_t k = 11; k >= 0; --k)
+            if (normal >= pitchStep(k))
+            {
+                semitone = k;
+                break;
+            }
+        const uint32_t ratio = ((normal << 15u) / pitchStep(semitone)) & 0xFFFFu;
+        int32_t step = 0;
+        for (int32_t k = 127; k >= 0; --k)
+            if (ratio >= pitchStep(12 + k))
+            {
+                step = k;
+                break;
+            }
+        const uint32_t fine = centerFine + static_cast<uint32_t>(step + 1);
+        const uint32_t result = centerNote + static_cast<uint32_t>((top - 12) * 12 + semitone) + ((fine & 0xFFFFu) >> 7u);
+        return ((result << 8u) + (fine & 0x7Eu)) & 0xFFFEu;
+    }
+
     bool Libsd::handles(uint32_t ordinal)
     {
-        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u);
+        return ordinal == 2u || (ordinal >= 4u && ordinal <= 28u) || (ordinal >= 30u && ordinal <= 33u);
     }
 
     bool Libsd::call(uint32_t ordinal, const uint32_t a[5], uint32_t gp, uint32_t &result)
@@ -476,8 +633,15 @@ namespace bozo::audio
         case 23u: result = setEffectAttr(a[0], a[1]); return true;
         case 24u: result = getEffectAttr(a[0], a[1]); return true;
         case 25u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 31u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 32u: result = setEffectMode(a[0], a[1]); return true;
+        case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
         case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
+        case 13u: result = note2Pitch(a[0], a[1], a[2], a[3]); return true;
+        case 14u: result = pitch2Note(a[0], a[1], a[2]); return true;
+        case 28u: result = transIntrHandlerArgument(a[0]); return true;
+        case 30u: result = stopTrans(a[0]); return true;
         default: return false;
         }
     }

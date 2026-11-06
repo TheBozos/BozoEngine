@@ -48,7 +48,8 @@ namespace bozo::native::irx
         // Submit a copied user message to a registered linked native command handler.
         // No system command, transport packet processor or interrupt is executed.
         uint32_t submitCommand(uint32_t command,std::span<const uint8_t> data);
-        int32_t startImage(const std::string &name);
+        // With arguments the module's start gets argc and argv as modload gives them: argv[0] is its name.
+        int32_t startImage(const std::string &name, std::span<const std::string> arguments = {});
         void reset();
         audio::Mixer *advanceTo(uint64_t eeCycle);
         void writeBuffer(uint32_t address, const uint8_t *data, uint32_t bytes);

@@ -100,13 +100,15 @@ namespace bozo::libs
             uint32_t commandFrame = 0;  // the frame it was given in
             uint8_t align[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}; // scePadSetActAlign (0xff: no motor)
             uint8_t direct[6] = {};     // scePadSetActDirect: the motor levels
+            int32_t reqState = 0;       // scePadSetReqState
         };
         std::array<std::array<Port, 4>, 2> ports{};
         bool initialized = false;
         uint64_t reads = 0;
         std::array<std::array<uint64_t, 4>, 2> socketReads{}; // the reads that found a controller, by port and slot
-        // A multitap in port 1 (sceMtapPortOpen through a port's override: the game's sceMtap library is answered by
-        // the port): players 2-4 on its slots 1-3, port 2's pad idle.
+        // A multitap opened in port 1 (sceMtapPortOpen): players 2-4 on its slots 1-3, port 2's pad idle.
         bool multitap = false;
+        // Whether sceMtapPortOpen finds a multitap in port 1 (a port or the settings can unplug it).
+        bool multitapAttached = true;
     };
 }

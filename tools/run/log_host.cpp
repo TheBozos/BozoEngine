@@ -559,9 +559,9 @@ namespace bozo::run
                 // from the log's value here. The override's own last read of the count is not in the log either: the
                 // log's pending poll cycles say whether it read this same value.
                 libs_.io.t0Rebase = false;
-                libs_.io.t0Start = c.value[0] & 0xFFFFu;
-                libs_.io.t0Base = d_->now(ctx);
-                libs_.io.t0LastRead = c.timerAfter != c.timerBefore ? libs_.io.t0Start : ~0u;
+                libs_.io.timers[0].start = c.value[0] & 0xFFFFu;
+                libs_.io.timers[0].base = d_->now(ctx);
+                libs_.io.timers[0].lastRead = c.timerAfter != c.timerBefore ? libs_.io.timers[0].start : ~0u;
                 ++native_.observed;
             }
             libs_.ioAccess = libs::IoAccess{address, size, false, 0, c.timerBefore};

@@ -13,6 +13,7 @@
 #include "bozo/libs/pad.h"
 #include "bozo/libs/sif.h"
 #include "bozo/libs/snd.h"
+#include "bozo/libs/timer.h"
 
 #include <cstdint>
 #include <functional>
@@ -42,9 +43,10 @@ namespace bozo::libs
         kMpeg = 1u << 8, // libmpeg: the movies (needs FFmpeg)
         kSif = 1u << 9,  // the SIF layer: RPC, the IOP heap, module loading, the SIF registers and DMA
         kSnd = 1u << 10, // the 989SND sound driver behind the SIF RPC
-        kAllLibraries = (1u << 11) - 1,
+        kTimer = 1u << 11, // libkernel's timer library and DelayThread
+        kAllLibraries = (1u << 12) - 1,
     };
-    constexpr unsigned kLibraryCount = 11;
+    constexpr unsigned kLibraryCount = 12;
 
     // Which microcode VU0's code memory holds: the image of the VIF0 chain the game kicked last (libraries.md
     // section 10). TMB's two chains are static data in its ELF.
@@ -206,6 +208,7 @@ namespace bozo::libs
         std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
         SifState sif;
+        TimerState timers;
         SndDriver snd;
         // Whether the 989SND driver answers the RPC (else its replies come from the log and it follows them).
         bool sndNative = true;
@@ -244,6 +247,7 @@ namespace bozo::libs
     void addCd(std::vector<Function> &out);
     void addMpeg(std::vector<Function> &out); // nothing without a video decoder (FFmpeg)
     void addSif(std::vector<Function> &out);
+    void addTimer(std::vector<Function> &out);
     // Sectors of the game's disc (the CD library's image, opened on first use): false when there is none.
     bool discRead(Libraries &l, uint32_t lbn, uint32_t count, uint8_t *out);
 

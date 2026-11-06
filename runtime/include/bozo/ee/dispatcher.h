@@ -43,6 +43,9 @@ namespace bozo::ee
         virtual void ioRead(Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2]) = 0;
         virtual void ioWrite(Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2]) = 0;
         virtual bool cop0Condition(Dispatcher &, R5900Context *) { return true; }
+        // A syscall whose service is a native library function (`name`, kernel.md section 2): false when the host
+        // has none (the dispatcher then faults).
+        virtual bool librarySyscall(Dispatcher &, R5900Context *, const char * /*name*/) { return false; }
         // Around a native kernel call (kind 1: a kernel function at `target`; kind 3: a syscall at `target`).
         virtual void kernelCallBegin(Dispatcher &, R5900Context *, uint32_t /*target*/, uint32_t /*kind*/) {}
         virtual void kernelCallEnd(Dispatcher &, R5900Context *, uint32_t /*target*/, bool /*stopping*/) {}
@@ -88,10 +91,15 @@ namespace bozo::ee
         EnableIntc, DisableIntc, EnableDmac, DisableDmac, iEnableIntc, iDisableIntc, iEnableDmac, iDisableDmac,
         FlushCache, iFlushCache, EnableCache, DisableCache, EndOfHeap, GetMemorySize, GsGetIMR, GsPutIMR, iGsGetIMR,
         iGsPutIMR, SetGsCrt, ResetEE, GetOsdConfigParam, SetOsdConfigParam, GetOsdConfigParam2, SetOsdConfigParam2,
-        SetVSyncFlag, SetAlarm, iSetAlarm, ReleaseAlarm, iReleaseAlarm,
+        SetVSyncFlag, SetAlarm, iSetAlarm, ReleaseAlarm, iReleaseAlarm, InitSys,
     };
     // The kernel call a symbol name stands for (a leading "ps2_" and leading "_" are ignored), None if it is not one.
     KernelCall kernelCallByName(const std::string &name);
+    // The kernel call an EE syscall number stands for (v1 at the `syscall`, negative for the interrupt-safe entries:
+    // kernel.md section 2), None if it is not one.
+    KernelCall kernelCallBySyscall(int32_t number);
+    // The native library function an EE syscall number stands for (the SIF DMA calls), null if none.
+    const char *librarySyscall(int32_t number);
 
     class Dispatcher final : public RuntimeServices
     {
@@ -110,10 +118,21 @@ namespace bozo::ee
         bool isKernelCall(uint32_t address) const { return kernelCalls_.count(address) != 0; }
         // The heap's start as SetupHeap (syscall 61) returned it (0 before): where the game's malloc starts.
         uint32_t heapStart() const { return heapStart_; }
+        // The console's OSD settings GetOsdConfigParam answers (kernel.md section 2): English, 4:3, configuration
+        // version 2 (a zeroed second block) until the game or the port sets them.
+        uint32_t osdConfig = 0x00014010u;
+        std::vector<uint8_t> osdConfig2 = std::vector<uint8_t>(0x100, 0);
 
         // The main thread starts at `entry` with sp `sp`; the dispatcher then runs until the host ends the run.
         void boot(uint32_t entry, uint32_t sp);
         void run();
+
+        // ---- The native frame boundary (kernel.md section 2) ----
+        // A game frame ended: SetVSyncFlag's words are written and the sync-V callback is queued. Nothing here follows
+        // the field clock.
+        void frameCompleted();
+        // sceGsSyncVCallback: returns the callback it replaces (0: none; `pc` 0 removes it).
+        uint32_t setSyncVCallback(uint32_t pc, uint32_t gp);
 
         // ---- EE time ----
         uint64_t cycle() const { return cycle_; }
@@ -218,6 +237,7 @@ namespace bozo::ee
         uint64_t dispatches = 0, stops = 0, handlersRun = 0, jumps = 0;
 
     private:
+        uint32_t perfCounter(const R5900Context *ctx, int counter) const;
         static void kernelEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         static void libraryEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         // Runs the native kernel call; returns true when the caller must stop (it blocked or gave way).
@@ -241,7 +261,18 @@ namespace bozo::ee
         Kernel kernel_;
         std::map<uint32_t, KernelCall> kernelCalls_;
         uint64_t cycle_ = 0;
+        uint32_t pccr_ = 0;
+        uint32_t pcr_[2] = {0, 0};
+        uint64_t perfSince_ = 0;
+        uint32_t epc_ = 0;
+        uint32_t errorEpc_ = 0;
         uint32_t heapStart_ = 0;
+        int32_t syscall_ = 0; // the syscall being answered (0: none; 0 is no service BozoEngine answers)
+        int32_t heapSize_ = -1; // SetupHeap's size (negative: up to the main thread's stack)
+        uint64_t gsImr_ = 0x7F00; // GsPutIMR's mask (no GS behind it): every GS interrupt masked
+        uint32_t vsyncFlag_ = 0, vsyncCsr_ = 0; // SetVSyncFlag's addresses
+        uint32_t syncVCallback_ = 0, syncVGp_ = 0;
+        uint64_t framesCompleted_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
         uint32_t timerPending_ = 0;

@@ -101,9 +101,11 @@ namespace bozo::host
         void waitCompleted(ee::Dispatcher &, ee::Thread &t) override;
         void handlerCompleted(ee::Dispatcher &, ee::Thread &t, const ee::Frame &f) override;
         void fault(ee::Dispatcher &, R5900Context *, const std::string &what) override;
-        void idle(ee::Dispatcher &, uint64_t, uint64_t) override { watchdog(nullptr); }
+        void idle(ee::Dispatcher &, uint64_t from, uint64_t to) override;
         void resuming(ee::Dispatcher &, ee::Thread &, ee::Frame &f, uint32_t) override { watchdog(&f.ctx); }
+        void kernelCallBegin(ee::Dispatcher &, R5900Context *ctx, uint32_t target, uint32_t kind) override;
         void kernelCallEnd(ee::Dispatcher &, R5900Context *, uint32_t target, bool) override;
+        bool librarySyscall(ee::Dispatcher &, R5900Context *ctx, const char *name) override;
 
         // ee::KernelObserver
         bool dmacStatusSet(uint32_t cause) override;
@@ -148,6 +150,7 @@ namespace bozo::host
         std::unordered_map<uint32_t, port::Function> portAt_;
         std::unordered_map<uint32_t, const libs::Function *> nativeAt_;
         std::unordered_set<uint32_t> flushCacheAt_; // the kernel's FlushCache entries (kernelCallEnd)
+        bool flushCacheSyscall_ = false;            // the syscall being answered is FlushCache's
         std::map<uint32_t, std::string> names_;
         std::map<uint32_t, uint64_t> perOverride_;
         uint32_t insideDepth_ = 0;

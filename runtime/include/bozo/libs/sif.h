@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <span>
+#include <vector>
 
 namespace bozo::libs
 {
@@ -32,6 +33,8 @@ namespace bozo::libs
         bool release(uint32_t address);    // a block's start; false when it is not one in use
         // The block in use that contains `address` (its start), 0 if none.
         uint32_t blockAt(uint32_t address) const;
+        uint32_t largestFree() const;
+        uint32_t totalFree() const;
 
     private:
         std::map<uint32_t, uint32_t> free_; // start -> bytes
@@ -46,8 +49,14 @@ namespace bozo::libs
         // Native service providers registered by a port or reusable library. No IOP/device backend.
         using RpcHandler = std::function<void(Libraries &, Guest &, const NativeRpcRequest &)>;
         std::map<uint32_t, RpcHandler> servers;
+        // Native EE services that compiled IOP modules bind (sceSifBindRpc) and call (sceSifCallRpc) by service id: the
+        // command, the bytes sent, and the reply to fill (the caller's receive size). The call completes when it returns.
+        using EeRpcHandler = std::function<void(uint32_t, std::span<const uint8_t>, std::span<uint8_t>)>;
+        std::map<uint32_t, EeRpcHandler> eeServers;
         std::function<void(uint32_t, const uint8_t *, uint32_t)> transfer;
         std::function<int32_t(const std::string &)> moduleLoader;
+        // Takes the place of moduleLoader when set: also given sceSifLoadModule's arguments, split at their NULs.
+        std::function<int32_t(const std::string &, const std::vector<std::string> &)> moduleLoaderWithArguments;
         std::function<void()> resetProvider;
         std::function<uint32_t(uint32_t)> allocateBuffer;
         std::function<bool(uint32_t)> freeBuffer;

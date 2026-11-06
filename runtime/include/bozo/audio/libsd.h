@@ -44,7 +44,7 @@ namespace bozo::audio
         Libsd(const Libsd &) = delete;
         Libsd &operator=(const Libsd &) = delete;
 
-        // libsd's export numbers this class answers (4 sceSdInit ... 27 sceSdSetSpu2IntrHandler).
+        // libsd's export numbers this class answers (2, 4 sceSdInit ... 28 sceSdGetTransIntrHandlerArgument, 30 sceSdStopTrans).
         static bool handles(uint32_t ordinal);
         // One export by its number: args are its arguments (a0-a3, then the stack's), gp the caller's; the result is
         // v0. False when the number is not one handles() takes.
@@ -72,13 +72,24 @@ namespace bozo::audio
         // from start, | 0x10 loops; 2 stops and returns where it was; 1 not done). Each half played signals the
         // channel's end.
         uint32_t blockTrans(uint32_t channel, uint32_t mode, uint32_t iop, uint32_t size, uint32_t start);
-        uint32_t blockTransStatus(uint32_t channel);   // 20: where the input plays now, | 1 << 24 in the 2nd half
+        // 20: where the input plays now, | 1 << 24 in the 2nd half; while a signalled half is unread, the start of the
+        // half that followed it (each signalled half answered once, in turn).
+        uint32_t blockTransStatus(uint32_t channel);
         uint32_t setTransCallback(uint32_t channel, uint32_t function, uint32_t gp);                       // 21
         uint32_t setTransIntrHandler(uint32_t channel, uint32_t function, uint32_t argument, uint32_t gp); // 26
         uint32_t setIrqCallback(uint32_t function);                                                        // 22
         uint32_t setEffectAttr(uint32_t core, uint32_t attr); // 23: attr {core, mode, depth L/R, delay, feedback}
         uint32_t getEffectAttr(uint32_t core, uint32_t attr); // 24
-        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25
+        uint32_t setEffectMode(uint32_t core, uint32_t attr);       // 32: the mode, its delay, feedback and depth 0
+        uint32_t setEffectModeParams(uint32_t core, uint32_t attr); // 33: the current mode only: its depth; delay, feedback in modes 7, 8
+        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25, and 31 (Clean: waits for it)
+        uint32_t transIntrHandlerArgument(uint32_t channel);                         // 28
+        uint32_t stopTrans(uint32_t channel);                                        // 30
+
+        // 13, 14: libsd's equal-temperament conversions (pitch 0x1000 plays at the sample's rate; a note's fine part is
+        // 1/128 semitone), the same integer results as the SDK's.
+        static uint32_t note2Pitch(uint32_t centerNote, uint32_t centerFine, uint32_t note, uint32_t fine);
+        static uint32_t pitch2Note(uint32_t centerNote, uint32_t centerFine, uint32_t pitch);
 
         // The transfer-end delay (IOP cycles) after a transfer or an input half.
         static constexpr uint32_t kTransferDelay = 2000u;
@@ -87,6 +98,7 @@ namespace bozo::audio
         void sync();
         uint32_t batchOne(uint32_t function, uint32_t entry, uint32_t value);
         void transferDone(uint32_t channel);
+        void inputHalf(uint32_t channel, uint32_t half);
         uint32_t blockPosition(uint32_t channel);
 
         uint32_t physical(uint32_t address);
@@ -110,6 +122,8 @@ namespace bozo::audio
             Callback transCallback[2], transHandler[2]; // per DMA channel
             uint32_t irqCallback = 0;
             uint32_t blockBuffer[2] = {}, blockSize[2] = {}; // the block transfer playing as each core's input
+            // The halves signalled and not yet read by sceSdBlockTransStatus (oldest first, at most two).
+            uint32_t halves[2][2] = {}, halvesPending[2] = {};
             uint32_t effectEnd[2] = {0x1DFFFFu, 0x1FFFFFu}; // sceSdInit's effect end addresses
             struct Effect
             {

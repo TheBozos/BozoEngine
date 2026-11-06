@@ -57,6 +57,13 @@ int main()
         return 4;
     if (call(999, 0x200000) != -1)
         return 5;
+    const uint32_t atZero = 0x5a5a5a5a;
+    std::memcpy(d.runtime().memory.ram(), &atZero, 4);
+    if (call(other, 0) != 0x10)
+        return 11;
+    std::memcpy(words, d.runtime().memory.ram(), 4);
+    if (words[0] != atZero)
+        return 12;
     try
     {
         call(0, 0x12000000);
@@ -67,7 +74,47 @@ int main()
     }
     if (bozo::ee::kernelCallByName("SyncDCache") != bozo::ee::KernelCall::FlushCache)
         return 7;
+    {
+        using namespace bozo;
+        R5900Context perf;
+        auto &rt = d.runtime();
+        const uint64_t start = d.cycle();
+        d.cop0Write(&perf, &rt, kCop0Pcr0, 5);
+        d.cop0Write(&perf, &rt, kCop0Pcr1, 50);
+        d.setNow(&perf, start + 100);
+        if (d.cop0Read(&perf, &rt, kCop0Pcr0) != 5 || d.cop0Read(&perf, &rt, kCop0Pcr1) != 50)
+            return 9;
+        d.cop0Write(&perf, &rt, kCop0Pccr, kPccrCountEnable | 0x3F8);
+        if (d.cop0Read(&perf, &rt, kCop0Pccr) != (kPccrCountEnable | 0x3F8))
+            return 10;
+        d.setNow(&perf, start + 200);
+        if (d.cop0Read(&perf, &rt, kCop0Pcr0) != 105 || d.cop0Read(&perf, &rt, kCop0Pcr1) != 150)
+            return 11;
+        d.cop0Write(&perf, &rt, kCop0Pcr0, 0);
+        d.setNow(&perf, start + 210);
+        if (d.cop0Read(&perf, &rt, kCop0Pcr0) != 10 || d.cop0Read(&perf, &rt, kCop0Pcr1) != 160)
+            return 12;
+        d.cop0Write(&perf, &rt, kCop0Pccr, 0x3F8);
+        d.setNow(&perf, start + 300);
+        if (d.cop0Read(&perf, &rt, kCop0Pcr0) != 10 || d.cop0Read(&perf, &rt, kCop0Pcr1) != 160)
+            return 13;
+        const uint32_t before = rt.cop0Status;
+        d.cop0Write(&perf, &rt, kCop0ErrorEpc, 0x123450);
+        d.cop0Write(&perf, &rt, kCop0Epc, 0x543210);
+        rt.cop0Status = kStatusERL | kStatusEXL;
+        d.eret(rt.memory.ram(), &perf, &rt);
+        if (perf.pc != 0x123450 || rt.cop0Status != kStatusEXL)
+            return 14;
+        d.eret(rt.memory.ram(), &perf, &rt);
+        if (perf.pc != 0x543210 || rt.cop0Status != 0)
+            return 15;
+        rt.cop0Status = before;
+    }
     if (bozo::ee::kernelCallByName("iInvalidDCache") != bozo::ee::KernelCall::iFlushCache)
         return 8;
+    if (bozo::ee::kernelCallByName("_InitSys") != bozo::ee::KernelCall::InitSys)
+        return 9;
+    if (d.cop0Read(&ctx, &d.runtime(), 9) != static_cast<uint32_t>(d.cycle()))
+        return 16;
     return 0;
 }

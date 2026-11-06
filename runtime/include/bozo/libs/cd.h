@@ -15,6 +15,7 @@ namespace bozo::libs
     // EE cycles a sector takes on a PS2 drive (DVD at 4x; the reference's deterministic mode charges the same:
     // reference/tmb/README.md, the Midtown Suburbs freeze).
     constexpr uint64_t kSectorCycles = 114400;
+    constexpr uint64_t kSeekCycles = 29491200; // 100 ms
 
     // The game's disc: an ISO 9660 image of 2048-byte sectors (the user's own copy of the game).
     class DiscImage
@@ -25,8 +26,12 @@ namespace bozo::libs
         bool isOpen() const { return f_ != nullptr; }
         const std::string &path() const { return path_; }
         uint32_t sectors() const { return sectors_; }
-        // ISO 9660 directory lookup, including nested paths and optional ;version suffixes.
-        bool findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes);
+        // ISO 9660 directory lookup, including nested paths and optional ;version suffixes, in the layer's volume
+        // (1: a dual-layer DVD's second layer, its extents counted from layer1Start()); lbn is the disc's own sector.
+        bool findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes, uint32_t layer = 0);
+        // The second layer's start on a dual-layer DVD: its volume descriptor sits at the sector right after the
+        // first layer's volume, and its sectors count from 16 before it. False on a single-layer image.
+        bool layer1Start(uint32_t &start);
         // Reads `count` sectors from `lbn` into `out`; sectors past the end of the image read as zeros. False when
         // the image cannot be read.
         bool read(uint32_t lbn, uint32_t count, uint8_t *out);

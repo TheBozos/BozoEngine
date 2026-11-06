@@ -28,16 +28,30 @@ namespace bozo::libs
             return -1;
         }
 
-        // Timer 0's period in EE cycles: its clock (T0_MODE bits 0-1) is BUSCLK (half the EE's), /16, /256; 3 (the
-        // horizontal blank) is not modelled.
-        uint64_t t0Period(uint32_t mode)
+        constexpr uint64_t kNtscHblank = 18743; // a line of the default field rate, without a dispatcher
+
+        // Timer n's register block: T0 0x10000000, T1 0x10000800, T2 0x10001000, T3 0x10001800.
+        int timerOf(uint32_t a, uint32_t &reg)
+        {
+            if (a < 0x10000000u || a >= 0x10002000u)
+                return -1;
+            const uint32_t off = a & 0x7FFu;
+            if (off != 0 && off != 0x10u && off != 0x20u)
+                return -1;
+            reg = off >> 4;
+            return static_cast<int>((a - 0x10000000u) >> 11);
+        }
+
+        // A timer's period in EE cycles: its clock (Tn_MODE bits 0-1) is BUSCLK (half the EE's), /16, /256, the
+        // horizontal blank.
+        uint64_t timerPeriod(Libraries &l, uint32_t mode)
         {
             switch (mode & 3u)
             {
             case 0: return 2;
             case 1: return 32;
             case 2: return 512;
-            default: return 0;
+            default: return l.dispatcher() ? l.dispatcher()->kernel().hblank() : kNtscHblank;
             }
         }
 
@@ -60,7 +74,7 @@ namespace bozo::libs
     {
         const uint32_t a = address & 0x1FFFFFFFu;
         uint32_t reg = 0;
-        if (a == 0x10000000u || a == 0x10000010u)
+        if (timerOf(a, reg) >= 0)
             return size == 4;
         if (channelOf(a, reg) >= 0)
             return size == 1 || size == 2 || size == 4;
@@ -68,10 +82,18 @@ namespace bozo::libs
             return size == 4;
         if (a == 0x1000F520u || a == 0x1000F590u)
             return size == 4;
+        if (store && (a == 0x1000D080u || a == 0x1000D480u))
+            return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
         if (a == 0x12001000u) // FIELD reads; obsolete CSR acknowledgement stores have no effect
             return size == 8 || size == 4;
+        if (a == 0x12001010u) // IMR: a mask with no device behind it
+            return store && (size == 8 || size == 4);
+        if (a == 0x10003020u || a == 0x10003800u || a == 0x10003C00u) // GIF_STAT, VIF0_STAT, VIF1_STAT: idle
+            return !store && size == 4;
+        if (a == 0x10003010u || a == 0x10003820u || a == 0x10003C20u) // GIF_MODE, VIF0_ERR, VIF1_ERR: no path, no error
+            return store && size == 4;
         return false;
     }
 
@@ -81,20 +103,23 @@ namespace bozo::libs
         const uint32_t a = address & 0x1FFFFFFFu;
         uint64_t v = 0;
         uint32_t reg = 0;
-        if (a == 0x10000000u)
+        if (const int n = timerOf(a, reg); n >= 0)
         {
-            // T0_COUNT: the count written last plus the periods since; reading the same count again (a poll loop)
-            // charges a period at the next checkpoint (calllog.md section 2).
-            const uint64_t period = t0Period(io.t0Mode);
-            const uint64_t now = cycle;
-            const uint32_t count = period ? static_cast<uint32_t>((io.t0Start + (now - io.t0Base) / period) & 0xFFFFu) : io.t0Start;
-            if (count == io.t0LastRead)
-                timerPending = static_cast<uint32_t>(period);
-            io.t0LastRead = count;
-            v = count;
+            IoState::Timer &t = io.timers[static_cast<uint32_t>(n)];
+            if (reg == 0)
+            {
+                // Tn_COUNT: the count written last plus the periods since; reading the same count again (a poll loop)
+                // charges a period at the next checkpoint (calllog.md section 2).
+                const uint64_t period = timerPeriod(l, t.mode);
+                const uint32_t count = static_cast<uint32_t>((t.start + (cycle - t.base) / period) & 0xFFFFu);
+                if (count == t.lastRead)
+                    timerPending = static_cast<uint32_t>(period);
+                t.lastRead = count;
+                v = count;
+            }
+            else
+                v = reg == 1 ? t.mode : t.comp;
         }
-        else if (a == 0x10000010u)
-            v = io.t0Mode;
         else if (a == 0x12001000u)
         {
             // CSR: FIELD (bit 13) is the vblank count's parity (read inside TMB's vblankHandler override, boot #729700
@@ -128,15 +153,22 @@ namespace bozo::libs
         // decoder took the transfer (asked for more data), before the store's own effect (libraries.md section 11).
         if (io.channels[kIpuTo].running && io.ipuDemand && !io.hostAccess)
             complete(l, kIpuTo);
-        if (a == 0x10000000u)
+        if (const int n = timerOf(a, reg); n >= 0)
         {
-            io.t0Start = v & 0xFFFFu;
-            io.t0Base = cycle;
-            // A restart keeps the last read, the port's (TMB's frame end: match1p #34736003) and the game's alike: the
-            // next read of the same count is a poll (stage-level0 #13062314: the game read 0, wrote 0, read 0 again).
+            IoState::Timer &t = io.timers[static_cast<uint32_t>(n)];
+            if (reg == 0)
+            {
+                t.start = v & 0xFFFFu;
+                t.base = cycle;
+                // A restart keeps the last read, the port's (TMB's frame end: match1p #34736003) and the game's alike:
+                // the next read of the same count is a poll (stage-level0 #13062314: the game read 0, wrote 0, read 0
+                // again).
+            }
+            else if (reg == 1)
+                t.mode = v;
+            else
+                t.comp = v;
         }
-        else if (a == 0x10000010u)
-            io.t0Mode = v;
         else if (const int ch = channelOf(a, reg); ch >= 0)
         {
             IoState::Channel &c = io.channels[static_cast<uint32_t>(ch)];
@@ -172,6 +204,10 @@ namespace bozo::libs
             default: c.tadr = v; break;
             }
         }
+        else if (a == 0x1000D080u)
+            io.sprAddress[0] = v;
+        else if (a == 0x1000D480u)
+            io.sprAddress[1] = v;
         else if (a == 0x1000E000u)
             io.ctrl = v;
         else if (a == 0x1000E010u)
@@ -237,10 +273,32 @@ namespace bozo::libs
             throw std::runtime_error("native libdma: invalid channel handle");
         }
 
+        constexpr uint32_t kFromScratchpad = 8, kToScratchpad = 9;
+
+        void scratchpadCopy(Libraries &l, Guest &g, uint32_t ch)
+        {
+            uint32_t at = l.io.sprAddress[ch - kFromScratchpad];
+            uint32_t address = g.arg(1);
+            for (uint32_t i = 0; i < g.arg(2); ++i, address += 16, at += 16)
+            {
+                const uint32_t spr = 0x70000000u | (at & 0x3FF0u);
+                if (ch == kFromScratchpad)
+                    g.copy(address, spr, 16);
+                else
+                    g.copy(spr, address, 16);
+            }
+        }
+
         template <uint32_t Mode>
         void submitDma(Libraries &l, Guest &g)
         {
             const uint32_t ch = sdkChannel(g);
+            if ((ch == kFromScratchpad || ch == kToScratchpad) && (Mode & 0xcu) == 0)
+            {
+                scratchpadCopy(l, g, ch);
+                g.ret(0);
+                return;
+            }
             if (ch > 2 && ch != kIpuTo)
                 throw std::runtime_error("native libdma: transfer needs a native data producer");
             if (!l.dispatcher())
@@ -332,6 +390,40 @@ namespace bozo::libs
             g.write(g.arg(0), l.dmaEnvironment.data(), l.dmaEnvironment.size());
             g.ret(0);
         }
+
+        void getChannel(Libraries &, Guest &g) { g.retU(g.arg(0) < 10 ? kChannelBase[g.arg(0)] : 0); }
+
+        void watchDma(Libraries &, Guest &g)
+        {
+            sdkChannel(g);
+            g.ret(0);
+        }
+
+        void pauseDma(Libraries &l, Guest &g)
+        {
+            auto &c = l.io.channels[sdkChannel(g)];
+            const uint32_t old = c.chcr;
+            c.chcr = old & ~0x100u;
+            c.running = false;
+            g.retU(old);
+        }
+
+        void restartDma(Libraries &l, Guest &g)
+        {
+            const uint32_t ch = sdkChannel(g);
+            auto &c = l.io.channels[ch];
+            const uint32_t old = c.chcr;
+            c.chcr = g.arg(1);
+            c.running = ch == kIpuTo && (c.chcr & 0x100u) != 0;
+            g.ret((old >> 8) & 1);
+        }
+
+        void putStallAddress(Libraries &l, Guest &g)
+        {
+            const uint32_t old = l.io.stadr;
+            l.io.stadr = g.arg(0);
+            g.retU(old);
+        }
     }
 
     void addDma(std::vector<Function> &out)
@@ -343,5 +435,13 @@ namespace bozo::libs
         out.push_back({"sceDmaSync", kIo, syncDma});
         out.push_back({"sceDmaPutEnv", kIo, putDmaEnvironment});
         out.push_back({"sceDmaGetEnv", kIo, getDmaEnvironment});
+        out.push_back({"sceDmaGetChan", kIo, getChannel});
+        out.push_back({"sceDmaRecv", kIo, submitDma<0x104u>});
+        out.push_back({"sceDmaRecvN", kIo, submitDma<0x100u>});
+        out.push_back({"sceDmaRecvI", kIo, submitDma<0x108u>});
+        out.push_back({"sceDmaWatch", kIo, watchDma});
+        out.push_back({"sceDmaPause", kIo, pauseDma});
+        out.push_back({"sceDmaRestart", kIo, restartDma});
+        out.push_back({"sceDmaPutStallAddr", kIo, putStallAddress});
     }
 }

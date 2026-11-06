@@ -462,6 +462,25 @@ namespace bozo::audio
         m_portStream = stream;
     }
 
+    uint64_t Mixer::nextInputHalfCycle() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_clocked || !m_clockStarted)
+            return 0u;
+        uint64_t next = 0u;
+        for (const Group &group : m_groups)
+        {
+            const Input &in = group.input;
+            if (!in.playing || in.samples == 0u)
+                continue;
+            const uint32_t half = in.samples / 2u;
+            const uint32_t left = in.position < half ? half - in.position : in.samples - in.position;
+            const uint64_t at = (m_samplesMade + left) * kIopCyclesPerSample;
+            if (next == 0u || at < next)
+                next = at;
+        }
+        return next;
+    }
     void Mixer::setInputHalfCallback(std::function<void(int group, int half)> half)
     {
         std::lock_guard<std::mutex> lock(m_mutex);

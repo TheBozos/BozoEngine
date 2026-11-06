@@ -47,6 +47,13 @@ namespace bozo::libs
             g.ret(0);
         }
 
+        // sceGsSyncVCallback(func): the previous callback; func runs at the native frame boundary (kernel.md section 2).
+        void syncVCallback(Libraries &l, Guest &g)
+        {
+            ee::Dispatcher *d = l.dispatcher();
+            g.retU(d ? d->setSyncVCallback(g.arg(0), g.context()->r[28].uw[0]) : 0);
+        }
+
         // sceGsResetPath(): nothing to reset (no DMA, VIF or GIF); no result.
         void resetPath(Libraries &, Guest &) {}
 
@@ -290,6 +297,7 @@ namespace bozo::libs
         out.push_back({"sceGsPutDrawEnv", kGs, putDrawEnv});
         out.push_back({"sceGsPutDispEnv", kGs, putDispEnv});
         out.push_back({"sceGsSyncPath", kGs, syncPath});
+        out.push_back({"sceGsSyncVCallback", kGs, syncVCallback});
         out.push_back({"sceGsExecLoadImage", kGs, execLoadImage});
         out.push_back({"sceGsExecStoreImage", kGs, execStoreImage});
         Function v{"sceGsSyncV", kGs, syncV};
