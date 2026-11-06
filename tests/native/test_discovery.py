@@ -12,7 +12,7 @@ TOOL = None if EMIT else sys.argv.pop(1)
 SCORE = None if EMIT else sys.argv.pop(1)
 BASE = 0x100000
 DATA = 0x110000
-V0, A0, T0, T1, T9, SP, RA = 2, 4, 8, 9, 25, 29, 31
+V0, A0, A1, T0, T1, S0, T9, SP, RA = 2, 4, 5, 8, 9, 16, 25, 29, 31
 
 
 def i_type(op, rs, rt, imm):
@@ -71,9 +71,11 @@ SOURCE = [
     'slot0', b('slots_end'), addiu(V0, 0, 20),
     'slot1', b('slots_end'), addiu(V0, 0, 21),
     'slots_end', JR_RA, NOP,
+    'builds_pointers', lui_of(A0, 'late'), jal('by_pointer'), addiu_of(A0, A0, 'late'),
+    lui_of(S0, 'top'), addiu_of(A0, S0, 'top'), jal('by_pointer'), NOP, addiu_of(A1, S0, 'middle'), JR_RA, NOP,
 ]
 FUNCTIONS = ['main', 'switcher', 'by_pointer', 'early_return', 'backward', 'no_return', 'after_no_return',
-             'tail_to_next', 'next', 'through_register', 'slots']
+             'tail_to_next', 'next', 'through_register', 'slots', 'builds_pointers']
 
 
 def assemble():
@@ -192,6 +194,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotIn(L['case0'], entries)
         self.assertEqual(re.findall(r'warning: .*', run.stdout), [])
 
+    def test_pointers_built_in_the_code(self):
+        entries = {int(r[1], 16) for r in Run(image()).rows_of('entry')}
+        self.assertLessEqual({L['late'], L['top'], L['middle']}, entries)
+
     def test_symbols_keep_their_boundaries(self):
         symbols = all_symbols()
         with_symbols = Run(image(symbols))
@@ -204,7 +210,7 @@ class DiscoveryTests(unittest.TestCase):
         run = Run(image(all_symbols()), '--no-elf-symbols')
         self.assertEqual(run.rows[0], ['mode', 'code'])
         self.assertEqual(run.starts(), {L[f] for f in FUNCTIONS})
-        self.assertIn('all: 11 symbols, 11 found, 11 match: precision 1.0000, recall 1.0000', run.score)
+        self.assertIn('all: 12 symbols, 12 found, 12 match: precision 1.0000, recall 1.0000', run.score)
         self.assertRegex(run.score, r'jump tables 2: 2 inside a symbol, 2 of those')
 
     def test_few_symbols_do_not_stop_discovery(self):
