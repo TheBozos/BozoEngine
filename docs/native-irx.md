@@ -28,6 +28,15 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+`intrman:17/18` protects native callback scheduling with balanced per-host exclusion scopes. The SDK
+receives a restore token; no processor status/register state is stored or executed. Nested exclusion
+reports KE_CPUDI (-102), preserves its restore token, and must release in order. Native timer/event
+delivery and cooperative task dispatch defer until release and the next safe advance; pending logical
+time is retained. Blocking, budget yields, unbalanced returns/releases and legacy unscoped enable inside
+a scope reject. Reset clears the scopes and pending advance. `library_exclusion` checks real deferred
+native timer delivery, nesting, bad releases/returns, reset and independent owners. Declarations/error
+constants were checked against PS2SDK's intrman/kerr headers; no implementation was copied.
+
 Native RPC servers retain the task that registered them. Their compiled callbacks use separate bounded
 callback stacks while thread identity, current priority (`thbase:42`) and status refer to that logical
 owner. Changing its priority updates the same native task record. The parked RPC loop is not resumed
