@@ -32,6 +32,15 @@ advance logical time or change work budgets. The default scheduling policy is un
 pending events and retains the selected policy. The ready-audio suite reproduces default starvation
 and checks actual copied bytes, exactly-once delivery, reentrancy, exclusion, reset and host isolation.
 
+Newer timer exports 20/22/23/24 register a linked native periodic callback, configure its clock and
+divisor, and start/stop its deadline. The callback receives its argument and captured GP; its return
+value selects the next period, with zero cancelling. Self-stop/free is safe and wins over its return
+value. Only ungated scheduling is supported; external gate modes reject. Existing legacy periodic
+callbacks retain their behavior. `library_timer_handlers` checks deadlines, rearming, cancellation,
+self-stop/free, clock/divisor conversion, reset and isolation. ABI declarations are from
+[PS2SDK xtimrman](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/timrman/include/xtimrman.h);
+the implementation schedules native jobs and contains no timer-register backend.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services
