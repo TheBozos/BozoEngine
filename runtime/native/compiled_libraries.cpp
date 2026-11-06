@@ -80,7 +80,7 @@ namespace bozo::native::irx
             uint32_t compare = 0, mode = 0, cause = 0, rate = 36864000, prescale = 1;
             uint64_t due = 0;
             Interrupt handler;
-            bool configured = false, direct = false;
+            bool configured = false, direct = false, alarm = false;
             uint64_t revision = 0;
             uint64_t period() const
             {
@@ -766,6 +766,51 @@ namespace bozo::native::irx
             {
                 write(a0, uint32_t(cycle));
                 write(a0 + 4, uint32_t(cycle >> 32));
+                ret();
+                return;
+            }
+            if (n == 35 || n == 36)
+            {
+                for (const auto &[id, t] : timers)
+                    if (t.alarm && t.mode && t.handler.function == a1 && t.handler.argument == a2)
+                    {
+                        ret(uint32_t(-104));
+                        return;
+                    }
+                const bool admitted = std::any_of(images.begin(), images.end(), [&](const auto &image) {
+                    return a1 >= image.base && uint64_t(a1) < uint64_t(image.base) + image.bytes.size();
+                });
+                if (!admitted || !functions.contains(a1) || imports.contains(a1))
+                    throw std::runtime_error("native alarm handler requires an admitted linked function");
+                if (read(a0 + 4) || !read(a0))
+                    throw std::runtime_error("native alarm interval outside 1..2^32-1 clocks");
+                auto &t = timers[nextTimer++];
+                t.alarm = t.direct = t.configured = true;
+                t.handler = {a1, a2, c.gpr[28], false};
+                t.compare = read(a0);
+                t.mode = 1;
+                t.due = cycle + t.period();
+                ret();
+                return;
+            }
+            if (n == 37 || n == 38)
+            {
+                for (auto it = timers.begin(); it != timers.end(); ++it)
+                    if (it->second.alarm && it->second.handler.function == a0 && it->second.handler.argument == a1)
+                    {
+                        const bool active = it->second.mode != 0;
+                        timers.erase(it);
+                        ret(active ? 0u : uint32_t(-105));
+                        return;
+                    }
+                ret(uint32_t(-105));
+                return;
+            }
+            if (n == 39)
+            {
+                const uint64_t clocks = uint64_t(a0) * 36864 / 1000;
+                write(a1, uint32_t(clocks));
+                write(a1 + 4, uint32_t(clocks >> 32));
                 ret();
                 return;
             }
