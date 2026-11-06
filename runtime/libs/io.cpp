@@ -88,7 +88,7 @@ namespace bozo::libs
             return size == 8;
         if (a == 0x12001000u) // FIELD reads; obsolete CSR acknowledgement stores have no effect
             return size == 8 || size == 4;
-        if (a == 0x12001010u) // IMR: a mask with no device behind it
+        if (a == 0x12001010u || a == 0x12001080u) // IMR, SIGLBLID: no device behind them, nothing raises INTC 0
             return store && (size == 8 || size == 4);
         if (a == 0x10003020u || a == 0x10003800u || a == 0x10003C00u) // GIF_STAT, VIF0_STAT, VIF1_STAT: idle
             return !store && size == 4;
