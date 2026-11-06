@@ -35,6 +35,7 @@ namespace bozo::host
         std::string out;       // a PS2XREF1 record of the run (empty: none)
         bool quiet = false;
         bool printGameOutput = false; // the game's printf
+        bool profileIo = false; // count remaining device reads/writes by guest function and address
         uint32_t stallFields = 600;   // end the run when no game frame ended for this many fields of EE time (0: never)
         // The game on the host's clock (a window): port::Host::realTime() true, deterministic() false (the port holds
         // its frames to their rate: FramePacer). Off: as fast as the host makes frames, nothing host-timed.
@@ -53,6 +54,8 @@ namespace bozo::host
         uint64_t libraryCalls = 0, kernelCalls = 0, overrideCalls = 0, vu0Calls = 0, ioAccesses = 0, ioUnknown = 0;
         uint64_t frames = 0;
         std::map<std::string, uint64_t> unanswered; // calls with no native answer (by name), which end the run
+        // (guest PC, device address) -> {reads, writes}; populated only when profileIo is enabled.
+        std::map<std::pair<uint32_t, uint32_t>, std::array<uint64_t, 2>> ioSites;
     };
 
     class FreeHost final : public ee::Host, public ee::KernelObserver, public port::Host

@@ -208,6 +208,7 @@ namespace bozo::libs
         addLibc(functions_);
         addLibm(functions_);
         addGs(functions_);
+        addDma(functions_);
         addPad(functions_);
         addMc(functions_);
         addCd(functions_);

@@ -257,11 +257,13 @@ namespace bozo::host
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register read at 0x{:x}", address));
         ++stats_.ioAccesses;
+        if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][0];
         watchdog(ctx);
         value[0] = value[1] = 0;
         if (!libs::ioKnown(address, size, false))
         {
             ++stats_.ioUnknown;
+            fault(*d_, ctx, std::format("unhandled device read at 0x{:x} ({} bytes), pc 0x{:x}", address, size, ctx->pc));
             return;
         }
         libs_.ioAccess = libs::IoAccess{address, size, false, 0, d_->timerPending()};
@@ -276,9 +278,11 @@ namespace bozo::host
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register write at 0x{:x}", address));
         ++stats_.ioAccesses;
+        if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][1];
         if (!libs::ioKnown(address, size, true))
         {
             ++stats_.ioUnknown;
+            fault(*d_, ctx, std::format("unhandled device write at 0x{:x} ({} bytes), pc 0x{:x}", address, size, ctx->pc));
             return;
         }
         libs_.ioAccess = libs::IoAccess{address, size, true, value[0], d_->timerPending(), ctx->pc};
@@ -322,7 +326,8 @@ namespace bozo::host
 
     bool FreeHost::dmacStatusSet(uint32_t cause)
     {
-        return !(nativeGraphics() && cause < 3) && cause < 10 && (libs_.io.stat & (1u << cause)) != 0;
+        if (nativeGraphics() && cause < 3) return libs_.io.nativeCompleted[cause];
+        return cause < 10 && (libs_.io.stat & (1u << cause)) != 0;
     }
 
     void FreeHost::waitCompleted(ee::Dispatcher &, ee::Thread &t)

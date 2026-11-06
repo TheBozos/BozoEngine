@@ -1,13 +1,12 @@
-// The GS library calls TMB makes (libraries.md section 5). The SetDef functions build the packets the game later
-// sends (environments, image transfers) exactly as the reference does, from the semantics of the game's own libgraph
-// (its code in the ELF) where the reference agrees with it; there is no GS: what a renderer needs is kept in GsState.
+// Native libgraph ABI compatibility. SetDef functions write the SDK's output structures because
+// recompiled callers can use those bytes. Nothing consumes the resulting graphics packets:
+// draws, textures and readbacks belong to the port's native renderer, with no GS register state.
 #include "bozo/libs/libraries.h"
 
 #include "bozo/ee/dispatcher.h"
 #include "bozo/port.h"
 
-#include <algorithm>
-#include <cstring>
+#include <stdexcept>
 
 namespace bozo::libs
 {
@@ -15,12 +14,6 @@ namespace bozo::libs
     {
         int16_t s16(uint32_t v) { return static_cast<int16_t>(v); }
         void write64(Guest &g, uint32_t address, uint64_t v) { g.write(address, &v, 8); }
-        uint64_t read64(Guest &g, uint32_t address)
-        {
-            uint64_t v;
-            std::memcpy(&v, g.in(address, 8), 8);
-            return v;
-        }
         uint64_t sx(int64_t v) { return static_cast<uint64_t>(v); }
 
         // GS register numbers (A+D addresses).
@@ -40,17 +33,12 @@ namespace bozo::libs
             const int16_t mode = s16(g.arg(0));
             if (mode == 0)
             {
-                GsState &s = l.gs;
-                s.reset = true;
-                s.interlace = s16(g.arg(1));
-                s.videoMode = s16(g.arg(2));
-                s.fieldMode = s16(g.arg(3));
-                const uint8_t param[4] = {static_cast<uint8_t>(s.interlace), static_cast<uint8_t>(s.videoMode),
-                                          static_cast<uint8_t>(s.fieldMode), 3};
+                const uint8_t param[4] = {static_cast<uint8_t>(g.arg(1)), static_cast<uint8_t>(g.arg(2)),
+                                          static_cast<uint8_t>(g.arg(3)), 3};
                 g.write(kScratchpadBase + 0x100u, param, 4);
                 if (ee::Dispatcher *d = l.dispatcher())
                 {
-                    if (s.videoMode == 3)
+                    if (param[1] == 3)
                         d->kernel().fieldRate(50, 1); // PAL (not in TMB's runs: TMB is NTSC only)
                     else
                         d->kernel().fieldRate(60000, 1001);
@@ -63,67 +51,63 @@ namespace bozo::libs
         void resetPath(Libraries &, Guest &) {}
 
         // sceGsSetDefDispEnv(disp, psm, w, h, dx, dy): PMODE, SMODE2, DISPFB, DISPLAY, BGCOLOR (64 bits each).
-        void setDefDispEnv(Libraries &l, Guest &g)
+        void setDefDispEnv(Libraries &, Guest &g)
         {
             const uint32_t disp = g.arg(0);
             const int32_t psm = s16(g.arg(1)), w = s16(g.arg(2)), h = s16(g.arg(3)), dx = s16(g.arg(4)), dy = s16(g.arg(5));
-            const GsState &s = l.gs;
-            GsState::Display d;
-            d.address = disp;
-            d.pmode = 0x66;
-            d.smode2 = s.interlace == 0 ? 2 : (s.fieldMode ? 3 : 1);
-            d.dispfb = (static_cast<uint64_t>(psm & 0xf) << 15) | (static_cast<uint64_t>(((w + 63) >> 6) & 0x3f) << 9);
-            write64(g, disp, d.pmode);
-            write64(g, disp + 8, d.smode2);
-            write64(g, disp + 16, d.dispfb);
-            if (s.videoMode == 2 || s.videoMode == 3)
+            // Read only the SDK's scalar video parameters written by ResetGraph, never a packet.
+            const auto *mode = g.in(kScratchpadBase + 0x100u, 3);
+            const uint64_t smode2 = mode[0] == 0 ? 2 : (mode[2] ? 3 : 1);
+            const uint64_t dispfb = (static_cast<uint64_t>(psm & 0xf) << 15) | (static_cast<uint64_t>(((w + 63) >> 6) & 0x3f) << 9);
+            write64(g, disp, 0x66);
+            write64(g, disp + 8, smode2);
+            write64(g, disp + 16, dispfb);
+            if (mode[1] == 2 || mode[1] == 3)
             {
-                const bool ntsc = s.videoMode == 2;
+                const bool ntsc = mode[1] == 2;
                 const int32_t magh = w ? (w + 2559) / w : 1;
                 // The horizontal start: the reference's is 652 in NTSC (the game's libgraph has 636), 656 in PAL.
                 const int32_t x = (dx * magh + (ntsc ? 652 : 656)) & 0xfff;
                 int32_t y, dh;
-                if (s.interlace == 1)
+                if (mode[0] == 1)
                 {
                     y = (dy + (ntsc ? 50 : 72)) & 0xfff;
-                    dh = s.fieldMode ? h * 2 - 1 : h - 1;
+                    dh = mode[2] ? h * 2 - 1 : h - 1;
                 }
                 else
                 {
                     y = (dy + (ntsc ? 25 : 36)) & 0xfff;
                     dh = h - 1;
                 }
-                d.display = static_cast<uint64_t>(x) | (static_cast<uint64_t>(y) << 12) |
+                const uint64_t display = static_cast<uint64_t>(x) | (static_cast<uint64_t>(y) << 12) |
                             (static_cast<uint64_t>(magh - 1) << 23) | (sx(magh * w - 1) << 32) | (sx(dh) << 44);
-                write64(g, disp + 24, d.display);
+                write64(g, disp + 24, display);
             }
-            d.bgcolor = 0;
             write64(g, disp + 32, 0);
-            d.set = true;
-            l.gs.display = d;
             g.ret(0);
         }
 
         // The Z buffer's base after the frame buffers (sceGszbufaddr): in 2048-word pages, two frame buffers unless
         // interlaced frame mode NTSC... as the game's libgraph decides it (its GParam's first 48 bits equal to 1).
-        int32_t zbufAddress(const GsState &s, int32_t psm, int32_t w, int32_t h)
+        int32_t zbufAddress(Guest &g, int32_t psm, int32_t w, int32_t h)
         {
             const int32_t pw = ((w + 63) >= 0 ? w + 63 : w + 126) >> 6;
             const int32_t ph = (psm & 2) ? (((h + 63) >= 0 ? h + 63 : h + 126) >> 6) : (((h + 31) >= 0 ? h + 31 : h + 62) >> 5);
             const int32_t pages = pw * ph;
-            const bool single = s.interlace == 1 && s.videoMode == 0 && s.fieldMode == 0;
+            const auto *mode = g.in(kScratchpadBase + 0x100u, 3);
+            const bool single = mode[0] == 1 && mode[1] == 0 && mode[2] == 0;
             return single ? static_cast<int16_t>(pages) : static_cast<int16_t>(static_cast<uint32_t>(pages) << 1);
         }
 
         // sceGsSetDefDrawEnv / sceGsSetDefDrawEnv2(draw, psm, w, h, ztest, zpsm): eight A+D pairs for context 1 or 2.
-        void drawEnv(Libraries &l, Guest &g, bool second)
+        void drawEnv(Libraries &, Guest &g, bool second)
         {
             const uint32_t p = g.arg(0);
             const int32_t psm = s16(g.arg(1)), w = s16(g.arg(2)), h = s16(g.arg(3)), ztest = s16(g.arg(4)), zpsm = s16(g.arg(5));
             const uint64_t fbw = second ? static_cast<uint64_t>((w >> 6) & 0x3f) : static_cast<uint64_t>(((w + 63) >> 6) & 0x3f);
             write64(g, p + 0, (static_cast<uint64_t>(psm & 0xf) << 24) | (fbw << 16));
             write64(g, p + 8, second ? kFrame2 : kFrame1);
-            uint64_t zbuf = sx(zbufAddress(l.gs, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
+            uint64_t zbuf = sx(zbufAddress(g, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
             if (ztest == 0)
                 zbuf |= 1ull << 32; // ZMSK
             write64(g, p + 16, zbuf);
@@ -133,12 +117,11 @@ namespace bozo::libs
             write64(g, p + 40, second ? kXyoffset2 : kXyoffset1);
             write64(g, p + 48, sx(static_cast<int64_t>(w - 1) << 16) | sx(static_cast<int64_t>(h - 1) << 48));
             write64(g, p + 56, second ? kScissor2 : kScissor1);
-            write64(g, p + 64, read64(g, p + 64) | 1); // PRMODECONT: AC = 1, the rest kept
+            write64(g, p + 64, 1); // PRMODECONT: AC = 1, reserved bits initialized
             write64(g, p + 72, kPrmodecont);
-            write64(g, p + 80, read64(g, p + 80) | 1); // COLCLAMP: CLAMP = 1
+            write64(g, p + 80, 1); // COLCLAMP: CLAMP = 1
             write64(g, p + 88, kColclamp);
-            const uint64_t dthe = read64(g, p + 96);
-            write64(g, p + 96, (psm & 2) ? (dthe | 1) : (dthe & ~1ull)); // dithering for 16-bit formats
+            write64(g, p + 96, (psm & 2) ? 1 : 0); // dithering for 16-bit formats
             write64(g, p + 104, kDthe);
             write64(g, p + 112, ztest ? ((static_cast<uint64_t>(ztest & 3) << 17) | 0x10000) : 0x30000);
             write64(g, p + 120, second ? kTest2 : kTest1);
@@ -170,13 +153,6 @@ namespace bozo::libs
             g.ret(0); // the reference's result (the game's libgraph returns 6, the packet's quadwords)
         }
 
-        void remember(GsState &s, const GsState::Transfer &t)
-        {
-            if (s.transfers.size() >= 64)
-                s.transfers.erase(s.transfers.begin());
-            s.transfers.push_back(t);
-        }
-
         // The transfer's size in quadwords for a pixel format, as the game's libgraph tables it (0 for the formats
         // it does not list).
         int32_t transferQwords(int32_t psm, int32_t w, int32_t h)
@@ -197,9 +173,10 @@ namespace bozo::libs
 
         // sceGsSetDefLoadImage(lp, dbp, dbw, dpsm, x, y, w, h): a GIF tag with BITBLTBUF, TRXPOS, TRXREG, TRXDIR,
         // then the image tag (its size from the format). Returns 0 (nothing written for a transfer over 32767 quadwords).
-        void setDefLoadImage(Libraries &l, Guest &g)
+        void setDefLoadImage(Libraries &, Guest &g)
         {
-            // Explicit native ports own image operations; this packet has no consumer.
+            // A native renderer owns uploads at the asset boundary. There is no consumer
+            // for this SDK packet; do not serialize it or dereference its output address.
             if (port::nativeGraphics(&g.runtime())) { g.ret(0); return; }
             const uint32_t p = g.arg(0);
             const int32_t dbp = s16(g.arg(1)), dbw = s16(g.arg(2)), dpsm = s16(g.arg(3)), x = s16(g.arg(4)), y = s16(g.arg(5)),
@@ -225,25 +202,15 @@ namespace bozo::libs
             write64(g, p + 64, 0); // TRXDIR: host to GS memory
             write64(g, p + 72, kTrxdir);
             write64(g, p + 80, static_cast<uint64_t>(qwc & 0x7fff) | 0x8000 | (2ull << 58)); // EOP, IMAGE
-            GsState::Transfer t;
-            t.packet = p;
-            t.base = static_cast<uint32_t>(dbp);
-            t.width = static_cast<uint32_t>(dbw);
-            t.psm = static_cast<uint32_t>(dpsm);
-            t.x = x;
-            t.y = y;
-            t.w = w;
-            t.h = h;
-            remember(l.gs, t);
-            ++l.gs.loadImages;
             g.ret(0); // the reference's result (the game's libgraph returns 6)
         }
 
         // sceGsSetDefStoreImage(sp, sbp, sbw, spsm, x, y, w, h): VIF codes (NOP, NOP, FLUSHA, DIRECT 6), a GIF
         // tag with BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR (GS memory to host). Returns 0.
-        void setDefStoreImage(Libraries &l, Guest &g)
+        void setDefStoreImage(Libraries &, Guest &g)
         {
-            // Explicit native ports own image operations; this packet has no consumer.
+            // Native readback is implemented at the port's caller. Unsupported consumers
+            // still fail in ExecStoreImage, rather than relying on an unused packet.
             if (port::nativeGraphics(&g.runtime())) { g.ret(0); return; }
             const uint32_t p = g.arg(0);
             const int32_t sbp = s16(g.arg(1)), sbw = s16(g.arg(2)), spsm = s16(g.arg(3)), x = s16(g.arg(4)), y = s16(g.arg(5)),
@@ -266,51 +233,22 @@ namespace bozo::libs
             write64(g, p + 88, kFinish);
             write64(g, p + 96, 1); // TRXDIR: GS memory to host
             write64(g, p + 104, kTrxdir);
-            GsState::Transfer t;
-            t.packet = p;
-            t.toHost = true;
-            t.base = static_cast<uint32_t>(sbp);
-            t.width = static_cast<uint32_t>(sbw);
-            t.psm = static_cast<uint32_t>(spsm);
-            t.x = x;
-            t.y = y;
-            t.w = w;
-            t.h = h;
-            remember(l.gs, t);
-            ++l.gs.storeImages;
             g.ret(0); // the reference's result (the game's libgraph returns 7)
         }
 
-        // sceGsPutDrawEnv(packet): the GIF tag's A+D pairs are the environment; kept for the renderer. Returns 0.
-        void putDrawEnv(Libraries &l, Guest &g)
+        // The port already submits native materials. Do not dereference the obsolete packet.
+        void putDrawEnv(Libraries &, Guest &g)
         {
-            if (l.dispatcher() && port::nativeGraphics(&l.dispatcher()->runtime()))
-            {
-                // The port submits native materials with its draws. No GIF environment is consumed or mirrored.
-                g.ret(0);
-                return;
-            }
-            const uint32_t p = g.arg(0);
-            GsState &s = l.gs;
-            const uint32_t nloop = std::min<uint32_t>(static_cast<uint32_t>(read64(g, p) & 0x7fff), 32);
-            for (uint32_t i = 0; i < nloop; ++i)
-            {
-                const uint64_t data = read64(g, p + 16 + 16 * i);
-                const uint32_t reg = static_cast<uint32_t>(read64(g, p + 24 + 16 * i) & 0xff);
-                if (reg < s.registers.size())
-                {
-                    s.registers[reg] = data;
-                    s.registerSet[reg] = true;
-                }
-            }
-            ++s.drawEnvironments;
             g.ret(0);
         }
 
+        // Native presentation already owns the display. Do not read the legacy display
+        // structure or execute libgraph's writes to the GS's display circuits.
+        void putDispEnv(Libraries &, Guest &g) { g.ret(0); }
+
         // sceGsSyncPath(mode, timeout): every path is idle (nothing is ever in flight). Returns 0.
-        void syncPath(Libraries &l, Guest &g)
+        void syncPath(Libraries &, Guest &g)
         {
-            ++l.gs.pathSyncs;
             g.ret(0);
         }
 
@@ -323,28 +261,11 @@ namespace bozo::libs
             g.ret(0);
         }
 
-        // sceGsExecStoreImage(sp, dst): a readback of GS memory as the store packet sp (sceGsSetDefStoreImage's)
-        // describes. There is no GS memory: the image reads as zeros (TMB's lens flares outside a match, the only
-        // caller, through its override: match1p frame 13736, inside the attract demo). Returns 0.
-        void execStoreImage(Libraries &, Guest &g)
+        // A native port must implement readback at the original high-level caller, using its
+        // render target and rectangle. Do not parse a console packet or fabricate a black image.
+        void execStoreImage(Libraries &, Guest &)
         {
-            const uint32_t sp = g.arg(0), dst = g.arg(1);
-            uint64_t bitbltbuf = 0, trxreg = 0;
-            for (uint32_t q = 0; q < 8u; ++q)
-            {
-                const uint32_t reg = g.read32(sp + q * 16u + 8u) & 0xFFu;
-                const uint64_t value = g.read32(sp + q * 16u) | (static_cast<uint64_t>(g.read32(sp + q * 16u + 4u)) << 32);
-                if (reg == 0x50u)
-                    bitbltbuf = value;
-                else if (reg == 0x52u)
-                    trxreg = value;
-            }
-            const uint32_t psm = (bitbltbuf >> 24) & 0x3Fu, w = trxreg & 0xFFFu, h = (trxreg >> 32) & 0xFFFu;
-            const uint32_t bytes = psm == 0x02u || psm == 0x0Au || psm == 0x32u || psm == 0x3Au ? 2u : psm == 0x01u ? 3u : 4u;
-            const uint32_t size = w * h * bytes;
-            if (size && size <= 0x100000u)
-                g.fill(dst, 0, size);
-            g.ret(0);
+            throw std::runtime_error("sceGsExecStoreImage requires a native renderer readback override");
         }
 
         // sceGsSyncV(mode): the game waits for the next vblank, and the game frame ends there. The reference returns
@@ -352,7 +273,6 @@ namespace bozo::libs
         // match1p's 2,290 calls. The wait and the frame end are the runtime's frame boundary.
         void syncV(Libraries &l, Guest &g)
         {
-            ++l.gs.vsyncs;
             g.ret(static_cast<int32_t>((l.framesEnded + 1u) & 1u));
         }
     }
@@ -368,6 +288,7 @@ namespace bozo::libs
         out.push_back({"sceGsSetDefLoadImage", kGs, setDefLoadImage});
         out.push_back({"sceGsSetDefStoreImage", kGs, setDefStoreImage});
         out.push_back({"sceGsPutDrawEnv", kGs, putDrawEnv});
+        out.push_back({"sceGsPutDispEnv", kGs, putDispEnv});
         out.push_back({"sceGsSyncPath", kGs, syncPath});
         out.push_back({"sceGsExecLoadImage", kGs, execLoadImage});
         out.push_back({"sceGsExecStoreImage", kGs, execStoreImage});
