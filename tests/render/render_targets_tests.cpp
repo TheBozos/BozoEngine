@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 using namespace bozo::render;
 namespace
 {
@@ -153,6 +154,122 @@ int main()
     quad(plain, 0x80808080);
     present();
     expectDepth(0);
+    // The GS's own blend, (A - B) * C + D, with FIX and on the frame so far.
+    const auto gsBlend = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t fix = 0)
+    {
+        Material m = Material{};
+        m.textured = false;
+        m.depthTest = m.depthWrite = false;
+        m.gsBlend = true;
+        m.blendA = a, m.blendB = b, m.blendC = c, m.blendD = d, m.blendFix = fix;
+        return m;
+    };
+    Material flat;
+    flat.textured = false;
+    flat.blend = Material::Blend::Opaque;
+    flat.depthTest = flat.depthWrite = false;
+    renderer.beginFrame(screen);
+    quad(flat, 0x80404040); // 0x40 is half of 1.0: 128 on the target
+    quad(gsBlend(0, 2, 2, 1, 0x40), 0x80404040);
+    present();
+    pixel("GS blend Cs * fix + Cd", 8, {192, 192, 192});
+    renderer.beginFrame(screen);
+    quad(flat, 0x80808080);
+    quad(gsBlend(2, 0, 2, 1, 0x40), 0x80808080);
+    present();
+    pixel("GS blend Cd - Cs * fix", 8, {128, 128, 128});
+    renderer.beginFrame(screen);
+    quad(flat, 0x80808080);
+    quad(gsBlend(1, 2, 0, 2), 0x40FFFFFF);
+    present();
+    pixel("GS blend Cd * As", 8, {128, 128, 128});
+    renderer.beginFrame(screen);
+    quad(flat, 0x80404040);
+    quad(gsBlend(0, 1, 0, 1), 0x40808080);
+    present();
+    pixel("GS blend (Cs - Cd) * As + Cd", 8, {192, 192, 192});
+
+    // FBMSK for the channels: only green written.
+    renderer.beginFrame(screen);
+    quad(flat, 0x80000000);
+    {
+        Material m = flat;
+        m.colourMask = 2u;
+        quad(m, 0x80808080);
+    }
+    present();
+    pixel("colour mask", 8, {0, 255, 0});
+
+    // TEST: a draw passes by alpha as its function says, and by GREATER depth.
+    renderer.beginFrame(screen);
+    quad(flat, 0x80000000);
+    {
+        Material m = flat;
+        m.alphaTest = true;
+        m.alphaFunc = Material::AlphaFunc::Less;
+        m.alphaRef = 0x40;
+        quad(m, 0x80808080);
+        quad(m, 0x20008000, 0, 8);
+    }
+    present();
+    pixel("alpha test LESS: the alpha above the reference fails", 8, {0, 0, 0});
+    pixel("alpha test LESS: the alpha below the reference passes", 24, {0, 255, 0});
+
+    Screen screenDepth = screen;
+    screenDepth.depthMax = 1000.0f;
+    renderer.beginFrame(screenDepth);
+    {
+        Material m = flat;
+        m.depthTest = m.depthWrite = true;
+        quad(m, 0x80000080, 0, 16, 500.0f);
+        m.depthGreater = true;
+        quad(m, 0x80008000, 0, 16, 500.0f);
+    }
+    present();
+    pixel("depth GREATER: an equal Z fails", 8, {255, 0, 0});
+
+    // Q: a screen-space triangle's texture coordinates in perspective, its colour across the screen.
+    {
+        auto checker = std::make_shared<Texture>();
+        checker->width = 2;
+        checker->height = 1;
+        checker->rgba = {0x800000FFu, 0x80FF0000u};
+        checker->key = 0x5151u;
+        Material m;
+        m.depthTest = m.depthWrite = false;
+        m.blend = Material::Blend::Opaque;
+        m.useQ = true;
+        m.nearest = true;
+        m.clampU = m.clampV = true;
+        renderer.beginFrame(screen);
+        Vertex v[3];
+        v[0].x = 0, v[0].y = 0, v[0].u = 0, v[0].q = 0.125f;
+        v[1].x = 16, v[1].y = 0, v[1].u = 1, v[1].q = 1.0f;
+        v[2].x = 0, v[2].y = 16, v[2].u = 0, v[2].q = 0.125f;
+        for (Vertex &vertex : v)
+            vertex.rgba = 0x80808080;
+        // With Q 1/8 at the left and 1 at the right, u = 0.5 is a ninth of the way along the top edge (3.5 window pixels):
+        // an affine interpolation would have it in the middle.
+        renderer.draw(m, identity, v, 3, checker);
+        present();
+    }
+    {
+        uint8_t rgba[4] = {};
+        const int left = 1, right = 8, y = 31;
+        gl::api().ReadPixels(left, y, 1, 1, gl::kRgba, gl::kUnsignedByte, rgba);
+        if (rgba[0] < 200)
+        {
+            std::printf("FAIL Q left of the middle: red %u\n", rgba[0]);
+            ++failures;
+        }
+        gl::api().ReadPixels(right, y, 1, 1, gl::kRgba, gl::kUnsignedByte, rgba);
+        if (rgba[2] < 200)
+        {
+            std::printf("FAIL Q right of the middle: blue %u\n", rgba[2]);
+            ++failures;
+        }
+    }
+
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);
