@@ -312,10 +312,36 @@ namespace bozo::libs
             g.write(g.arg(2), d, bytes);
             g.ret(1);
         }
+
+        // libmtap: a multitap in port 1 only. sceMtapGetModVersion: MTAPMAN 3.0, the major version sceMtapInit
+        // expects.
+        void mtapInit(Libraries &, Guest &g) { g.ret(1); }
+        void mtapPortOpen(Libraries &l, Guest &g)
+        {
+            const bool open = l.pad.multitapAttached && g.arg(0) == 0u;
+            if (open)
+                l.pad.multitap = true;
+            g.ret(open ? 1 : 0);
+        }
+        void mtapPortClose(Libraries &l, Guest &g)
+        {
+            if (g.arg(0) == 0u)
+                l.pad.multitap = false;
+            g.ret(1);
+        }
+        void mtapGetConnection(Libraries &l, Guest &g) { g.ret(g.arg(0) == 0u && l.pad.multitap ? 1 : 0); }
+        void mtapChangeThreadPriority(Libraries &, Guest &g) { g.ret(1); }
+        void mtapGetModVersion(Libraries &, Guest &g) { g.ret(0x0300); }
     }
 
     void addPad(std::vector<Function> &out)
     {
+        out.push_back({"sceMtapInit", kPad, mtapInit});
+        out.push_back({"sceMtapPortOpen", kPad, mtapPortOpen});
+        out.push_back({"sceMtapPortClose", kPad, mtapPortClose});
+        out.push_back({"sceMtapGetConnection", kPad, mtapGetConnection});
+        out.push_back({"sceMtapChangeThreadPriority", kPad, mtapChangeThreadPriority});
+        out.push_back({"sceMtapGetModVersion", kPad, mtapGetModVersion});
         out.push_back({"scePadInit", kPad, init});
         out.push_back({"scePadPortOpen", kPad, portOpen});
         out.push_back({"scePadGetState", kPad, getState});
