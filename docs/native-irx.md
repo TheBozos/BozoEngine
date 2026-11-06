@@ -74,6 +74,28 @@ descriptor or interrupt processor is run. `library_command_replies` verifies mes
 bytes, job IDs, provider rejection, reset and independent hosts. Ports must validate the destination
 and own the queued application's data until its callback completes.
 
+An EE `sceSifCallRpc` to a server a compiled module registered (`sifcmd` 17) runs the handler on that server's task,
+above its parked `RpcLoop` frame, as the SDK's loop runs it. The handler may wait (`DelayThread`, semaphores): the host's
+clock goes on to the next task deadline, timer or event until the handler returns; the task then parks again and the
+call completes with the reply. A failing handler leaves the task parked. Requests made while a compiled routine runs
+(nested) keep the root call. `library_rpc_blocking` checks a handler that delays.
+
+`CpuDisableIntr` (`intrman` 8) opens a callback-exclusion scope of the calling task (-102 when one is already open,
+as on the IOP) and `CpuEnableIntr` (9) closes it; with nothing open it does nothing. A routine that returns with the
+scope open fails as any unbalanced exclusion does. `library_cpu_interrupts` checks them.
+
+Native libsd also answers `sceSdCleanEffectWorkArea` (31), the waiting form of `sceSdClearEffectWorkArea` (25): the
+native clear is immediate. `sceSdSetEffectMode` (32) sets the mode, zeroes delay, feedback and depth, and clears the work area when the mode
+asks it (bit 0x100); `sceSdSetEffectModeParams` (33) returns -100 unless its mode is the current one, sets the depth,
+and sets delay and feedback only in modes 7 and 8. Both as the disc's LIBSD.IRX does, read from its code, not observed
+at run time.
+
+IOP alarms (`thbase` 35-38: `SetAlarm`, `iSetAlarm`, `CancelAlarm`, `iCancelAlarm`) are native periodic jobs on the same
+scheduler as the timer handlers: the linked handler gets its common argument and captured GP, its return value is
+the next interval in 36.864 MHz clocks, zero ends the alarm. A second `SetAlarm` of an active handler/common pair
+returns -104, `CancelAlarm` of an unknown or ended one -105. `USec2SysClock` (39) writes the clock pair. `Kprintf`
+(`sysmem` 14) prints its format string as `printf` (`stdio` 4) does. `library_alarms` checks them.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services

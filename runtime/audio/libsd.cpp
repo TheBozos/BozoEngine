@@ -423,6 +423,46 @@ namespace bozo::audio
         return 0u;
     }
 
+    uint32_t Libsd::setEffectMode(uint32_t core, uint32_t attr)
+    {
+        sync();
+        core &= 1u;
+        const uint32_t mode = r32(attr + 4u);
+        if ((mode & 0xFFu) >= 10u)
+            return static_cast<uint32_t>(-100);
+        auto &effect = m_state.effect[core];
+        effect.mode = mode & 0xFFu;
+        effect.delay = 0u;
+        effect.feedback = 0u;
+        const int group = static_cast<int>(core);
+        m_mixer.setEffectVolume(group, 0, 0u);
+        m_mixer.setEffectVolume(group, 1, 0u);
+        m_mixer.setEffect(group, static_cast<int>(effect.mode), 0u, 0u, m_state.effectEnd[core]);
+        if ((mode & 0x100u) != 0u)
+            m_mixer.clearEffectArea(static_cast<int>(effect.mode), m_state.effectEnd[core]);
+        return 0u;
+    }
+
+    uint32_t Libsd::setEffectModeParams(uint32_t core, uint32_t attr)
+    {
+        sync();
+        core &= 1u;
+        auto &effect = m_state.effect[core];
+        const uint32_t mode = r8(attr + 4u);
+        if (mode >= 10u || mode != effect.mode)
+            return static_cast<uint32_t>(-100);
+        const int group = static_cast<int>(core);
+        if (mode == 7u || mode == 8u)
+        {
+            effect.delay = r32(attr + 0xCu);
+            effect.feedback = r32(attr + 0x10u);
+            m_mixer.setEffect(group, static_cast<int>(mode), effect.delay, effect.feedback, m_state.effectEnd[core]);
+        }
+        m_mixer.setEffectVolume(group, 0, r16(attr + 8u));
+        m_mixer.setEffectVolume(group, 1, r16(attr + 0xAu));
+        return 0u;
+    }
+
     uint32_t Libsd::getEffectAttr(uint32_t core, uint32_t attr)
     {
         sync();
@@ -447,7 +487,7 @@ namespace bozo::audio
 
     bool Libsd::handles(uint32_t ordinal)
     {
-        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u);
+        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u) || (ordinal >= 31u && ordinal <= 33u);
     }
 
     bool Libsd::call(uint32_t ordinal, const uint32_t a[5], uint32_t gp, uint32_t &result)
@@ -476,6 +516,9 @@ namespace bozo::audio
         case 23u: result = setEffectAttr(a[0], a[1]); return true;
         case 24u: result = getEffectAttr(a[0], a[1]); return true;
         case 25u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 31u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 32u: result = setEffectMode(a[0], a[1]); return true;
+        case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
         case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
         default: return false;
