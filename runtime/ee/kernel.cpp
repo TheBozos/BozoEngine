@@ -629,7 +629,10 @@ namespace bozo::ee
         f->sequence = h.sequence;
         f->tag = h.tag;
         for (int i = 0; i < 4; ++i)
-            f->ctx.r[4 + i].sd[0] = static_cast<int32_t>(f->a[i]);
+            if (h.aHigh[i])
+                f->ctx.r[4 + i].ud[0] = (static_cast<uint64_t>(h.aHigh[i]) << 32) | f->a[i];
+            else
+                f->ctx.r[4 + i].sd[0] = static_cast<int32_t>(f->a[i]);
         f->ctx.r[28].sd[0] = static_cast<int32_t>(f->gp);
         f->ctx.r[29].sd[0] = static_cast<int32_t>(f->sp);
         f->ctx.r[31].sd[0] = static_cast<int32_t>(f->ra);
@@ -833,7 +836,14 @@ namespace bozo::ee
             throw std::invalid_argument("native deadline requires a finite cycle and callback");
         emit(kOpDeadlineSet,{key,h.kind,h.pc,h.a[0],h.a[1],h.a[2],h.a[3],h.gp,h.sp,h.ra,
                             h.completion?1u:0u,static_cast<uint32_t>(h.tag),static_cast<uint32_t>(h.tag>>32)},cycle);
-        deadlines_[key]={cycle,h};
+        deadlines_[key]={cycle,h,{}};
+    }
+
+    void Kernel::scheduleNative(uint32_t key,uint64_t cycle,std::function<void(uint64_t)> fn)
+    {
+        if(cycle==~0ull || !fn)
+            throw std::invalid_argument("native deadline requires a finite cycle and callback");
+        deadlines_[key]={cycle,{},std::move(fn)};
     }
 
     bool Kernel::cancelDeadline(uint32_t key)
@@ -888,10 +898,15 @@ namespace bozo::ee
         // Existing field events win equal-cycle ties; callback ties use key order.
         if(first!=deadlines_.end() && first->second.cycle<std::min(nextStart_,nextEnd_))
         {
+            const uint64_t due=first->second.cycle;
             const auto handler=first->second.handler;
+            const auto native=first->second.native;
             deadlines_.erase(first);
             Nested n(*this);
-            queue(handler);
+            if(native)
+                native(due);
+            else
+                queue(handler);
             return;
         }
         if (nextStart_ <= nextEnd_)
