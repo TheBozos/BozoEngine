@@ -90,6 +90,8 @@ namespace bozo::libs
             return size == 8 || size == 4;
         if (a == 0x12001010u || a == 0x12001080u) // IMR, SIGLBLID: no device behind them, nothing raises INTC 0
             return store && (size == 8 || size == 4);
+        if (a >= 0x10002000u && a <= 0x10002030u && (a & 0xFu) == 0) // IPU_CMD, IPU_CTRL, IPU_BP, IPU_TOP: an idle decoder
+            return size == 4 && (!store || a == 0x10002010u);
         if (a == 0x10003020u || a == 0x10003800u || a == 0x10003C00u) // GIF_STAT, VIF0_STAT, VIF1_STAT: idle
             return !store && size == 4;
         if (a == 0x10003010u || a == 0x10003820u || a == 0x10003C20u) // GIF_MODE, VIF0_ERR, VIF1_ERR: no path, no error
