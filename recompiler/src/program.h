@@ -61,7 +61,7 @@ namespace bozo
     Program programFromElf(const ElfFile &elf);
 
     // Compile-time port adaptations, applied to the in-memory analysis image only.
-    // The owner supplies the expected original word so a different binary fails safely.
+    // The owner selects the image and supplies its expected word so a mismatched site fails safely.
     struct InstructionPatch
     {
         uint32_t address, expected, replacement;

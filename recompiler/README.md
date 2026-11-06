@@ -78,6 +78,12 @@ number, duplicate or unsupported replacement fails generation. Identity replacem
 instruction sites while adjacent obsolete operations are removed. Pass a patch file only to the image it owns.
 Similarly, resident-only `native` externals must not be included in an overlay's externals file.
 
+The owner must select patch lists using the intended image identity: equal addresses/words in overlapping images
+cannot identify their owner. Guards validate instruction sites, not whole-program equivalence. The normal analysis
+and emitter process the adapted control flow; the port remains responsible for register liveness, callback ABI and
+intentional changes to calls/checkpoints. Generated instruction fixtures cover ordinary/likely delay slots, backward
+loop checkpoints and discovered interior entries after adaptation.
+
 ## Separately compiled code images
 
 `--symbol-prefix name_` prefixes every emitted C++ function, independently of `--prefix` (the output filenames and
