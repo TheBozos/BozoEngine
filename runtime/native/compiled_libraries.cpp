@@ -520,7 +520,7 @@ namespace bozo::native::irx
                 return;
             }
         }
-        if (lib == "stdio" && n == 4)
+        if ((lib == "stdio" && n == 4) || (lib == "sysmem" && n == 14))
         {
             if (libraries.printOutput)
                 std::fprintf(stdout, "[native-irx] %s", string(a0).c_str());
