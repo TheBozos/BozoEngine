@@ -955,6 +955,13 @@ namespace bozo::ee
         case KernelCall::EnableCache:
         case KernelCall::DisableCache: ret(ctx, 0); return false;
         case KernelCall::GetMemorySize: ret(ctx, 0x2000000); return false;
+        case KernelCall::SetAlarm:
+        case KernelCall::iSetAlarm:
+            ret(ctx, k.setAlarm(now(ctx) + (arg(ctx, 0) & 0xFFFFu) * k.hblank(), arg(ctx, 1), arg(ctx, 2), ctx->r[28].uw[0],
+                                call == KernelCall::iSetAlarm));
+            return false;
+        case KernelCall::ReleaseAlarm:
+        case KernelCall::iReleaseAlarm: ret(ctx, k.releaseAlarm(a0, call == KernelCall::iReleaseAlarm)); return false;
         case KernelCall::SuspendThread: ret(ctx, k.suspendThread(a0, false)); return false;
         case KernelCall::iSuspendThread: ret(ctx, k.suspendThread(a0, true)); return false;
         case KernelCall::ResumeThread:

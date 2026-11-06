@@ -15,6 +15,7 @@ namespace bozo::ee
         // millisecond: the reference's model, from the boot log's idle stretches).
         constexpr uint64_t kVblankLength = 147'456ull;
         constexpr uint32_t kIntcVblankStart = 2, kIntcVblankEnd = 3;
+        constexpr uint32_t kAlarmKeys = 0x80000000u; // the deadline keys alarms own
 
         uint64_t fieldCycles(uint32_t numerator, uint32_t denominator)
         {
@@ -673,7 +674,10 @@ namespace bozo::ee
     {
         emit(kOpFieldRate, {numerator, denominator});
         if (const uint64_t c = fieldCycles(numerator, denominator))
+        {
             fieldCycles_ = c;
+            lines_ = numerator / denominator < 55 ? 625 : 525;
+        }
     }
 
     uint32_t Kernel::threadSetup(uint32_t stack, uint32_t stackSize, uint32_t gp)
@@ -765,6 +769,8 @@ namespace bozo::ee
             break;
         }
         case kOpDeadlineCancel: cancelDeadline(arg(0)); break;
+        case kOpAlarmSet: setAlarm(wide, arg(0), arg(1), arg(2), arg(3) != 0); break;
+        case kOpAlarmCancel: releaseAlarm(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
         default:
             // Not used by TMB (alarms, event flags, suspend/resume...): recorded as made, no effect yet.
             {
@@ -834,6 +840,37 @@ namespace bozo::ee
     {
         emit(kOpDeadlineCancel,{key});
         return deadlines_.erase(key)!=0;
+    }
+
+    int32_t Kernel::setAlarm(uint64_t due, uint32_t pc, uint32_t arg, uint32_t gp, bool interruptSafe)
+    {
+        emit(kOpAlarmSet, {pc, arg, gp, interruptSafe ? 1u : 0u}, due);
+        for (int32_t id = 0; id < kAlarms; ++id)
+        {
+            const uint32_t key = kAlarmKeys | static_cast<uint32_t>(id);
+            if (deadlines_.count(key))
+                continue;
+            QueuedHandler h;
+            h.kind = kInvokeAlarm;
+            h.pc = pc;
+            h.a[0] = static_cast<uint32_t>(id);
+            h.a[1] = static_cast<uint32_t>((due / hblank()) & 0xFFFFu);
+            h.a[2] = arg;
+            h.gp = gp;
+            Nested n(*this);
+            scheduleDeadline(key, due, h);
+            return id;
+        }
+        return -1;
+    }
+
+    int32_t Kernel::releaseAlarm(int32_t id, bool interruptSafe)
+    {
+        emit(kOpAlarmCancel, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
+        if (id < 0 || id >= kAlarms)
+            return -1;
+        Nested n(*this);
+        return cancelDeadline(kAlarmKeys | static_cast<uint32_t>(id)) ? 0 : -1;
     }
 
     void Kernel::processEvents(uint64_t cycle)

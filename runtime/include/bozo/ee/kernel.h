@@ -309,6 +309,8 @@ namespace bozo::ee
         uint64_t nextVblankStart() const { return nextStart_; }
         uint64_t nextVblankEnd() const { return nextEnd_; }
         uint64_t field() const { return fieldCycles_; } // a field's length in EE cycles
+        // A horizontal blank's length in EE cycles, from the field rate the game set (525 lines NTSC, 625 PAL).
+        uint64_t hblank() const { return fieldCycles_ * 2 / lines_; }
         // The next scheduler event's cycle.
         uint64_t nextEvent() const;
         // Native callbacks in the scheduler clock domain. A key owns at most
@@ -316,6 +318,12 @@ namespace bozo::ee
         // Cancellation does not retract callbacks already placed on the queue.
         void scheduleDeadline(uint32_t key, uint64_t cycle, const QueuedHandler &handler);
         bool cancelDeadline(uint32_t key);
+        // SetAlarm / ReleaseAlarm on the deadlines above: `due` is an absolute EE cycle; the handler runs as
+        // handler(id, the horizontal blank count at `due`, arg). Returns the alarm's id (at most kAlarms pending),
+        // -1 when every one is pending. ReleaseAlarm returns 0 while it is pending, else -1.
+        static constexpr int32_t kAlarms = 64;
+        int32_t setAlarm(uint64_t due, uint32_t pc, uint32_t arg, uint32_t gp, bool interruptSafe);
+        int32_t releaseAlarm(int32_t id, bool interruptSafe);
         // Processes every event due at or before `cycle`, in order (origin: events).
         void processEvents(uint64_t cycle);
         // Processes the next event whatever its cycle (pinned mode: the host says when; kernel.md section 4).
@@ -367,6 +375,7 @@ namespace bozo::ee
 
         uint32_t vblankCount_ = 0;
         uint64_t fieldCycles_ = 0;
+        uint32_t lines_ = 525;
         uint64_t nextStart_ = 0, nextEnd_ = 0;
         struct Deadline { uint64_t cycle; QueuedHandler handler; };
         std::map<uint32_t, Deadline> deadlines_;
