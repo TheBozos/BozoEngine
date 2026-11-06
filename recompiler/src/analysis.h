@@ -22,6 +22,7 @@ namespace bozo
         // switch form the reference resolves as a switch inside the function. Any other jr through a register goes
         // through its dispatcher (kernel.md section 3).
         bool inPlace = false;
+        bool slots = false; // no table in data: jr base + (index << k), the targets are code slots at that stride
     };
 
     struct Function
@@ -82,6 +83,15 @@ namespace bozo
         void collectSeeds(std::set<uint32_t> &seeds);
         void carveGaps(const std::set<uint32_t> &seeds);
         void findJumpTables(Function &f);
+        // Discovery from the code alone (ELFs whose symbols cover little of it).
+        bool isCopyOfEntryRa(const Function &f, uint32_t jrAddress, uint32_t reg) const;
+        bool plausibleStart(uint32_t addr) const;
+        bool followsTerminator(uint32_t addr) const;
+        bool afterEnd(uint32_t addr, uint32_t floor, bool nothingAhead) const;
+        bool resolveTable(uint32_t jrAddress, uint32_t scanStart, uint32_t low, uint32_t high, JumpTable &out) const;
+        void sweepGap(uint32_t from, uint32_t to, const std::set<uint32_t> &hard, std::map<uint32_t, bool> &starts) const;
+        void mergeSplitBodies(std::map<uint32_t, bool> &starts) const;
+        void discoverFunctions();
         void addEntriesFromControlFlow();
         void addEntry(uint32_t addr, const char *why);
 
@@ -90,6 +100,7 @@ namespace bozo
         std::map<uint32_t, std::string> anySymbolAt_;
         std::set<uint32_t> dataPointers_;
         std::set<uint32_t> codePointers_;
+        std::set<uint32_t> callTargets_;
         AnalysisStats stats_;
     };
 

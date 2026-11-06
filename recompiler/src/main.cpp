@@ -198,7 +198,8 @@ int main(int argc, char **argv)
     const AnalysisStats &as = analysis.stats();
     std::printf("functions: %zu (%u from ELF function symbols, %u carved from code no symbol covers), %u extra entries\n",
                 analysis.functions().size(), as.symbolFunctions, as.gapFunctions, as.extraEntries);
-
+    if (!as.symbolDriven)
+        std::printf("discovery: the symbols cover under half of the code, functions found from the code\n");
     std::printf("calls: %u distinct call targets; code pointers: %u in data, %u built by lui/addiu\n", as.callTargets,
                 as.dataCodePointers, as.codePointerConstants);
     std::printf("jump tables: %u (%u entries); returns through a copy of ra: %u; jr through an unknown register value: %u; "
