@@ -65,6 +65,19 @@ cmake --build build-cc && build-cc/compile_check
 
 The game's executable is input data: never commit it, or generated code made from it, to this repository.
 
+## Guarded native adaptations
+
+`--patches port-native.patches` applies declared instruction replacements to the analysis image before function
+discovery and C++ generation. Each non-comment line contains three hexadecimal words (optional `0x` prefixes):
+`address expected-original replacement`. `#` starts a comment. The input ELF on disk and the runtime's original
+guest image are unchanged; the generated C++ implements the declared native adaptation.
+
+The complete batch is validated before any change: addresses must be unique, aligned, inside EE code and backed
+by the image; each original word must match exactly and every replacement must decode. A mismatch, malformed
+number, duplicate or unsupported replacement fails generation. Identity replacements can guard inline native
+instruction sites while adjacent obsolete operations are removed. Pass a patch file only to the image it owns.
+Similarly, resident-only `native` externals must not be included in an overlay's externals file.
+
 ## Separately compiled code images
 
 `--symbol-prefix name_` prefixes every emitted C++ function, independently of `--prefix` (the output filenames and

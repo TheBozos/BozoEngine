@@ -93,3 +93,11 @@ if(MINGW)
   target_link_options(bozo-image-builders-tests PRIVATE -static)
 endif()
 add_test(NAME native_image_builders COMMAND bozo-image-builders-tests)
+
+# Validate the whole adaptation batch before changing the offline analysis image.
+add_executable(bozo-instruction-patch-tests instr/patch_tests.cpp)
+target_link_libraries(bozo-instruction-patch-tests PRIVATE bozo_recomp_lib)
+if(MINGW)
+  target_link_options(bozo-instruction-patch-tests PRIVATE -static)
+endif()
+add_test(NAME guarded_instruction_adaptations COMMAND bozo-instruction-patch-tests)
