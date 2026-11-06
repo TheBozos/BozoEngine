@@ -185,6 +185,18 @@ static void sifAndSnd()
     eq("bound at the second", server, 0x1F10000);
     eq("module 1", m.call("sceSifLoadModule", {0x100400, 0, 0}), 1);
     eq("module 2", m.call("sceSifLoadModule", {0x100400, 0, 0}), 2);
+    std::vector<std::string> arguments;
+    m.libs.sif.moduleLoaderWithArguments = [&](const std::string &, const std::vector<std::string> &given)
+    {
+        arguments = given;
+        return 7;
+    };
+    std::memcpy(m.rt->memory.ram() + 0x100500, "thpri=39\0spucore=2\0", 20);
+    eq("a module loaded with arguments", m.call("sceSifLoadModule", {0x100400, 20, 0x100500}), 7);
+    eq("its arguments split at their NULs", arguments == std::vector<std::string>({"thpri=39", "spucore=2"}), 1);
+    eq("a module loaded with none", m.call("sceSifLoadModule", {0x100400, 0, 0}), 7);
+    eq("no arguments", arguments.empty(), 1);
+    m.libs.sif.moduleLoaderWithArguments = {};
     eq("set sreg (old value)", m.call("sceSifSetSreg", {8, 5}), 0);
     eq("get sreg", m.call("sceSifGetSreg", {8}), 5);
 

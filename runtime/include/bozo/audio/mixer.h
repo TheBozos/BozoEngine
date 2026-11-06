@@ -101,6 +101,8 @@ namespace bozo::audio
         void stopInput(int group);
         bool inputPlaying(int group) const;
         uint32_t inputOffset(int group) const; // the byte the input plays next
+        // Clocked: the IOP cycle at which the next input half ends (its half callback), 0 when no input plays.
+        uint64_t nextInputHalfCycle() const;
         void setInputHalfCallback(std::function<void(int group, int half)> half);
         // A port's stream, added to each output sample after the voices (null: none). It outlives its use here.
         void setPortStream(PortStream *stream);

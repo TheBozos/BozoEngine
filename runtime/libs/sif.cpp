@@ -7,6 +7,9 @@
 #include "bozo/ee/dispatcher.h"
 
 #include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
 
 namespace bozo::libs
 {
@@ -233,6 +236,23 @@ namespace bozo::libs
         // sceSifLoadModule(path, args, argp): nothing is loaded (the driver behind each module is native); the module
         // id, 1 for the first module since the IOP's reboot, then 2, 3...
         void loadModule(Libraries &l, Guest &g) {
+            if (l.sif.moduleLoaderWithArguments)
+            {
+                std::vector<std::string> arguments;
+                const uint32_t bytes = g.arg(1), at = g.arg(2);
+                if (bytes && at)
+                {
+                    const auto *data = reinterpret_cast<const char *>(g.in(at, bytes));
+                    for (uint32_t i = 0; i < bytes;)
+                    {
+                        const std::string argument(data + i, strnlen(data + i, bytes - i));
+                        if (!argument.empty()) arguments.push_back(argument);
+                        i += static_cast<uint32_t>(argument.size()) + 1;
+                    }
+                }
+                g.ret(l.sif.moduleLoaderWithArguments(g.string(g.arg(0)), arguments));
+                return;
+            }
             if (l.sif.moduleLoader) { g.ret(l.sif.moduleLoader(g.string(g.arg(0)))); return; }
             g.ret(static_cast<int32_t>(++l.sif.modules));
         }

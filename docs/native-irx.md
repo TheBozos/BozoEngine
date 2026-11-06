@@ -6,7 +6,7 @@
 
 1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
 2. `python tools/native_irx/recompile.py <output-stem>.json --out <generated-directory>` emits `<library>_iop.cpp`. Link that C++ into the port, with `bozo_runtime_headers`. The translator's only mode is strict: unsupported instructions/targets produce explicit native failures, and unsafe load-delay cases are rejected during generation.
-3. Build `Image` records from the relocated data and import/export metadata, and register them with a per-port `CompiledLibraries` object. Its name, hash, load base and byte length must match a linked generated registration. A native-libsd image can route its sound exports directly to `audio::Libsd`; pure note/pitch conversions remain compiled arithmetic.
+3. Build `Image` records from the relocated data and import/export metadata, and register them with a per-port `CompiledLibraries` object. Its name, hash, load base and byte length must match a linked generated registration. A native-libsd image routes its sound exports to `audio::Libsd`, and any module's libsd imports reach it with no LIBSD image at all, the note/pitch conversions included.
 
 Generated images and code belong in ignored build directories. They are derived from the player's disc, never shipped in the engine repository. The host only copies image bytes as data; execution always calls a statically linked C++ function or a native SDK binding. Pointers outside the bounded buffer fail, including device addresses.
 
@@ -16,6 +16,7 @@ The port owns the host's lifetime, image choices, heap start and EE-facing polic
 
 - `audioProvider(eeCycle)` advances the native library callbacks and returns their mixer.
 - `sif.moduleLoader(path)` selects a native implementation for a requested library.
+- `sif.moduleLoaderWithArguments(path, arguments)` does the same with `sceSifLoadModule`'s arguments, which `startImage(name, arguments)` gives the module as `argc`/`argv`, name first. Soulcalibur III configures CRI's ADX driver this way (`thpri=39`, `spucore=2`).
 - `sif.transfer`, `allocateBuffer` and `freeBuffer` connect native bulk transfers to the same allocator used by compiled SDK code.
 - `sif.resetProvider` resets library data and native services.
 - `sif.servers` maps service IDs to native RPC callbacks, independent of any particular sound driver.
@@ -46,7 +47,7 @@ to actual native game frames. The port calls `notifyFrameCompleted()` after comp
 Clock advancement alone never invokes these listeners. Priorities and FIFO ties, captured GP/argument,
 zero-return removal, release of queued listeners, callback exclusion and reset are retained. Deferred
 frames are bounded, and listeners registered later do not consume old frame events. Display-end phases
-and legacy VBlank waits remain unsupported: this API creates no display timing or interrupt source.
+remain unsupported: this API creates no display timing or interrupt source.
 `library_frame_listeners` checks actual-frame-only delivery, ordering, cancellation, exclusion, reset
 and separate hosts. Declarations/error values were checked against PS2SDK's vblank/kerr headers.
 
@@ -97,6 +98,14 @@ returns -104, `CancelAlarm` of an unknown or ended one -105. `USec2SysClock` (39
 (`sysmem` 14) prints its format string as `printf` (`stdio` 4) does. `library_alarms` checks them.
 
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
+
+Host services for modules whose start or shutdown path needs them: `sysclib` 11, 19, 20, 22, 23, 30 (`memcmp`, `sprintf`, `strcat`, `strcmp`, `strcpy`, `strncpy`), with `printf` and `Kprintf` formatting through the same 32-bit formatter as `sprintf`; `loadcore` 7 (`ReleaseLibraryEntries`, native linking has nothing to release); `thbase` 5, 8, 10, 27, 28 (`DeleteThread`, `ExitThread`, `TerminateThread`, `CancelWakeupThread`, `iCancelWakeupThread`). A dormant task is one not started, exited or terminated: `StartThread` restarts it from its entry, `DeleteThread` of a live one returns -414, `TerminateThread` of a dormant one -413, unknown ids -407, the caller's own -406. `timrman` 10 (`GetTimerCounter`) gives the clocks since the period began, 0 when stopped.
+
+`vblank` 5 (`WaitVblankEnd`) parks the task until the next 60 Hz tick of the library clock. It is a host job on that clock with no display, field or interrupt behind it, unrelated to the game's frames (`useNativeFrameCallbacks`), and a late waiter waits for one tick and never catches up. Waking follows `DelayThread`: the first safe advance at or after the tick. `library_host_services` checks these.
+
+Compiled modules reach native EE services through `sif.eeServers`, a map of service id to a C++ handler given the command, the bytes sent and the reply to fill. `sifcmd` 15 (`sceSifBindRpc`) writes the client's server field (offset 0x24) when the id is served and 0 otherwise, the state an SDK client polls while it retries. `sifcmd` 16 (`sceSifCallRpc`) completes on return, then queues its end function as a callback; a call on an unbound client fails explicitly. `sifcmd` 24, 25 (`sceSifRemoveRpc`, `sceSifRemoveRpcQueue`) drop the IOP server. There is no EE thread, RPC queue, SIF DMA or command interrupt behind this: an EE `sceSifRegisterRpc` family is not provided, and Soulcalibur III never reaches one (its libsdr callback setup and CRI's EE server have no callers). `library_ee_rpc` checks these.
+
+`sceSdBlockTrans` rings as small as 4 KiB work because the host stops the mix at each input half (`Mixer::nextInputHalfCycle`): the half's handler and the tasks it wakes run before the next half is mixed, however long the clock step. `sceSdBlockTransStatus` answers each signalled half once, in turn, oldest first (two kept), with the start of the half that followed it, so a driver reading late still learns which half to refill. `library_block_ring` checks one signal per half, the status order, and refills played in order.
 
 ## Other reusable port services
 

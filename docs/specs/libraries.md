@@ -774,6 +774,10 @@ there, boot #210987) to 2 MB, blocks rounded up to 16 bytes, first fit by addres
 neighbours. `sceSifAllocIopHeap` and 989SND's allocations (banks, the movie's buffer, the VAG streams' buffers) share
 it. Every placement of both logs (21 banks, 11 movie buffers, 11 `sceSifAllocIopHeap` blocks) is the native heap's.
 
+### 14.2a IOP modules calling the EE
+
+The other direction, for modules compiled by `tools/native_irx`: `sif.eeServers` maps a service id to a native handler (`docs/native-irx.md`). In the SDK the same calls reach an EE thread in `sceSifRpcLoop`. Soulcalibur III's code holds that path and never takes it: its libsdr callback setup (the function creating the thread that registers 0x80000704, 0x423538) and CRI's EE server thread (0x4006F8) have no reference in the ELF, and CRI_ADXI's two `sceSifCallRpc` callers have none in the module. So the EE's `sceSifRegisterRpc` family stays unwritten until a game reaches it.
+
 ### 14.3 Results
 
 Native calls: boot 7,212 (`sceSifCallRpc` and `sceSifCheckStatRpc` 3,592 each, and the setup calls), match1p 245,108
@@ -1360,6 +1364,8 @@ sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffe
 256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
 address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
 8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
+
+The exports added for modules with no LIBSD image: 13 and 14 are the SDK's equal-temperament arithmetic on two tables computed at start, floor(32768 * 2^(i / 12)) for the 12 semitones and floor(32768 * 2^(i / 1536)) for the 128 fine steps, one after the other. 0x1000 is the center note, and indexes outside both tables (only a center fine plus fine under -127) fail explicitly. Their integer results were compared with Soulcalibur III's LIBSD.IRX exports, statically compiled, on 10,254,800 arguments with no difference. 28 returns the argument given to 26. 30 stops the channel's input (voice transfers are already complete) and returns 0.
 
 **A port's stream.** `audio::PortStream` (`port::audioStream(rt)`, thread-safe) takes a port's PCM, a movie soundtrack: 16-bit
 stereo at 48 kHz, interleaved. The port resamples anything else. Each output sample the mixer makes takes one frame from it

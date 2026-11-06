@@ -29,6 +29,8 @@ namespace bozo::native::irx
             return entries;
         }
         constexpr uint32_t kReturn = 0xfffffff0u;
+        // WaitVblankEnd's host job: a 60 Hz tick of the library clock (36.864 MHz), not a display.
+        constexpr uint64_t kFrameTick = 36864000 / 60;
         constexpr uint32_t kCpuDisableScope = 0xffffffffu;
     } // namespace
     Registration::Registration(const char *name, uint64_t hash, uint32_t base, uint32_t size, const Entry *entries,
@@ -467,6 +469,85 @@ namespace bozo::native::irx
             throw std::runtime_error("native library tasks made no blocking progress");
         }
         void service(Environment &env, const Import &import);
+        // The SDK's printf family on 32-bit arguments: argument slot k is a0-a3, then the caller's stack from sp + 16.
+        std::string format(const NativeCpu &c, uint32_t formatAddress, uint32_t first)
+        {
+            const std::string f = string(formatAddress);
+            uint32_t slot = first;
+            const auto next = [&] { const uint32_t k = slot++; return k < 4 ? c.gpr[4 + k] : read(c.gpr[29] + 4 * k); };
+            std::string out;
+            for (size_t i = 0; i < f.size(); ++i)
+            {
+                if (f[i] != '%')
+                {
+                    out += f[i];
+                    continue;
+                }
+                std::string spec = "%";
+                ++i;
+                while (i < f.size() && std::strchr("-+ #0", f[i]))
+                    spec += f[i++];
+                const auto number = [&]
+                {
+                    if (i < f.size() && f[i] == '*')
+                    {
+                        ++i;
+                        spec += std::to_string(int32_t(next()));
+                        return;
+                    }
+                    while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i])))
+                        spec += f[i++];
+                };
+                number();
+                if (i < f.size() && f[i] == '.')
+                {
+                    spec += f[i++];
+                    number();
+                }
+                while (i < f.size() && (f[i] == 'l' || f[i] == 'h'))
+                    ++i;
+                if (i >= f.size())
+                    break;
+                const char conversion = f[i];
+                const auto append = [&](const std::string &with, auto value)
+                {
+                    const int bytes = std::snprintf(nullptr, 0, with.c_str(), value);
+                    if (bytes <= 0)
+                        return;
+                    std::string text(size_t(bytes) + 1, '\0');
+                    std::snprintf(text.data(), text.size(), with.c_str(), value);
+                    out.append(text.data(), size_t(bytes));
+                };
+                switch (conversion)
+                {
+                case 'd': case 'i':
+                    append(spec + 'd', int32_t(next()));
+                    break;
+                case 'u': case 'x': case 'X': case 'o':
+                    append(spec + conversion, unsigned(next()));
+                    break;
+                case 'p':
+                    append("%x", unsigned(next()));
+                    break;
+                case 'c':
+                    append(spec + 'c', int(uint8_t(next())));
+                    break;
+                case 's':
+                {
+                    const uint32_t at = next();
+                    const std::string text = at ? string(at) : "(null)";
+                    append(spec + 's', text.c_str());
+                    break;
+                }
+                case '%':
+                    out += '%';
+                    break;
+                default:
+                    throw std::runtime_error(std::format("unsupported native printf conversion %{}", conversion));
+                }
+            }
+            return out;
+        }
         void syncEe(uint64_t eeCycle)
         {
             if (!origin)
@@ -500,6 +581,12 @@ namespace bozo::native::irx
                         next = event.due;
                         due = true;
                     }
+                // The mix stops at each input half so its handler and the tasks it wakes refill that half in time.
+                if (const uint64_t half = mixer.nextInputHalfCycle(); half > cycle && half < next)
+                {
+                    next = half;
+                    due = true;
+                }
                 cycle = next;
                 mixer.advanceTo(cycle);
                 if (!due)
@@ -586,23 +673,14 @@ namespace bozo::native::irx
                 std::fprintf(stderr, "[libsd] voiceTrans(%x,%x,%x,%x,%x) sp=%x\n", a0, a1, a2, a3, args[4], c.gpr[29]);
             uint32_t result = 0;
             if (!libsd.call(n, args, c.gpr[28], result))
-            {
-                // SDK note/pitch conversions are pure arithmetic in the statically compiled library.
-                const auto found = exports.find({lib, n});
-                if ((n == 13 || n == 14) && found != exports.end())
-                {
-                    env.call(found->second, c.gpr[31]);
-                    return;
-                }
                 throw std::runtime_error(std::format("no native libsd export {}", n));
-            }
             ret(result);
             return;
         }
         if (lib == "loadcore")
         {
             // Native linking and cache coherence are supplied by the host executable.
-            if (n == 5 || n == 6 || n == 12)
+            if (n == 5 || n == 6 || n == 7 || n == 12)
             {
                 ret();
                 return;
@@ -611,7 +689,7 @@ namespace bozo::native::irx
         if ((lib == "stdio" && n == 4) || (lib == "sysmem" && n == 14))
         {
             if (libraries.printOutput)
-                std::fprintf(stdout, "[native-irx] %s", string(a0).c_str());
+                std::fprintf(stdout, "[native-irx] %s", format(c, a0, 1).c_str());
             ret();
             return;
         }
@@ -623,6 +701,53 @@ namespace bozo::native::irx
                 ret((std::isupper(ch) ? 1 : 0) | (std::islower(ch) ? 2 : 0) | (std::isdigit(ch) ? 4 : 0) |
                     (std::isspace(ch) ? 8 : 0) | (std::ispunct(ch) ? 16 : 0) | (std::iscntrl(ch) ? 32 : 0) |
                     (std::isxdigit(ch) ? 64 : 0) | (ch == ' ' ? 128 : 0));
+                return;
+            }
+            const auto compare = [&](uint32_t left, uint32_t right, uint32_t limit, bool strings) -> uint32_t
+            {
+                for (uint32_t i = 0; i < limit; ++i)
+                {
+                    const uint8_t x = memory[physical(left + i, 1)], y = memory[physical(right + i, 1)];
+                    if (x != y)
+                        return uint32_t(int32_t(x) - int32_t(y));
+                    if (strings && !x)
+                        break;
+                }
+                return 0;
+            };
+            if (n == 11)
+            {
+                ret(compare(a0, a1, a2, false));
+                return;
+            }
+            if (n == 22)
+            {
+                ret(compare(a0, a1, 0xffffffffu, true));
+                return;
+            }
+            if (n == 19)
+            {
+                const auto text = format(c, a1, 2);
+                copy(a0, reinterpret_cast<const uint8_t *>(text.c_str()), uint32_t(text.size() + 1));
+                ret(uint32_t(text.size()));
+                return;
+            }
+            if (n == 20 || n == 23)
+            {
+                const auto text = string(a1, 0x100000);
+                const uint32_t at = n == 20 ? a0 + uint32_t(string(a0, 0x100000).size()) : a0;
+                copy(at, reinterpret_cast<const uint8_t *>(text.c_str()), uint32_t(text.size() + 1));
+                ret(a0);
+                return;
+            }
+            if (n == 30)
+            {
+                const auto text = string(a1, 0x100000);
+                std::vector<uint8_t> bytes(a2, 0);
+                std::memcpy(bytes.data(), text.data(), std::min<size_t>(text.size(), a2));
+                if (a2)
+                    copy(a0, bytes.data(), a2);
+                ret(a0);
                 return;
             }
             if (n == 12)
@@ -743,9 +868,79 @@ namespace bozo::native::irx
                 ret(uint32_t(id));
                 return;
             }
+            if (n == 5 || n == 10)
+            {
+                const auto it = tasks.find(int32_t(a0));
+                if (!a0 || int32_t(a0) == logicalTask())
+                {
+                    ret(uint32_t(-406));
+                    return;
+                }
+                if (it == tasks.end())
+                {
+                    ret(uint32_t(-407));
+                    return;
+                }
+                const bool dormant = !it->second.started || it->second.done;
+                if (n == 5 && !dormant)
+                {
+                    ret(uint32_t(-414));
+                    return;
+                }
+                if (n == 10 && dormant)
+                {
+                    ret(uint32_t(-413));
+                    return;
+                }
+                for (auto &[id, sema] : semas)
+                    std::erase(sema.waiting, it->first);
+                if (n == 5)
+                    tasks.erase(it);
+                else
+                {
+                    auto &t = it->second;
+                    t.done = true;
+                    t.waiting = t.sleeping = false;
+                    t.waitingSema = 0;
+                    t.due = 0;
+                }
+                ret();
+                return;
+            }
+            if (n == 8)
+            {
+                if (!current)
+                    throw std::runtime_error("native root call attempted ExitThread");
+                tasks.at(current).done = true;
+                ret();
+                return;
+            }
+            if (n == 27 || n == 28)
+            {
+                const auto it = tasks.find(a0 ? int32_t(a0) : logicalTask());
+                if (it == tasks.end())
+                {
+                    ret(uint32_t(-407));
+                    return;
+                }
+                ret(uint32_t(it->second.wakeups));
+                it->second.wakeups = 0;
+                return;
+            }
             if (n == 6)
             {
                 auto &t = tasks.at(int32_t(a0));
+                if (t.done)
+                {
+                    const uint32_t gp = t.cpu.gpr[28];
+                    t.cpu = NativeCpu{};
+                    t.cpu.pc = t.entry;
+                    t.cpu.gpr[28] = gp;
+                    t.cpu.gpr[29] = t.stack + t.stackBytes;
+                    t.cpu.gpr[31] = kReturn;
+                    t.done = false;
+                    t.wakeups = 0;
+                }
                 t.cpu.gpr[4] = a1;
                 t.waiting = false;
                 t.started = true;
@@ -981,6 +1176,17 @@ namespace bozo::native::irx
                 return;
             } // native callbacks are only delivered at safe points
         }
+        if (lib == "vblank" && n == 5)
+        {
+            if (!current)
+                throw std::runtime_error("native root WaitVblankEnd");
+            if (!exclusions.empty()) throw std::runtime_error("native frame wait with callbacks excluded");
+            auto &t = tasks.at(current);
+            t.waiting = true;
+            t.due = (cycle / kFrameTick + 1) * kFrameTick;
+            ret();
+            return;
+        }
         if (lib == "vblank" && (n == 8 || n == 9) && nativeFrameCallbacks)
         {
             if (a0) throw std::runtime_error("native frames have no display-end phase");
@@ -1072,6 +1278,13 @@ namespace bozo::native::irx
             if (n == 8)
             {
                 ret(timer.mode | 0x800);
+                return;
+            }
+            if (n == 10)
+            {
+                const uint64_t period = timer.period(), start = timer.due > period ? timer.due - period : 0;
+                const uint64_t elapsed = timer.mode && cycle > start ? cycle - start : 0;
+                ret(uint32_t(elapsed * timer.rate / (uint64_t(36864000) * timer.prescale)));
                 return;
             }
             if (n == 11)
@@ -1211,7 +1424,47 @@ namespace bozo::native::irx
                 ret(a0);
                 return;
             }
-            if (n == 19)
+            if (n == 15)
+            {
+                const auto found = libraries.sif.eeServers.find(a1);
+                write(a0 + 0x24, a1 && found != libraries.sif.eeServers.end() ? a1 : 0);
+                ret();
+                return;
+            }
+            if (n == 16)
+            {
+                const uint32_t sp = c.gpr[29], sendBytes = read(sp + 16), receive = read(sp + 20),
+                               receiveBytes = read(sp + 24), end = read(sp + 28), endArgument = read(sp + 32);
+                const uint32_t service = read(a0 + 0x24);
+                const auto found = libraries.sif.eeServers.find(service);
+                if (!service || found == libraries.sif.eeServers.end())
+                    throw std::runtime_error(std::format("native IOP call to an unbound EE RPC client 0x{:x}", a0));
+                if (end && (!functions.contains(end) || imports.contains(end) ||
+                            std::none_of(images.begin(), images.end(), [&](const auto &image) {
+                                return end >= image.base && uint64_t(end) < uint64_t(image.base) + image.bytes.size();
+                            })))
+                    throw std::runtime_error("native EE RPC completion requires an admitted linked function");
+                const auto from = physical(a3, sendBytes);
+                const std::vector<uint8_t> sent(memory.begin() + from, memory.begin() + from + sendBytes);
+                std::vector<uint8_t> reply(receiveBytes);
+                if (receiveBytes)
+                    physical(receive, receiveBytes);
+                found->second(a1, sent, reply);
+                if (receiveBytes)
+                    copy(receive, reply.data(), receiveBytes);
+                write(a0 + 0x10, a1);
+                if (end)
+                    events.push_back({cycle, end, endArgument, 0, c.gpr[28]});
+                ret();
+                return;
+            }
+            if (n == 24)
+            {
+                libraries.sif.servers.erase(read(a0 + 0x20));
+                ret(a0);
+                return;
+            }
+            if (n == 19 || n == 25)
             {
                 ret(a0);
                 return;
@@ -1340,7 +1593,7 @@ namespace bozo::native::irx
             throw std::runtime_error("native bindings must be installed before library execution");
         p.functions.at(address) = std::move(function);
     }
-    int32_t CompiledLibraries::startImage(const std::string &name)
+    int32_t CompiledLibraries::startImage(const std::string &name, std::span<const std::string> arguments)
     {
         auto &p = *impl_;
         if (auto it = p.started.find(name); it != p.started.end())
@@ -1352,7 +1605,33 @@ namespace bozo::native::irx
         if (image->nativeLibsd)
             p.libsd.init();
         else
-            p.invoke(image->entry, image->gp);
+        {
+            uint32_t argc = 0, argv = 0;
+            if (!arguments.empty())
+            {
+                argc = uint32_t(arguments.size()) + 1;
+                const std::string module = name.substr(0, name.find(';'));
+                uint32_t bytes = (argc + 1) * 4 + uint32_t(module.size()) + 1;
+                for (const auto &argument : arguments)
+                    bytes += uint32_t(argument.size()) + 1;
+                argv = p.heap.allocate(bytes);
+                if (!argv)
+                    throw std::runtime_error("native module arguments do not fit the heap");
+                uint32_t text = argv + (argc + 1) * 4, slot = argv;
+                const auto put = [&](const std::string &value)
+                {
+                    p.write(slot, text);
+                    slot += 4;
+                    p.copy(text, reinterpret_cast<const uint8_t *>(value.c_str()), uint32_t(value.size()) + 1);
+                    text += uint32_t(value.size()) + 1;
+                };
+                put(module);
+                for (const auto &argument : arguments)
+                    put(argument);
+                p.write(slot, 0);
+            }
+            p.invoke(image->entry, image->gp, argc, argv);
+        }
         p.runReady();
         const int32_t id = int32_t(p.started.size() + 1);
         p.started[name] = id;
