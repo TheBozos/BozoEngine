@@ -22,6 +22,7 @@ namespace bozo
         // switch form the reference resolves as a switch inside the function. Any other jr through a register goes
         // through its dispatcher (kernel.md section 3).
         bool inPlace = false;
+        bool slots = false; // no table in data: jr base + (index << k), the targets are code slots at that stride
     };
 
     struct Function
@@ -43,6 +44,7 @@ namespace bozo
     {
         uint32_t symbolFunctions = 0;   // functions from ELF function symbols
         uint32_t gapFunctions = 0;      // functions found in code not covered by a symbol
+        bool symbolDriven = false;      // sized function symbols cover most of the code (else discovery from the code)
         uint32_t extraEntries = 0;      // entries into the middle of a function
         uint32_t jumpTables = 0;
         uint32_t jumpTableTargets = 0;
@@ -72,12 +74,25 @@ namespace bozo
         // Is `addr` an address the generated code can be entered at (a function start or an extra entry)?
         bool isEntry(uint32_t addr) const;
 
+        // The whole result as text, one fact per line, for tools and for people (docs/specs/discovery.md).
+        std::string report() const;
+
     private:
         Function *mutableContaining(uint32_t addr);
         void addSymbolFunctions();
         void collectSeeds(std::set<uint32_t> &seeds);
+        void collectBuiltPointers(const Insn &lui, uint32_t rangeEnd);
         void carveGaps(const std::set<uint32_t> &seeds);
         void findJumpTables(Function &f);
+        // Discovery from the code alone (ELFs whose symbols cover little of it).
+        bool isCopyOfEntryRa(const Function &f, uint32_t jrAddress, uint32_t reg) const;
+        bool plausibleStart(uint32_t addr) const;
+        bool followsTerminator(uint32_t addr) const;
+        bool afterEnd(uint32_t addr, uint32_t floor, bool nothingAhead) const;
+        bool resolveTable(uint32_t jrAddress, uint32_t scanStart, uint32_t low, uint32_t high, JumpTable &out) const;
+        void sweepGap(uint32_t from, uint32_t to, const std::set<uint32_t> &hard, std::map<uint32_t, bool> &starts) const;
+        void mergeSplitBodies(std::map<uint32_t, bool> &starts) const;
+        void discoverFunctions();
         void addEntriesFromControlFlow();
         void addEntry(uint32_t addr, const char *why);
 
@@ -86,6 +101,7 @@ namespace bozo
         std::map<uint32_t, std::string> anySymbolAt_;
         std::set<uint32_t> dataPointers_;
         std::set<uint32_t> codePointers_;
+        std::set<uint32_t> callTargets_;
         AnalysisStats stats_;
     };
 

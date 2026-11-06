@@ -1,4 +1,5 @@
-// Function discovery.
+// Function discovery. An executable whose sized function symbols cover at least half of its code goes by steps 1 to 4;
+// any other is discovered from its code (docs/specs/discovery.md, discoverFunctions below).
 //
 // 1. Every ELF function symbol (STT_FUNC with a size) inside the code is a function with the symbol's range.
 // 2. Code no symbol covers (C++ thunks, hand-written assembly, padding) is carved into functions: each one starts at
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace bozo
 {
@@ -42,6 +44,21 @@ namespace bozo
                 opc == 28)
                 return static_cast<int>(i.rd());
             return -1;
+        }
+
+        // Execution never continues past this instruction's delay slot.
+        bool endsFlow(const Insn &i)
+        {
+            if (i.op == Op::J || i.op == Op::JR)
+                return true;
+            // beq r, r and bgez zero: `b`.
+            return (i.op == Op::BEQ && i.rs() == i.rt()) || (i.op == Op::BGEZ && i.rs() == 0);
+        }
+
+        // addiu sp, sp, -n: a function setting up its frame.
+        bool isFrameAllocation(const Insn &i)
+        {
+            return i.op == Op::ADDIU && i.rs() == 29 && i.rt() == 29 && i.simm() < 0;
         }
 
         std::string sanitize(const std::string &name)
@@ -137,6 +154,28 @@ namespace bozo
         stats_.symbolFunctions = static_cast<uint32_t>(functions_.size());
     }
 
+    void Analysis::collectBuiltPointers(const Insn &lui, uint32_t rangeEnd)
+    {
+        const uint32_t reg = lui.rt();
+        const bool saved = (reg >= 16 && reg <= 23) || reg == 28 || reg == 30;
+        bool lastSlot = false;
+        for (uint32_t b = lui.addr + 4; b < lui.addr + 256 && b + 4 <= rangeEnd; b += 4)
+        {
+            const Insn n = decodeAt(program_.read32(b), b);
+            if ((n.op == Op::ADDIU || n.op == Op::ORI) && n.rs() == reg)
+            {
+                const uint32_t v = n.op == Op::ADDIU ? (lui.uimm() << 16) + static_cast<uint32_t>(n.simm())
+                                                     : (lui.uimm() << 16) | n.uimm();
+                if (program_.isCode(v) && (v & 3u) == 0)
+                    codePointers_.insert(v);
+            }
+            if (lastSlot || gprWritten(n) == static_cast<int>(reg))
+                return;
+            // The instruction in the delay slot still sees the register; after a call only a saved one holds.
+            lastSlot = endsFlow(n) || (!saved && (n.op == Op::JAL || n.op == Op::JALR));
+        }
+    }
+
     void Analysis::collectSeeds(std::set<uint32_t> &seeds)
     {
         seeds.insert(program_.entry);
@@ -164,6 +203,11 @@ namespace bozo
                 {
                     // A code address built by lui + addiu/ori in the next few instructions (a function pointer).
                     const uint32_t reg = i.rt();
+                    if (!stats_.symbolDriven)
+                    {
+                        collectBuiltPointers(i, r.end);
+                        continue;
+                    }
                     for (uint32_t b = a + 4; b < a + 40 && b + 4 <= r.end; b += 4)
                     {
                         const Insn n = decodeAt(program_.read32(b), b);
@@ -181,6 +225,7 @@ namespace bozo
                 }
             }
         }
+        callTargets_ = calls;
         stats_.callTargets = static_cast<uint32_t>(calls.size());
         stats_.codePointerConstants = static_cast<uint32_t>(codePointers_.size());
         seeds.insert(calls.begin(), calls.end());
@@ -358,6 +403,434 @@ namespace bozo
         stats_.unresolvedJr += static_cast<uint32_t>(f.unresolvedJr.size());
     }
 
+    bool Analysis::isCopyOfEntryRa(const Function &f, uint32_t jrAddress, uint32_t reg) const
+    {
+        const auto findDef = [&](uint32_t from, uint32_t wanted, Insn &def) {
+            for (uint32_t a = from; a > f.start;)
+            {
+                a -= 4;
+                const Insn i = decodeAt(program_.read32(a), a);
+                if (gprWritten(i) == static_cast<int>(wanted))
+                {
+                    def = i;
+                    return true;
+                }
+            }
+            return false;
+        };
+        Insn move, earlier;
+        return findDef(jrAddress, reg, move) && (move.op == Op::ADDU || move.op == Op::DADDU || move.op == Op::OR) &&
+               ((move.rs() == 31 && move.rt() == 0) || (move.rs() == 0 && move.rt() == 31)) &&
+               !findDef(move.addr, 31, earlier);
+    }
+
+    bool Analysis::plausibleStart(uint32_t addr) const
+    {
+        if ((addr & 3u) || !program_.isCode(addr))
+            return false;
+        const uint32_t word = program_.read32(addr);
+        if (word == 0 || decode(word) == Op::Unknown)
+            return false;
+        // The delay slot of a branch is never where a function starts.
+        return !(program_.isCode(addr - 4) && hasDelaySlot(decode(program_.read32(addr - 4))));
+    }
+
+    bool Analysis::followsTerminator(uint32_t addr) const
+    {
+        uint32_t a = addr;
+        for (int padding = 0; padding < 16 && program_.isCode(a - 4) && program_.read32(a - 4) == 0; ++padding)
+            a -= 4;
+        if (!program_.isCode(a - 4))
+            return true;
+        // Padding is zero words, and so can be the delay slot before it.
+        for (uint32_t b : {a - 8, a - 4, addr - 8})
+            if (program_.isCode(b) && endsFlow(decodeAt(program_.read32(b), b)))
+                return true;
+        const Op last = decode(program_.read32(a - 4));
+        return last == Op::SYSCALL || last == Op::BREAK || last == Op::ERET;
+    }
+
+    bool Analysis::afterEnd(uint32_t addr, uint32_t floor, bool nothingAhead) const
+    {
+        uint32_t a = addr;
+        while (a > floor && program_.read32(a - 4) == 0)
+            a -= 4;
+        const auto insn = [&](uint32_t at) { return at >= floor ? decodeAt(program_.read32(at), at) : Insn{}; };
+        for (uint32_t at : {a - 4, a - 8})
+        {
+            const Insn i = insn(at);
+            if (endsFlow(i))
+                return true;
+            if (nothingAhead && (i.op == Op::JAL || i.op == Op::JALR))
+                return true;
+        }
+        return nothingAhead && (insn(a - 4).op == Op::SYSCALL || insn(a - 4).op == Op::BREAK);
+    }
+
+    bool Analysis::resolveTable(uint32_t jrAddress, uint32_t scanStart, uint32_t low, uint32_t high, JumpTable &out) const
+    {
+        const auto findDef = [&](uint32_t from, uint32_t reg, int window, Insn &def) {
+            for (uint32_t a = from; a > scanStart && window-- > 0;)
+            {
+                a -= 4;
+                const Insn i = decodeAt(program_.read32(a), a);
+                if (gprWritten(i) == static_cast<int>(reg))
+                {
+                    def = i;
+                    return true;
+                }
+            }
+            return false;
+        };
+        const Insn jr = decodeAt(program_.read32(jrAddress), jrAddress);
+        Insn load, sum;
+        if (!findDef(jrAddress, jr.rs(), 32, load))
+            return false;
+        if (load.op == Op::ADDU || load.op == Op::DADDU)
+        {
+            // A jump to base + (index << k): slots of code at a fixed stride, each a target.
+            for (const auto &[baseReg, indexReg] : {std::pair{load.rs(), load.rt()}, std::pair{load.rt(), load.rs()}})
+            {
+                Insn add, lui, shift;
+                if (!findDef(load.addr, baseReg, 32, add) || add.op != Op::ADDIU || !findDef(add.addr, add.rs(), 32, lui) ||
+                    lui.op != Op::LUI || !findDef(load.addr, indexReg, 32, shift) || shift.op != Op::SLL ||
+                    shift.sa() < 2 || shift.sa() > 8)
+                    continue;
+                const uint32_t base = (lui.uimm() << 16) + static_cast<uint32_t>(add.simm());
+                if ((base & 3u) || base < low || base >= high)
+                    continue;
+                out.jrAddress = jrAddress;
+                out.tableAddress = base;
+                out.inPlace = true;
+                out.slots = true;
+                out.targets.clear();
+                for (uint32_t t = base; t < high; t += 1u << shift.sa())
+                    out.targets.push_back(t);
+                return true;
+            }
+            return false;
+        }
+        if (load.op != Op::LW && load.op != Op::LWU)
+            return false;
+        if (!findDef(load.addr, load.rs(), 32, sum) || (sum.op != Op::ADDU && sum.op != Op::DADDU))
+            return false;
+        for (uint32_t reg : {sum.rs(), sum.rt()})
+        {
+            Insn hi, lui;
+            uint32_t base = 0;
+            if (!findDef(sum.addr, reg, 32, hi))
+                continue;
+            if (hi.op == Op::LUI)
+                base = (hi.uimm() << 16) + static_cast<uint32_t>(load.simm());
+            else if (hi.op == Op::ADDIU && findDef(hi.addr, hi.rs(), 4096, lui) && lui.op == Op::LUI)
+                base = (lui.uimm() << 16) + static_cast<uint32_t>(hi.simm()) + static_cast<uint32_t>(load.simm());
+            else if (hi.op == Op::ORI && findDef(hi.addr, hi.rs(), 4096, lui) && lui.op == Op::LUI)
+                base = ((lui.uimm() << 16) | hi.uimm()) + static_cast<uint32_t>(load.simm());
+            else
+                continue;
+            if ((base & 3u) || !program_.contains(base))
+                continue;
+            uint32_t bound = 0;
+            for (uint32_t b = load.addr; b > scanStart && b + 128 > load.addr && !bound;)
+            {
+                b -= 4;
+                const Insn s = decodeAt(program_.read32(b), b);
+                if (s.op == Op::SLTIU && s.uimm() != 0)
+                    bound = s.uimm();
+                else if (s.op == Op::ANDI && gprWritten(s) != 0 && s.uimm() < 4096 && (s.uimm() & (s.uimm() + 1)) == 0)
+                    bound = s.uimm() + 1;
+            }
+            out.jrAddress = jrAddress;
+            out.tableAddress = base;
+            out.inPlace = true;
+            out.targets.clear();
+            const uint32_t count = bound ? bound : 4096;
+            for (uint32_t k = 0; k < count && program_.contains(base + 4 * k); ++k)
+            {
+                const uint32_t target = program_.read32(base + 4 * k);
+                if (target < low || target >= high || (target & 3u))
+                    break;
+                out.targets.push_back(target);
+            }
+            if (!out.targets.empty())
+                return true;
+        }
+        return false;
+    }
+
+    void Analysis::sweepGap(uint32_t from, uint32_t to, const std::set<uint32_t> &hard, std::map<uint32_t, bool> &starts) const
+    {
+        uint32_t a = from;
+        while (a < to && program_.read32(a) == 0 && !hard.count(a))
+            a += 4;
+        if (a >= to)
+            return;
+        uint32_t current = a, reach = 0;
+        starts[current] = hard.count(current) != 0;
+        auto nextHard = hard.upper_bound(a);
+        for (; a + 4 <= to; a += 4)
+        {
+            if (a != current && hard.count(a))
+            {
+                current = a;
+                reach = 0;
+                starts[a] = true;
+            }
+            while (nextHard != hard.end() && *nextHard <= a)
+                ++nextHard;
+            const uint32_t limit = nextHard != hard.end() && *nextHard < to ? *nextHard : to;
+            const Insn i = decodeAt(program_.read32(a), a);
+            // Not an instruction: data among the code, whose "branches" say nothing.
+            if (i.op == Op::Unknown)
+                reach = 0;
+            const auto reached = [&](uint32_t t) {
+                if (t > a && t < limit)
+                    reach = std::max(reach, t);
+            };
+            if (a != current && isFrameAllocation(i) && afterEnd(a, current, a >= reach))
+            {
+                current = a;
+                reach = 0;
+                starts[a] = false;
+            }
+            if (isBranch(i.op))
+                reached(i.branchTarget());
+            else if (i.op == Op::J)
+            {
+                // A jump to the next instruction is a tail call to the function placed right after this one.
+                if (i.jumpTarget() != a + 8)
+                    reached(i.jumpTarget());
+            }
+            else if (i.op == Op::JR && i.rs() != 31)
+            {
+                JumpTable table;
+                if (resolveTable(a, current, current, limit, table))
+                {
+                    if (table.slots)
+                        reached(table.targets.front());
+                    else
+                        for (uint32_t t : table.targets)
+                            reached(t);
+                }
+            }
+            if (!endsFlow(i) || reach >= a + 8 || a + 8 > limit)
+                continue;
+            uint32_t next = a + 8;
+            while (next < limit && program_.read32(next) == 0)
+                next += 4;
+            if (next < limit)
+            {
+                current = next;
+                reach = 0;
+                starts[next] = false;
+            }
+            a = next - 4;
+        }
+    }
+
+    void Analysis::mergeSplitBodies(std::map<uint32_t, bool> &starts) const
+    {
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            std::vector<uint32_t> drop;
+            for (auto it = starts.begin(); it != starts.end(); ++it)
+            {
+                const auto next = std::next(it);
+                const uint32_t start = it->first;
+                if (functionAt(start))
+                    continue;
+                const auto range = std::find_if(program_.code.begin(), program_.code.end(),
+                                                [&](const AddressRange &r) { return r.contains(start); });
+                const uint32_t end = next != starts.end() ? std::min(next->first, range->end) : range->end;
+                // A table's targets can only be in pieces nothing separates from this one.
+                uint32_t windowLow = start, windowHigh = end;
+                for (auto low = it; low != starts.begin() && !low->second; --low)
+                    windowLow = std::prev(low)->first;
+                for (auto high = next; high != starts.end() && !high->second; ++high)
+                    windowHigh = std::next(high) != starts.end() ? std::next(high)->first : high->first;
+                const auto refer = [&](uint32_t t) {
+                    if (t >= start && t < end)
+                        return;
+                    auto holder = starts.upper_bound(t);
+                    if (holder == starts.begin())
+                        return;
+                    --holder;
+                    if (holder->first == t || !range->contains(t))
+                        return;
+                    // A direct transfer into another piece's body: the pieces are one function, when nothing proves
+                    // a function starts between them.
+                    const uint32_t low = std::min(t, start), high = std::max(t, start);
+                    auto b = starts.upper_bound(low);
+                    std::vector<uint32_t> between;
+                    for (; b != starts.end() && b->first <= high; ++b)
+                    {
+                        if (b->second || isFrameAllocation(decodeAt(program_.read32(b->first), b->first)))
+                            return;
+                        between.push_back(b->first);
+                    }
+                    drop.insert(drop.end(), between.begin(), between.end());
+                };
+                for (uint32_t a = start; a < end; a += 4)
+                {
+                    const Insn i = decodeAt(program_.read32(a), a);
+                    if (i.op == Op::Unknown)
+                        break;
+                    if (isBranch(i.op) && !(opFlags(i.op) & LNK))
+                        refer(i.branchTarget());
+                    else if (i.op == Op::J)
+                        refer(i.jumpTarget());
+                    else if (i.op == Op::JR && i.rs() != 31)
+                    {
+                        JumpTable table;
+                        if (resolveTable(a, start, windowLow, windowHigh, table) && !table.slots)
+                            for (uint32_t t : table.targets)
+                                refer(t);
+                    }
+                }
+            }
+            for (uint32_t d : drop)
+                changed |= starts.erase(d) != 0;
+        }
+    }
+
+    void Analysis::discoverFunctions()
+    {
+        std::set<uint32_t> seeds;
+        collectSeeds(seeds);
+        std::set<uint32_t> hard;
+        if (program_.isCode(program_.entry))
+            hard.insert(program_.entry);
+        for (uint32_t a : program_.entries)
+            hard.insert(a);
+        for (const auto &[a, name] : anySymbolAt_)
+            if (!(a & 3u))
+                hard.insert(a);
+        const auto opensFrame = [&](uint32_t a) { return isFrameAllocation(decodeAt(program_.read32(a), a)); };
+        for (uint32_t a : callTargets_)
+            if ((plausibleStart(a) && followsTerminator(a)) || (program_.isCode(a) && opensFrame(a)))
+                hard.insert(a);
+        for (uint32_t a : codePointers_)
+            if (plausibleStart(a) && opensFrame(a))
+                hard.insert(a);
+        for (uint32_t w : dataPointers_)
+        {
+            const uint32_t a = program_.read32(w);
+            if (plausibleStart(a) && opensFrame(a))
+                hard.insert(a);
+        }
+        for (const Function &f : functions_)
+            hard.erase(f.start);
+
+        std::map<uint32_t, bool> starts;
+        for (const auto &r : program_.code)
+        {
+            uint32_t a = r.start;
+            while (a < r.end)
+            {
+                if (const Function *f = functionContaining(a))
+                {
+                    a = f->end;
+                    continue;
+                }
+                auto next = std::upper_bound(functions_.begin(), functions_.end(), a,
+                                             [](uint32_t x, const Function &g) { return x < g.start; });
+                const uint32_t gapEnd = (next != functions_.end() && next->start < r.end) ? next->start : r.end;
+                sweepGap(a, gapEnd, hard, starts);
+                a = gapEnd;
+            }
+        }
+        for (const Function &f : functions_)
+            starts[f.start] = true;
+        mergeSplitBodies(starts);
+        for (const Function &f : functions_)
+            starts.erase(f.start);
+
+        std::vector<Function> added;
+        for (auto it = starts.begin(); it != starts.end(); ++it)
+        {
+            Function g;
+            g.start = it->first;
+            uint32_t end = g.start;
+            for (const auto &r : program_.code)
+                if (r.contains(g.start))
+                    end = r.end;
+            const auto next = std::next(it);
+            if (next != starts.end())
+                end = std::min(end, next->first);
+            auto after = std::upper_bound(functions_.begin(), functions_.end(), g.start,
+                                          [](uint32_t x, const Function &h) { return x < h.start; });
+            if (after != functions_.end())
+                end = std::min(end, after->start);
+            // A section can end inside a word, which is no instruction.
+            g.end = end & ~3u;
+            auto sym = anySymbolAt_.find(g.start);
+            if (sym != anySymbolAt_.end())
+                g.symbol = sym->second;
+            added.push_back(std::move(g));
+        }
+        stats_.gapFunctions = static_cast<uint32_t>(added.size());
+        functions_.insert(functions_.end(), std::make_move_iterator(added.begin()), std::make_move_iterator(added.end()));
+        std::sort(functions_.begin(), functions_.end(), [](const Function &x, const Function &y) { return x.start < y.start; });
+
+        for (Function &f : functions_)
+        {
+            for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+            {
+                const Insn jr = decodeAt(program_.read32(a), a);
+                if (jr.op != Op::JR || jr.rs() == 31)
+                    continue;
+                JumpTable t;
+                if (resolveTable(a, f.start, f.start, f.end, t))
+                {
+                    stats_.jumpTableTargets += static_cast<uint32_t>(t.targets.size());
+                    f.jumpTables[a] = std::move(t);
+                }
+                else if (isCopyOfEntryRa(f, a, jr.rs()))
+                    f.returnJr.insert(a);
+                else
+                    f.unresolvedJr.insert(a);
+            }
+            stats_.returnJr += static_cast<uint32_t>(f.returnJr.size());
+            stats_.jumpTables += static_cast<uint32_t>(f.jumpTables.size());
+            stats_.unresolvedJr += static_cast<uint32_t>(f.unresolvedJr.size());
+        }
+    }
+
+    std::string Analysis::report() const
+    {
+        std::string out;
+        char line[128];
+        const auto put = [&](const char *kind, uint32_t a, uint32_t b, const std::string &text) {
+            std::snprintf(line, sizeof(line), "%s 0x%x 0x%x ", kind, a, b);
+            out += line;
+            out += text;
+            out += '\n';
+        };
+        out += stats_.symbolDriven ? "mode symbols\n" : "mode code\n";
+        for (const Function &f : functions_)
+        {
+            put("function", f.start, f.end, f.symbol);
+            for (uint32_t e : f.extraEntries)
+                put("entry", e, f.start, "");
+            for (const auto &[jr, t] : f.jumpTables)
+            {
+                std::string targets = t.inPlace ? "goto" : "dispatch";
+                for (uint32_t target : t.targets)
+                {
+                    std::snprintf(line, sizeof(line), " 0x%x", target);
+                    targets += line;
+                }
+                put("table", jr, t.tableAddress, targets);
+            }
+            for (uint32_t jr : f.returnJr)
+                put("return", jr, f.start, "");
+            for (uint32_t jr : f.unresolvedJr)
+                put("unresolved", jr, f.start, "");
+        }
+        return out;
+    }
+
     void Analysis::addEntry(uint32_t addr, const char *why)
     {
         Function *f = mutableContaining(addr);
@@ -406,16 +879,18 @@ namespace bozo
         addEntry(program_.entry, "entry point");
         for (uint32_t entry : program_.entries)
             addEntry(entry, "explicit entry");
+        const auto pointerCounts = [&](uint32_t target) { return stats_.symbolDriven || plausibleStart(target); };
         for (uint32_t p : codePointers_)
-            addEntry(p, "code pointer");
+            if (pointerCounts(p))
+                addEntry(p, "code pointer");
         // Data words pointing at code, except jump table entries (those are labels of their own function).
         std::set<uint32_t> tableWords;
         for (const Function &f : functions_)
             for (const auto &[jr, t] : f.jumpTables)
-                for (size_t k = 0; k < t.targets.size(); ++k)
+                for (size_t k = 0; k < t.targets.size() && !t.slots; ++k)
                     tableWords.insert(t.tableAddress + 4u * static_cast<uint32_t>(k));
         for (uint32_t w : dataPointers_)
-            if (!tableWords.count(w))
+            if (!tableWords.count(w) && pointerCounts(program_.read32(w)))
             {
                 ++stats_.dataCodePointers;
                 addEntry(program_.read32(w), "data pointer");
@@ -425,11 +900,22 @@ namespace bozo
     void Analysis::run()
     {
         addSymbolFunctions();
-        std::set<uint32_t> seeds;
-        collectSeeds(seeds);
-        carveGaps(seeds);
-        for (Function &f : functions_)
-            findJumpTables(f);
+        uint64_t codeBytes = 0, symbolBytes = 0;
+        for (const auto &r : program_.code)
+            codeBytes += r.end - r.start;
+        for (const Function &f : functions_)
+            symbolBytes += f.end - f.start;
+        stats_.symbolDriven = symbolBytes * 2 >= codeBytes;
+        if (stats_.symbolDriven)
+        {
+            std::set<uint32_t> seeds;
+            collectSeeds(seeds);
+            carveGaps(seeds);
+            for (Function &f : functions_)
+                findJumpTables(f);
+        }
+        else
+            discoverFunctions();
         addEntriesFromControlFlow();
         for (const Function &f : functions_)
             stats_.extraEntries += static_cast<uint32_t>(f.extraEntries.size());

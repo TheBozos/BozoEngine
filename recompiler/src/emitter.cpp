@@ -365,6 +365,9 @@ namespace bozo
         case Op::PSRAVW: return mmi("psravw", std::format("BZ_Q({}), BZ_Q({})", t, s));
         case Op::PINTH: return mmi("pinth", st());
         case Op::PINTEH: return mmi("pinteh", st());
+        case Op::PMULTH:
+            return std::format("{}bozo::mmi::pmulth(BZ_Q({}), BZ_Q({}), ctx->lo, ctx->lo1, ctx->hi, ctx->hi1);",
+                               d == 0 ? std::string() : std::format("BZ_Q({}) = ", d), s, t);
         case Op::PCPYLD: return mmi("pcpyld", st());
         case Op::PCPYUD: return mmi("pcpyud", st());
         case Op::PAND: return mmi("pand", st());

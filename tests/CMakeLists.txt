@@ -132,6 +132,21 @@ if(MINGW)
   target_link_options(bozo-entry-tests PRIVATE -static)
 endif()
 add_test(NAME explicit_entries_adaptations COMMAND bozo-entry-tests "${entry_gen}/fixture.elf")
+add_test(NAME function_discovery COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_discovery.py
+  $<TARGET_FILE:bozo-recomp> ${CMAKE_SOURCE_DIR}/tools/discovery/bozo_discovery_score.py)
+set(discovery_gen "${CMAKE_CURRENT_BINARY_DIR}/discovery_gen")
+add_custom_command(
+  OUTPUT "${discovery_gen}/discovery_000.cpp" "${discovery_gen}/discovery_table.cpp" "${discovery_gen}/discovery_functions.h"
+  COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/native/test_discovery.py" --emit "${discovery_gen}"
+  COMMAND $<TARGET_FILE:bozo-recomp> "${discovery_gen}/fixture.elf" "${discovery_gen}" --prefix discovery --files 1 --no-comments
+  DEPENDS bozo-recomp "${CMAKE_CURRENT_SOURCE_DIR}/native/test_discovery.py")
+add_executable(bozo-discovery-tests native/discovery_run.cpp "${discovery_gen}/discovery_000.cpp" "${discovery_gen}/discovery_table.cpp")
+target_include_directories(bozo-discovery-tests PRIVATE "${discovery_gen}")
+target_link_libraries(bozo-discovery-tests PRIVATE bozo_runtime_core)
+if(MINGW)
+  target_link_options(bozo-discovery-tests PRIVATE -static)
+endif()
+add_test(NAME function_discovery_runs COMMAND bozo-discovery-tests "${discovery_gen}/fixture.elf")
 add_test(NAME strict_irx_generation COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_irx.py)
 add_test(NAME symbol_maps COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_symbol_map.py
   $<TARGET_FILE:bozo-externals> $<TARGET_FILE:bozo-recomp> ${CMAKE_SOURCE_DIR}/tools/symbolmap/bozo_symbolmap.py)

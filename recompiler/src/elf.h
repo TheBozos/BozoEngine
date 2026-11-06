@@ -47,6 +47,8 @@ namespace bozo
         // failure returns false, sets error() and keeps symbols() as it was.
         bool loadSymbolMap(const std::string &path);
         bool parseSymbolMap(const std::string &text, const std::string &origin);
+        // Forgets the ELF's own symbols: the program as if stripped, to measure discovery against them.
+        void clearSymbols() { symbols_.clear(); }
 
         const std::string &error() const { return error_; }
         uint32_t entry() const { return entry_; }

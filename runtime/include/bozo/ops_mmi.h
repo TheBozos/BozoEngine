@@ -125,6 +125,21 @@ namespace bozo::mmi
         }
         return d;
     }
+    // pmulth: the odd lanes' products go to HI only; rd and LO hold the even lanes'.
+    inline V pmulth(V s, V t, uint64_t &lo, uint64_t &lo1, uint64_t &hi, uint64_t &hi1)
+    {
+        V even, odd;
+        for (int i = 0; i < 4; ++i)
+        {
+            even.sw[i] = static_cast<int32_t>(s.sh[2 * i]) * t.sh[2 * i];
+            odd.sw[i] = static_cast<int32_t>(s.sh[2 * i + 1]) * t.sh[2 * i + 1];
+        }
+        lo = even.ud[0];
+        lo1 = even.ud[1];
+        hi = odd.ud[0];
+        hi1 = odd.ud[1];
+        return even;
+    }
     inline V pcpyld(V s, V t) { V d; d.ud[0] = t.ud[0]; d.ud[1] = s.ud[0]; return d; }
     inline V pcpyud(V s, V t) { V d; d.ud[0] = s.ud[1]; d.ud[1] = t.ud[1]; return d; }
     inline V pcpyh(V t)

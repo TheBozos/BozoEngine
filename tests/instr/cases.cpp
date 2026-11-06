@@ -925,6 +925,17 @@ namespace itest
                     eqQ(k, "pextub", c, t0, 0x0B1B0A1A09190818ull, 0x0F1F0E1E0D1D0C1Cull);
                     eqQ(k, "ppacb", c, t1, 0x1E1C1A1816141210ull, 0x0E0C0A0806040200ull);
                 });
+            add("pmulth: even products in rd and LO, odd in HI, signed", {pmulth(a2, a0, a1), pmfhi(v1), pmflo(t0), pmulth(a0, a0, a0)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    setQ(c, a0, 0x0004FFFD0002FFFFull, 0x7FFF800000060005ull);
+                    setQ(c, a1, 0x0008FFF90006FFFBull, 0x7FFF8000000C000Bull);
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    eqQ(k, "pmulth rd", c, a2, 0x0000001500000005ull, 0x4000000000000037ull);
+                    eqQ(k, "pmulth hi", c, v1, 0x000000200000000Cull, 0x3FFF000100000048ull);
+                    eqQ(k, "pmulth lo", c, t0, 0x0000001500000005ull, 0x4000000000000037ull);
+                    eqQ(k, "pmulth rd is rs and rt", c, a0, 0x0000000900000001ull, 0x4000000000000019ull);
+                });
             add("pcpyld / pcpyud / pcpyh / prot3w", {pcpyld(v0, a0, a1), pcpyud(v1, a0, a1), pcpyh(t0, a0), prot3w(t1, a0)},
                 [](Ctx &c, uint8_t *, Runtime &) {
                     setQ(c, a0, 0x1111222233334444ull, 0x5555666677778888ull);

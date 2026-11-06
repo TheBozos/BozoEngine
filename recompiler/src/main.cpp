@@ -35,7 +35,7 @@ namespace
     {
         std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
                              "                   [--externals file] [--patches file] [--entries file] [--symbols file]\n"
-                             "                   [--no-comments] [--verbose]\n"
+                             "                   [--no-elf-symbols] [--report file] [--no-comments] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -92,6 +92,8 @@ int main(int argc, char **argv)
     bool verbose = false;
     std::string entriesPath;
     std::vector<std::string> symbolMaps;
+    std::string reportPath;
+    bool hideElfSymbols = false;
     for (int k = 3; k < argc; ++k)
     {
         const std::string a = argv[k];
@@ -125,6 +127,10 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (a == "--report" && k + 1 < argc)
+            reportPath = argv[++k];
+        else if (a == "--no-elf-symbols")
+            hideElfSymbols = true;
         else if (a == "--verbose")
             verbose = true;
         else if (a == "--no-comments")
@@ -142,6 +148,8 @@ int main(int argc, char **argv)
     }
     if (elf.machine() != 8)
         std::fprintf(stderr, "bozo-recomp: warning: ELF machine %u is not MIPS (8)\n", elf.machine());
+    if (hideElfSymbols)
+        elf.clearSymbols();
     for (const std::string &path : symbolMaps)
         if (!elf.loadSymbolMap(path))
         {
@@ -190,6 +198,8 @@ int main(int argc, char **argv)
     const AnalysisStats &as = analysis.stats();
     std::printf("functions: %zu (%u from ELF function symbols, %u carved from code no symbol covers), %u extra entries\n",
                 analysis.functions().size(), as.symbolFunctions, as.gapFunctions, as.extraEntries);
+    if (!as.symbolDriven)
+        std::printf("discovery: the symbols cover under half of the code, functions found from the code\n");
     std::printf("calls: %u distinct call targets; code pointers: %u in data, %u built by lui/addiu\n", as.callTargets,
                 as.dataCodePointers, as.codePointerConstants);
     std::printf("jump tables: %u (%u entries); returns through a copy of ra: %u; jr through an unknown register value: %u; "
@@ -205,6 +215,17 @@ int main(int argc, char **argv)
             for (uint32_t e : f.extraEntries)
                 std::printf("  extra entry 0x%x in %s\n", e, cppName(f.symbol, f.start).c_str());
         }
+
+    if (!reportPath.empty())
+    {
+        std::ofstream report(reportPath, std::ios::binary);
+        report << analysis.report();
+        if (!report)
+        {
+            std::fprintf(stderr, "bozo-recomp: cannot write %s\n", reportPath.c_str());
+            return 1;
+        }
+    }
 
     Emitter emitter(analysis, options);
     std::string error;

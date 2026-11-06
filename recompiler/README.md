@@ -31,6 +31,9 @@ bozo-recomp <elf> --census
   about the same size, so a build system can list them in advance). A file is rewritten only when its contents change
   (unchanged files keep their date and are not recompiled); other `<prefix>_*` files in the directory are removed.
 - `--symbols file`: a symbol map, names for an ELF without symbols, read like the ELF's own (`docs/specs/symbol-map.md`).
+- `--report file`: the analysis as text, functions, entries, jump tables and every `jr` it could not resolve;
+  `--no-elf-symbols` forgets the ELF's symbols, to measure discovery against them
+  ([`docs/specs/discovery.md`](../docs/specs/discovery.md)).
 - `--externals file`: guest addresses the runtime answers instead of the guest code there, one per line,
   `stub 0xADDR` (a native library or kernel function: every transfer to it goes through `bozo_call_indirect`) or
   `override 0xADDR` (a port function: calls go through `bozo_call_indirect`, a direct jump runs the guest code).
@@ -60,7 +63,7 @@ cmake --build build-cc && build-cc/compile_check
 | `src/elf.*` | ELF32 loading: program headers into one memory image, sections, symbols |
 | `src/program.*` | What the rest works on: the image, the code ranges (executable sections except VU microcode), data ranges, symbols |
 | `src/ops.def`, `src/decoder.*` | Every R5900 instruction we know (MIPS III/IV subset, MMI, COP0, the FPU, VU0 macro mode) and the decoder |
-| `src/analysis.*` | Function discovery: ELF function symbols; code no symbol covers carved at call/branch targets and code pointers; jump tables; extra entries for jumps into another function's body |
+| `src/analysis.*` | Function discovery ([spec](../docs/specs/discovery.md)): by ELF function symbols, or from the code when they cover little of it; jump tables; extra entries for jumps into another function's body |
 | `src/emitter.*` | The C++: labels and gotos inside a function, calls between functions, delay slots, likely branches, scheduler checkpoints; the header and the function table |
 | `src/main.cpp` | The command line |
 
