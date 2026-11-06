@@ -15,6 +15,7 @@ namespace bozo::libs
     // EE cycles a sector takes on a PS2 drive (DVD at 4x; the reference's deterministic mode charges the same:
     // reference/tmb/README.md, the Midtown Suburbs freeze).
     constexpr uint64_t kSectorCycles = 114400;
+    constexpr uint64_t kSeekCycles = 29491200; // 100 ms
 
     // The game's disc: an ISO 9660 image of 2048-byte sectors (the user's own copy of the game).
     class DiscImage

@@ -200,6 +200,40 @@ namespace bozo::libs
         void diskReady(Libraries &, Guest &g) { g.ret(2); }
         void fsReset(Libraries &, Guest &g) { g.ret(0); }
 
+        void ncmdDiskReady(Libraries &l, Guest &g) { g.ret(l.now(g) < l.cd.readEnd ? 6 : 2); }
+        void syncS(Libraries &, Guest &g) { g.ret(0); }
+        void diskType(Libraries &l, Guest &g) { g.ret(l.cd.disc.isOpen() || !l.cd.imagePath.empty() ? 0x14 : 0); }
+
+        void breakCommand(Libraries &l, Guest &g)
+        {
+            const uint64_t now = l.now(g);
+            if (now < l.cd.readEnd)
+            {
+                l.cd.readEnd = now;
+                l.cd.error = 1;
+            }
+            g.ret(1);
+        }
+
+        void seek(Libraries &l, Guest &g)
+        {
+            CdState &cd = l.cd;
+            cd.error = 0;
+            g.cycles = l.callCycles(kSeekCycles);
+            cd.readEnd = l.now(g) + g.cycles;
+            if (cd.callback)
+            {
+                ee::QueuedHandler h;
+                h.kind = ee::kInvokeLibraryCall;
+                h.pc = cd.callback;
+                h.gp = cd.callbackGp;
+                h.sp = cd.callbackStack;
+                h.a[0] = 4;
+                l.queueHandler(h, {});
+            }
+            g.ret(1);
+        }
+
         void callback(Libraries &l, Guest &g)
         {
             // The SDK refuses replacement while a read is in progress.
@@ -461,6 +495,11 @@ namespace bozo::libs
         out.push_back({"sceCdInitEeCB", kCd, initCallback});
         out.push_back({"sceCdMmode", kCd, mmode});
         out.push_back({"sceCdDiskReady", kCd, diskReady});
+        out.push_back({"sceCdNcmdDiskReady", kCd, ncmdDiskReady});
+        out.push_back({"sceCdSyncS", kCd, syncS});
+        out.push_back({"sceCdGetDiskType", kCd, diskType});
+        out.push_back({"sceCdBreak", kCd, breakCommand});
+        out.push_back({"sceCdSeek", kCd, seek, false, true});
         out.push_back({"sceFsReset", kCd, fsReset});
         out.push_back({"sceCdReadClock", kCd, readClock});
         out.push_back({"sceCdRead", kCd, read, false, true});
