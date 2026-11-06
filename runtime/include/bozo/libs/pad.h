@@ -100,6 +100,7 @@ namespace bozo::libs
             uint32_t commandFrame = 0;  // the frame it was given in
             uint8_t align[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}; // scePadSetActAlign (0xff: no motor)
             uint8_t direct[6] = {};     // scePadSetActDirect: the motor levels
+            int32_t reqState = 0;       // scePadSetReqState
         };
         std::array<std::array<Port, 4>, 2> ports{};
         bool initialized = false;

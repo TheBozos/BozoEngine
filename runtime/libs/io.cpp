@@ -82,6 +82,8 @@ namespace bozo::libs
             return size == 4;
         if (a == 0x1000F520u || a == 0x1000F590u)
             return size == 4;
+        if (store && (a == 0x1000D080u || a == 0x1000D480u))
+            return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
         if (a == 0x12001000u) // FIELD reads; obsolete CSR acknowledgement stores have no effect
@@ -196,6 +198,10 @@ namespace bozo::libs
             default: c.tadr = v; break;
             }
         }
+        else if (a == 0x1000D080u)
+            io.sprAddress[0] = v;
+        else if (a == 0x1000D480u)
+            io.sprAddress[1] = v;
         else if (a == 0x1000E000u)
             io.ctrl = v;
         else if (a == 0x1000E010u)
@@ -261,10 +267,32 @@ namespace bozo::libs
             throw std::runtime_error("native libdma: invalid channel handle");
         }
 
+        constexpr uint32_t kFromScratchpad = 8, kToScratchpad = 9;
+
+        void scratchpadCopy(Libraries &l, Guest &g, uint32_t ch)
+        {
+            uint32_t at = l.io.sprAddress[ch - kFromScratchpad];
+            uint32_t address = g.arg(1);
+            for (uint32_t i = 0; i < g.arg(2); ++i, address += 16, at += 16)
+            {
+                const uint32_t spr = 0x70000000u | (at & 0x3FF0u);
+                if (ch == kFromScratchpad)
+                    g.copy(address, spr, 16);
+                else
+                    g.copy(spr, address, 16);
+            }
+        }
+
         template <uint32_t Mode>
         void submitDma(Libraries &l, Guest &g)
         {
             const uint32_t ch = sdkChannel(g);
+            if ((ch == kFromScratchpad || ch == kToScratchpad) && (Mode & 0xcu) == 0)
+            {
+                scratchpadCopy(l, g, ch);
+                g.ret(0);
+                return;
+            }
             if (ch > 2 && ch != kIpuTo)
                 throw std::runtime_error("native libdma: transfer needs a native data producer");
             if (!l.dispatcher())
@@ -356,6 +384,40 @@ namespace bozo::libs
             g.write(g.arg(0), l.dmaEnvironment.data(), l.dmaEnvironment.size());
             g.ret(0);
         }
+
+        void getChannel(Libraries &, Guest &g) { g.retU(g.arg(0) < 10 ? kChannelBase[g.arg(0)] : 0); }
+
+        void watchDma(Libraries &, Guest &g)
+        {
+            sdkChannel(g);
+            g.ret(0);
+        }
+
+        void pauseDma(Libraries &l, Guest &g)
+        {
+            auto &c = l.io.channels[sdkChannel(g)];
+            const uint32_t old = c.chcr;
+            c.chcr = old & ~0x100u;
+            c.running = false;
+            g.retU(old);
+        }
+
+        void restartDma(Libraries &l, Guest &g)
+        {
+            const uint32_t ch = sdkChannel(g);
+            auto &c = l.io.channels[ch];
+            const uint32_t old = c.chcr;
+            c.chcr = g.arg(1);
+            c.running = ch == kIpuTo && (c.chcr & 0x100u) != 0;
+            g.ret((old >> 8) & 1);
+        }
+
+        void putStallAddress(Libraries &l, Guest &g)
+        {
+            const uint32_t old = l.io.stadr;
+            l.io.stadr = g.arg(0);
+            g.retU(old);
+        }
     }
 
     void addDma(std::vector<Function> &out)
@@ -367,5 +429,13 @@ namespace bozo::libs
         out.push_back({"sceDmaSync", kIo, syncDma});
         out.push_back({"sceDmaPutEnv", kIo, putDmaEnvironment});
         out.push_back({"sceDmaGetEnv", kIo, getDmaEnvironment});
+        out.push_back({"sceDmaGetChan", kIo, getChannel});
+        out.push_back({"sceDmaRecv", kIo, submitDma<0x104u>});
+        out.push_back({"sceDmaRecvN", kIo, submitDma<0x100u>});
+        out.push_back({"sceDmaRecvI", kIo, submitDma<0x108u>});
+        out.push_back({"sceDmaWatch", kIo, watchDma});
+        out.push_back({"sceDmaPause", kIo, pauseDma});
+        out.push_back({"sceDmaRestart", kIo, restartDma});
+        out.push_back({"sceDmaPutStallAddr", kIo, putStallAddress});
     }
 }

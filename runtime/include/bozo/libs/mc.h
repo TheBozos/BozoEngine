@@ -41,6 +41,9 @@ namespace bozo::libs
         std::vector<std::string> list(const std::string &directory) const;
         Entry &create(const std::string &path, bool directory, const McDate &date);
         void changed(const std::string &path); // written back to the host file
+        void remove(const std::string &path);
+        void rename(const std::string &from, const std::string &to);
+        void erase(); // every entry, on the host as well
         uint32_t freeClusters() const;
 
     private:
@@ -58,6 +61,7 @@ namespace bozo::libs
 
         // A card changed since the last sceMcGetInfo on its port (-1 at the first one after sceMcInit).
         std::array<bool, 2> known{};
+        std::array<bool, 2> unformatted{}; // sceMcUnformat, until sceMcFormat
 
         // The last operation's result, handed over by sceMcSync.
         bool pending = false;

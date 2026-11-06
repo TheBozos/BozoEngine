@@ -123,6 +123,8 @@ namespace bozo::libs
         enum : int32_t
         {
             kFnGetInfo = 1, kFnOpen = 2, kFnClose = 3, kFnRead = 5, kFnWrite = 6, kFnMkdir = 0xB, kFnChdir = 0xC, kFnGetDir = 0xD,
+            kFnSeek = 4, kFnFlush = 0xA, kFnSetFileInfo = 0xE, kFnDelete = 0xF, kFnFormat = 0x10, kFnUnformat = 0x11,
+            kFnEntSpace = 0x12, kFnRename = 0x13, kFnChangePriority = 0x14,
         };
 
         void init(Libraries &l, Guest &g)
@@ -155,7 +157,7 @@ namespace bozo::libs
             if (g.arg(3))
                 g.write32(g.arg(3), l.mc.card(port).freeClusters());
             if (g.arg(4))
-                g.write32(g.arg(4), 1);
+                g.write32(g.arg(4), l.mc.unformatted[static_cast<size_t>(port)] ? 0 : 1);
             if (std::getenv("BOZO_TRACE_MC")) std::fprintf(stderr,"[mc] info port=%d slot=%u free=%u out=%x,%x,%x\n",port,g.arg(1),l.mc.card(port).freeClusters(),g.arg(2),g.arg(3),g.arg(4));
             finish(l, kFnGetInfo, l.mc.known[static_cast<size_t>(port)] ? 0 : -1);
             l.mc.known[static_cast<size_t>(port)] = true;
@@ -354,6 +356,178 @@ namespace bozo::libs
             finish(l, kFnWrite, r);
             g.ret(0);
         }
+
+        // sceMcSeek(fd, offset, origin): the new position; origin 0 the start, 1 the position, 2 the end.
+        void seek(Libraries &l, Guest &g)
+        {
+            auto it = l.mc.files.find(g.sarg(0));
+            int32_t r = -4;
+            if (it != l.mc.files.end())
+                if (const McCard::Entry *e = l.mc.card(it->second.port).find(it->second.path))
+                {
+                    const int64_t base = g.arg(2) == 0 ? 0 : g.arg(2) == 1 ? int64_t(it->second.position) : int64_t(e->data.size());
+                    const int64_t at = base + g.sarg(1);
+                    if (at >= 0 && at <= INT32_MAX)
+                    {
+                        it->second.position = static_cast<uint32_t>(at);
+                        r = static_cast<int32_t>(at);
+                    }
+                }
+            finish(l, kFnSeek, r);
+            g.ret(0);
+        }
+
+        void flush(Libraries &l, Guest &g)
+        {
+            finish(l, kFnFlush, l.mc.files.count(g.sarg(0)) ? 0 : -4);
+            g.ret(0);
+        }
+
+        bool isOpen(const McState &mc, int port, const std::string &path)
+        {
+            for (const auto &[fd, f] : mc.files)
+                if (f.port == port && f.path == path)
+                    return true;
+            return false;
+        }
+
+        // sceMcDelete(port, slot, name): 0, -4 no such entry, -5 open, -6 a directory with entries.
+        void remove(Libraries &l, Guest &g)
+        {
+            const int port = g.sarg(0);
+            const std::string name = resolve(l.mc, port, g.string(g.arg(2)));
+            int32_t r = -4;
+            if (ready(l, port) && validSlot(l, g.arg(1)))
+            {
+                McCard &card = l.mc.card(port);
+                if (const McCard::Entry *e = card.find(name))
+                {
+                    if (isOpen(l.mc, port, name))
+                        r = -5;
+                    else if (e->directory && !card.list(name).empty())
+                        r = -6;
+                    else
+                    {
+                        card.remove(name);
+                        r = 0;
+                    }
+                }
+            }
+            finish(l, kFnDelete, r);
+            g.ret(0);
+        }
+
+        // sceMcRename(port, slot, name, newName): the new name in the same directory. 0, -4 no such entry, -5 open,
+        // -8 the new name is taken.
+        void rename(Libraries &l, Guest &g)
+        {
+            const int port = g.sarg(0);
+            const std::string from = resolve(l.mc, port, g.string(g.arg(2)));
+            const std::string base = g.string(g.arg(3));
+            const std::string dir = parentOf(from), to = dir.empty() ? base : dir + "/" + base;
+            int32_t r = -4;
+            if (ready(l, port) && validSlot(l, g.arg(1)) && l.mc.card(port).exists(from))
+            {
+                if (isOpen(l.mc, port, from))
+                    r = -5;
+                else if (l.mc.card(port).exists(to))
+                    r = -8;
+                else
+                {
+                    l.mc.card(port).rename(from, to);
+                    r = 0;
+                }
+            }
+            finish(l, kFnRename, r);
+            g.ret(0);
+        }
+
+        McDate getDate(const uint8_t *d)
+        {
+            McDate t;
+            t.second = d[1];
+            t.minute = d[2];
+            t.hour = d[3];
+            t.day = d[4];
+            t.month = d[5];
+            t.year = static_cast<uint16_t>(d[6] | (d[7] << 8));
+            return t;
+        }
+
+        // sceMcSetFileInfo(port, slot, name, info, valid): from an sceMcTblGetDir entry, by the valid bits (1 created,
+        // 2 modified, 4 attributes).
+        void setFileInfo(Libraries &l, Guest &g)
+        {
+            const int port = g.sarg(0);
+            const std::string name = resolve(l.mc, port, g.string(g.arg(2)));
+            int32_t r = -4;
+            if (ready(l, port) && validSlot(l, g.arg(1)))
+                if (McCard::Entry *e = l.mc.card(port).find(name))
+                {
+                    const uint8_t *info = g.in(g.arg(3), 64);
+                    const uint32_t valid = g.arg(4);
+                    if (valid & 1u)
+                        e->created = getDate(info);
+                    if (valid & 2u)
+                        e->modified = getDate(info + 8);
+                    if (valid & 4u)
+                        std::memcpy(&e->attributes, info + 20, 2);
+                    r = 0;
+                }
+            finish(l, kFnSetFileInfo, r);
+            g.ret(0);
+        }
+
+        void formatCard(Libraries &l, Guest &g, int32_t function, bool unformatted)
+        {
+            const int port = g.sarg(0);
+            int32_t r = -4;
+            if (ready(l, port) && validSlot(l, g.arg(1)))
+            {
+                for (auto f = l.mc.files.begin(); f != l.mc.files.end();)
+                    f = f->second.port == port ? l.mc.files.erase(f) : std::next(f);
+                l.mc.card(port).erase();
+                l.mc.currentDirectory[port].clear();
+                l.mc.unformatted[static_cast<size_t>(port)] = unformatted;
+                r = 0;
+            }
+            finish(l, function, r);
+            g.ret(0);
+        }
+
+        void formatC(Libraries &l, Guest &g) { formatCard(l, g, kFnFormat, false); }
+        void unformat(Libraries &l, Guest &g) { formatCard(l, g, kFnUnformat, true); }
+
+        // sceMcGetEntSpace(port, slot, path): the entries a directory still has room for; -4 no such directory.
+        void getEntSpace(Libraries &l, Guest &g)
+        {
+            const int port = g.sarg(0);
+            const std::string name = resolve(l.mc, port, g.string(g.arg(2)));
+            int32_t r = -4;
+            if (ready(l, port) && validSlot(l, g.arg(1)))
+            {
+                McCard &card = l.mc.card(port);
+                const McCard::Entry *e = card.find(name);
+                if (name.empty() || (e && e->directory))
+                    r = static_cast<int32_t>(card.freeClusters());
+            }
+            finish(l, kFnEntSpace, r);
+            g.ret(0);
+        }
+
+        void changeThreadPriority(Libraries &l, Guest &g)
+        {
+            finish(l, kFnChangePriority, 0);
+            g.ret(0);
+        }
+
+        void getSlotMax(Libraries &, Guest &g) { g.ret(1); }
+
+        void end(Libraries &l, Guest &g)
+        {
+            l.mc.known = {};
+            g.ret(0);
+        }
     }
 
     // ---- McCard --------------------------------------------------------------------------------------------------
@@ -425,6 +599,49 @@ namespace bozo::libs
         }
     }
 
+    void McCard::remove(const std::string &path)
+    {
+        entries_.erase(path);
+        if (host_.empty())
+            return;
+        std::error_code ec;
+        fs::remove(fs::path(host_) / path, ec);
+    }
+
+    void McCard::rename(const std::string &from, const std::string &to)
+    {
+        const std::string prefix = from + "/";
+        std::map<std::string, Entry> moved;
+        for (auto it = entries_.begin(); it != entries_.end();)
+        {
+            if (it->first == from)
+                moved[to] = std::move(it->second);
+            else if (it->first.rfind(prefix, 0) == 0)
+                moved[to + it->first.substr(from.size())] = std::move(it->second);
+            else
+            {
+                ++it;
+                continue;
+            }
+            it = entries_.erase(it);
+        }
+        entries_.merge(moved);
+        if (host_.empty())
+            return;
+        std::error_code ec;
+        fs::rename(fs::path(host_) / from, fs::path(host_) / to, ec);
+    }
+
+    void McCard::erase()
+    {
+        entries_.clear();
+        if (host_.empty())
+            return;
+        std::error_code ec;
+        for (const auto &e : fs::directory_iterator(host_, ec))
+            fs::remove_all(e.path(), ec);
+    }
+
     uint32_t McCard::freeClusters() const
     {
         uint32_t used = 0;
@@ -447,5 +664,16 @@ namespace bozo::libs
         out.push_back({"sceMcClose", kMc, close});
         out.push_back({"sceMcRead", kMc, read});
         out.push_back({"sceMcWrite", kMc, write});
+        out.push_back({"sceMcSeek", kMc, seek});
+        out.push_back({"sceMcFlush", kMc, flush});
+        out.push_back({"sceMcDelete", kMc, remove});
+        out.push_back({"sceMcRename", kMc, rename});
+        out.push_back({"sceMcSetFileInfo", kMc, setFileInfo});
+        out.push_back({"sceMcFormat", kMc, formatC});
+        out.push_back({"sceMcUnformat", kMc, unformat});
+        out.push_back({"sceMcGetEntSpace", kMc, getEntSpace});
+        out.push_back({"sceMcChangeThreadPriority", kMc, changeThreadPriority});
+        out.push_back({"sceMcGetSlotMax", kMc, getSlotMax});
+        out.push_back({"sceMcEnd", kMc, end});
     }
 }

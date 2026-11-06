@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <deque>
 #include <map>
 #include <memory>
@@ -104,6 +105,7 @@ namespace bozo::ee
         kWaitVblank = 4,
         kWaitExternal = 5,
         kWaitMpeg = 6,
+        kWaitDelay = 7,
     };
 
     // Why the dispatcher left the (thread, depth) that ran last (SWITCH's sub).
@@ -175,6 +177,7 @@ namespace bozo::ee
     {
         uint16_t kind = 0;
         uint32_t pc = 0, a[4] = {}, gp = 0, sp = 0, ra = 0;
+        uint32_t aHigh[4] = {}; // nonzero: the argument register's upper 32 bits (a 64-bit argument)
         bool completion = false;
         uint64_t sequence = 0, tag = 0;
     };
@@ -318,6 +321,8 @@ namespace bozo::ee
         // Cancellation does not retract callbacks already placed on the queue.
         void scheduleDeadline(uint32_t key, uint64_t cycle, const QueuedHandler &handler);
         bool cancelDeadline(uint32_t key);
+        // The same deadline for native code: `fn` runs with the cycle it was due at, when events are taken.
+        void scheduleNative(uint32_t key, uint64_t cycle, std::function<void(uint64_t)> fn);
         // SetAlarm / ReleaseAlarm on the deadlines above: `due` is an absolute EE cycle; the handler runs as
         // handler(id, the horizontal blank count at `due`, arg). Returns the alarm's id (at most kAlarms pending),
         // -1 when every one is pending. ReleaseAlarm returns 0 while it is pending, else -1.
@@ -377,7 +382,7 @@ namespace bozo::ee
         uint64_t fieldCycles_ = 0;
         uint32_t lines_ = 525;
         uint64_t nextStart_ = 0, nextEnd_ = 0;
-        struct Deadline { uint64_t cycle; QueuedHandler handler; };
+        struct Deadline { uint64_t cycle; QueuedHandler handler; std::function<void(uint64_t)> native; };
         std::map<uint32_t, Deadline> deadlines_;
     };
 }
