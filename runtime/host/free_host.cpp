@@ -32,6 +32,8 @@ namespace bozo::host
     {
         d_ = &d;
         instructionHandler_ = registry ? registry->instructionHandler() : nullptr;
+        if (registry)
+            vu0Programs_ = registry->vu0Programs();
         if (nativeGraphics())
             std::fprintf(stderr, "[graphics] native submission/completion; retired graphics registers and DMA polls are guarded\n");
         // Stops jump back to the dispatcher (nothing on the way holds anything to destroy: dispatcher.h), and no frame
@@ -242,6 +244,17 @@ namespace bozo::host
     void FreeHost::vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address)
     {
         ++stats_.vu0Calls;
+        if (!vu0Programs_.empty())
+        {
+            for (const BozoFunctionEntry &e : vu0Programs_)
+                if (e.address == address)
+                {
+                    e.function(d_->runtime().memory.ram(), ctx, &d_->runtime());
+                    return;
+                }
+            fault(*d_, ctx, std::format("VU0 microprogram 0x{:x}: no native program of the port's", address));
+            return;
+        }
         const libs::Function *f = libs_.vu0Program(address);
         if (!f)
         {
@@ -399,6 +412,7 @@ namespace bozo::host
         if (!mixer)
             return;
         mixer->takeMixed(hash, count);
+        mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
         const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
         if (onAudio && n)
@@ -423,6 +437,7 @@ namespace bozo::host
         if (libs_.audioProvider) mixer=libs_.audioProvider(cycle);
         else { libs_.snd.advanceAudio(libs_,cycle); mixer=libs_.snd.mixer(); }
         if (!mixer || !onAudio) return;
+        mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
         const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
         if (n)

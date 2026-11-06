@@ -27,6 +27,11 @@ namespace bozo::libs
     class Libraries;
 }
 
+namespace bozo::audio
+{
+    class PortStream;
+}
+
 namespace bozo::port
 {
     using Function = RecompiledFunction;
@@ -43,9 +48,14 @@ namespace bozo::port
         // Native instruction replacements run inline, including in delay slots. They must not block or change pc/ra.
         void nativeGraphics(InstructionHandler handler) { instructionHandler_ = handler; }
         InstructionHandler instructionHandler() const { return instructionHandler_; }
+        // A native VU0 microprogram, by its entry in VU0's code memory (VCALLMS and VCALLMSR). A port with any replaces
+        // the built-in table entirely; a later one for an entry replaces it. Runs inline: must not block or change pc/ra.
+        void vu0Program(uint32_t entry, Function fn);
+        const std::vector<BozoFunctionEntry> &vu0Programs() const { return vu0Programs_; }
 
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
+        std::vector<BozoFunctionEntry> vu0Programs_;
         InstructionHandler instructionHandler_ = nullptr;
     };
 
@@ -93,6 +103,8 @@ namespace bozo::port
     ee::Kernel &kernel(Runtime *rt);
     Host &host(Runtime *rt);
     libs::Libraries &libraries(Runtime *rt);
+    // The port's PCM into the mixer (a movie's soundtrack): 48 kHz, added after the voices. Thread-safe.
+    audio::PortStream &audioStream(Runtime *rt);
     uint8_t *scratchpad(Runtime *rt);
     // The EE clock (cycles), and charging it from inside an override (the events it passes are taken after it).
     uint64_t now(Runtime *rt);

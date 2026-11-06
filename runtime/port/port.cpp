@@ -27,6 +27,17 @@ namespace bozo::port
         functions_.push_back({address, fn});
     }
 
+    void Registry::vu0Program(uint32_t entry, Function fn)
+    {
+        for (BozoFunctionEntry &e : vu0Programs_)
+            if (e.address == entry)
+            {
+                e.function = fn;
+                return;
+            }
+        vu0Programs_.push_back({entry, fn});
+    }
+
     Function Registry::find(uint32_t address) const
     {
         for (const BozoFunctionEntry &e : functions_)
@@ -54,6 +65,7 @@ namespace bozo::port
     ee::Kernel &kernel(Runtime *rt) { return dispatcher(rt).kernel(); }
     Host &host(Runtime *rt) { return *rt->port; }
     libs::Libraries &libraries(Runtime *rt) { return rt->port->libraries(); }
+    audio::PortStream &audioStream(Runtime *rt) { return rt->port->libraries().portStream; }
     uint8_t *scratchpad(Runtime *rt) { return rt->memory.scratchpad(); }
     bool deterministic(Runtime *rt) { return !rt->port || rt->port->deterministic(); }
     bool realTime(Runtime *rt) { return rt->port && rt->port->realTime(); }
