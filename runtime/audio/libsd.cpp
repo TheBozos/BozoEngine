@@ -36,7 +36,8 @@ namespace bozo::audio
 
     Libsd::Libsd(Mixer &mixer, LibsdHost &host) : m_mixer(mixer), m_host(host)
     {
-        m_mixer.setInputHalfCallback([this](int group, int) { transferDone(static_cast<uint32_t>(group)); });
+        m_mixer.setInputHalfCallback([this](int group, int half)
+                                     { inputHalf(static_cast<uint32_t>(group), static_cast<uint32_t>(half)); });
     }
 
     Libsd::~Libsd()
@@ -304,6 +305,20 @@ namespace bozo::audio
             m_host.interruptCall(callback.function, 0u, 0u, callback.gp, kTransferDelay);
     }
 
+    // Each half is kept until a status read answers it: a driver reading the status after its handler, once the
+    // input has moved on, still learns which half to refill.
+    void Libsd::inputHalf(uint32_t channel, uint32_t half)
+    {
+        uint32_t &pending = m_state.halvesPending[channel];
+        if (pending == 2u)
+        {
+            m_state.halves[channel][0] = m_state.halves[channel][1];
+            pending = 1u;
+        }
+        m_state.halves[channel][pending++] = half;
+        transferDone(channel);
+    }
+
     uint32_t Libsd::voiceTrans(uint32_t channel, uint32_t mode, uint32_t iop, uint32_t sound, uint32_t size)
     {
         sync();
@@ -348,6 +363,7 @@ namespace bozo::audio
         {
             const uint32_t position = blockPosition(channel);
             m_mixer.stopInput(static_cast<int>(channel));
+            m_state.halvesPending[channel] = 0u;
             return position;
         }
         case 1u:
@@ -360,6 +376,7 @@ namespace bozo::audio
             const uint32_t offset = (mode & 3u) == 3u && start >= iop ? start - iop : 0u;
             m_state.blockBuffer[channel] = iop;
             m_state.blockSize[channel] = size;
+            m_state.halvesPending[channel] = 0u;
             m_mixer.startInput(static_cast<int>(channel), m_host.iopRam() + at, size, offset, (mode & 0x10u) != 0u);
             return 0u;
         }
@@ -370,6 +387,14 @@ namespace bozo::audio
     {
         sync();
         channel &= 1u;
+        if (m_state.halvesPending[channel] != 0u)
+        {
+            const uint32_t half = m_state.halves[channel][0];
+            m_state.halves[channel][0] = m_state.halves[channel][1];
+            --m_state.halvesPending[channel];
+            const uint32_t second = half == 0u ? 1u : 0u;
+            return (second << 24u) | (m_state.blockBuffer[channel] + second * (m_state.blockSize[channel] / 2u));
+        }
         if (!m_mixer.inputPlaying(static_cast<int>(channel)))
             return 0u;
         const uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));

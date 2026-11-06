@@ -500,6 +500,12 @@ namespace bozo::native::irx
                         next = event.due;
                         due = true;
                     }
+                // The mix stops at each input half so its handler and the tasks it wakes refill that half in time.
+                if (const uint64_t half = mixer.nextInputHalfCycle(); half > cycle && half < next)
+                {
+                    next = half;
+                    due = true;
+                }
                 cycle = next;
                 mixer.advanceTo(cycle);
                 if (!due)
