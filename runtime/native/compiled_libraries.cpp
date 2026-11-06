@@ -48,7 +48,7 @@ namespace bozo::native::irx
         std::vector<Image> images;
         std::map<uint32_t, Import> imports;
         std::map<std::pair<std::string, uint32_t>, uint32_t> exports;
-        std::map<uint32_t, Function> functions;
+        std::map<uint32_t, std::function<void(Env &)>> functions;
         std::map<std::string, int32_t> started;
         struct Task
         {
@@ -901,6 +901,18 @@ namespace bozo::native::irx
                 p.imports[e.address] = e;
         }
         p.images.push_back(std::move(image));
+    }
+    void CompiledLibraries::bindNative(uint32_t address, std::function<void(Env &)> function)
+    {
+        auto &p = *impl_;
+        const auto image = std::find_if(p.images.begin(), p.images.end(), [&](const auto &i) {
+            return address >= i.base && uint64_t(address) < uint64_t(i.base) + i.bytes.size();
+        });
+        if (!function || image == p.images.end() || !p.functions.contains(address) || p.imports.contains(address))
+            throw std::runtime_error("native binding requires an admitted linked game entry");
+        if (!p.started.empty() || p.invokeDepth || !p.tasks.empty())
+            throw std::runtime_error("native bindings must be installed before library execution");
+        p.functions.at(address) = std::move(function);
     }
     int32_t CompiledLibraries::startImage(const std::string &name)
     {

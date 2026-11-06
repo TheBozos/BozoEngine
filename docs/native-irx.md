@@ -28,6 +28,14 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+`CompiledLibraries::bindNative(address, callback)` replaces an admitted linked game entry with a
+per-host C++ algorithm. Install bindings before starting any library. Closures can capture typed port
+state, such as a native input source, without process-global dispatch state. Unadmitted images, unknown
+interior addresses, SDK import stubs and empty callbacks reject. Bindings survive reset; captured state
+must outlive the host and the port resets that state itself. This does not run the replaced instruction
+body or supply any device responses. `library_bindings` tests two independent sources, a retained compiled
+consumer, reset, repeat start and invalid bindings.
+
 The native library host supports FIFO `thsemap` creation/deletion, signal/iSignal, wait and poll using per-host
 counts and cooperative task wait queues. SDK descriptor fields are attr/option/initial/max; non-FIFO attributes
 and invalid counts reject explicitly. Unknown/poll-empty/overflow/delete-wakeup results use SDK errors
