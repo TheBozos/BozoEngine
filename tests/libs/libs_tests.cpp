@@ -123,6 +123,8 @@ namespace
         eq("rand 1", m.call("rand", {}), 0);
         eq("rand 2", m.call("rand", {}), 0x5851f42d);
         eq("rand 3", m.call("rand", {}), 0x40b18ccf);
+        m.string(0x100000, "x%d");
+        eq("scePrintf formats as printf", m.call("scePrintf", {0x100000, 42}), 3);
     }
 }
 
@@ -157,6 +159,19 @@ static void sifAndSnd()
     heap.release(0x80290);
     eq("first fit reuses the hole", heap.allocate(0x100), 0x80290);
     eq("block lookup", heap.blockAt(c + 8), c);
+
+    {
+        Machine q;
+        eq("IOP RAM size", q.call("sceSifQueryMemSize", {}), 0x200000);
+        eq("fresh heap's largest block", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60);
+        eq("fresh heap's free total", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60);
+        const uint32_t a = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x10000}));
+        const uint32_t b = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x8000}));
+        q.call("sceSifFreeIopHeap", {a});
+        eq("largest block after a hole", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x18000);
+        eq("free total counts the hole", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x8000);
+        (void)b;
+    }
 
     Machine m;
     m.libs.sndNative = true;
@@ -264,6 +279,26 @@ void liveScriptInput() {
     eq("partial write keeps last valid input",state.buttons,bozo::libs::kPadStart);
     input.read(114,0,state);eq("partial write cannot hold button forever",state.buttons,0);
     std::filesystem::remove(path);
+}
+void nativeMultitap() {
+    Machine m;
+    eq("sceMtapInit",m.call("sceMtapInit",{}),1);
+    eq("MTAPMAN major version 3",m.call("sceMtapGetModVersion",{})>>8,3);
+    eq("no multitap in port 2",m.call("sceMtapPortOpen",{1}),0);
+    eq("multitap in port 1",m.call("sceMtapPortOpen",{0}),1);
+    eq("libpad sees it",m.libs.pad.multitap,true);
+    eq("port 1 connected",m.call("sceMtapGetConnection",{0}),1);
+    eq("port 2 not connected",m.call("sceMtapGetConnection",{1}),0);
+    eq("four slots behind the multitap",m.call("scePadGetSlotMax",{0}),4);
+    eq("one slot on port 2",m.call("scePadGetSlotMax",{1}),1);
+    eq("close",m.call("sceMtapPortClose",{0}),1);
+    eq("libpad sees it closed",m.libs.pad.multitap,false);
+    eq("one slot without the multitap",m.call("scePadGetSlotMax",{0}),1);
+    eq("scePadPortClose",m.call("scePadPortClose",{0,0}),1);
+    eq("scePadEnd",m.call("scePadEnd",{}),1);
+    m.libs.pad.multitapAttached=false;
+    eq("unplugged multitap does not open",m.call("sceMtapPortOpen",{0}),0);
+    eq("unplugged multitap is not connected",m.call("sceMtapGetConnection",{0}),0);
 }
 void nativeIsoFiles() {
     std::vector<uint8_t> iso(24*2048);
@@ -609,6 +644,7 @@ int main()
     driveCalls();
     reentrantAllocator();
     cardSlotAliases();
+    nativeMultitap();
     nativeIsoFiles();
     nativeDualLayerIso();
     nativeCardDirectories();

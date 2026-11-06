@@ -3,6 +3,7 @@
 // the game's ELF gives that name. Spec: docs/specs/libraries.md.
 #pragma once
 
+#include "bozo/audio/port_stream.h"
 #include "bozo/ee/kernel.h"
 #include "bozo/libs/cd.h"
 #include "bozo/libs/guest.h"
@@ -215,6 +216,7 @@ namespace bozo::libs
         // Unset: the built-in 989SND source. Its lifetime belongs to the port.
         std::function<audio::Mixer *(uint64_t)> audioProvider;
         MovieSoundSink *movieSound = nullptr; // the movie's sound (null: dropped)
+        audio::PortStream portStream;
         IoAccess ioAccess;
         // The I/O library as a function: makes the access in `ioAccess`.
         static const Function &ioFunction();
