@@ -665,6 +665,7 @@ graphics guard rejects any attempt to access retired graphics devices before the
 | 0x1000e010 | D_STAT | bits 0-9 set by completions, written 1 clear them; bits 16-25 written 1 toggle |
 | 0x1000e020 | D_PCR | kept; CPCOND0 (BC0F/BC0T) is every channel it names completed (any channel before the first write: phase 2's rule), the completions counting from the last FlushCache on (phase 4: TMB's hierCheckVifComplete, right after hier__Fi's FlushCache, reads it false although VIF1's last transfer completed: match1p #17540836, every one of its calls) |
 | 0x1000e030-60 | D_SQWC, D_RBSR, D_RBOR, D_STADR | kept |
+| 0x1000d000, 0x1000d400 | D8_CHCR, D9_CHCR | A start in normal mode copies QWC quadwords between MADR and the scratchpad at SADR, then completes. Soulcalibur III moves its packets and working data this way (0x10cf10, 0x10d06c: 165,703 and 83,466 starts in 3000 boot frames, 142 k with memory changed) |
 | 0x1000d080, 0x1000d480 | D8_SADR, D9_SADR | Read back as stored (Soulcalibur III's scratchpad flush reads D8_SADR, 0x10db18) |
 | 0x1000f520 | D_ENABLER | 0: no transfer is ever suspended (none runs) |
 | 0x10003020, 0x10003800, 0x10003c00 | GIF_STAT, VIF0_STAT, VIF1_STAT | 0: idle, reads only. Soulcalibur III reads GIF_STAT once at its DMA setup and VIF1_STAT in its video mode wait (0x1277ec) |

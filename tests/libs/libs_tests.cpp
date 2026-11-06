@@ -586,6 +586,21 @@ static void dmaCalls()
     eq("receive from the scratchpad", m.call("sceDmaRecvN", {0x1000D000, 0x100100, 2}), 0);
     eq("in memory", m.rt->memory.ram()[0x100100 + 31], 32);
     eq("the store is known", bozo::libs::ioKnown(0x1000D080, 4, true), 1);
+    {
+        for (int i = 0; i < 32; ++i)
+            m.rt->memory.ram()[0x100200 + i] = static_cast<uint8_t>(0x80 + i);
+        bozo::libs::ioStore(m.libs, 0x1000D480, 4, 0x70000100, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D410, 4, 0x100200, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D420, 4, 2, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D400, 4, 0x181, 0);
+        eq("a store to CHCR copies to the scratchpad", m.rt->memory.scratchpad()[0x100 + 31], 0x80 + 31);
+        bozo::libs::ioStore(m.libs, 0x1000D080, 4, 0x70000100, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D010, 4, 0x100300, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D020, 4, 2, 0);
+        bozo::libs::ioStore(m.libs, 0x1000D000, 4, 0x180, 0);
+        eq("and from it", m.rt->memory.ram()[0x100300 + 31], 0x80 + 31);
+        bozo::libs::ioStore(m.libs, 0x1000D080, 4, 0x20, 0);
+    }
     eq("the load is known", bozo::libs::ioKnown(0x1000D080, 4, false), 1);
     {
         uint32_t pending = 0;
