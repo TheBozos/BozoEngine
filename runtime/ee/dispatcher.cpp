@@ -776,6 +776,11 @@ namespace bozo::ee
                 thread->stack, thread->stackSize, thread->gp, thread->initPriority, thread->priority,
                 thread->attr, thread->option, thread->waitReason, thread->waitObject,
                 static_cast<uint32_t>(thread->wakeupCount)};
+            if (arg(ctx, 1) == 0)
+            {
+                ret(ctx, static_cast<int32_t>(words[0]));
+                return false;
+            }
             uint8_t *out = rt_.memory.hostPointer(arg(ctx, 1), sizeof(words));
             if (!out)
             {
