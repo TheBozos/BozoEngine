@@ -93,3 +93,11 @@ if(MINGW)
   target_link_options(bozo-image-builders-tests PRIVATE -static)
 endif()
 add_test(NAME native_image_builders COMMAND bozo-image-builders-tests)
+
+# Native graphics services retain no GS register/transfer bank or packet readers.
+add_executable(bozo-native-graphics-tests libs/native_graphics_tests.cpp)
+target_link_libraries(bozo-native-graphics-tests PRIVATE bozo_libs)
+if(MINGW)
+  target_link_options(bozo-native-graphics-tests PRIVATE -static)
+endif()
+add_test(NAME native_graphics_boundary COMMAND bozo-native-graphics-tests)

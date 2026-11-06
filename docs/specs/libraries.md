@@ -173,26 +173,31 @@ overrides, kind 2 in the logs, the others as library stubs.)
 Phase 4 (TMB's overrides native, `kernel.md` section 3b) reached what only ran inside overrides before:
 `sceGsExecLoadImage(lp, src)` returns 0 and uploads nothing (boot: 86 calls, all inside `texmResInit` /
 `texmLoadResTexture`); `sceGsSetDefLoadImage`'s image tag counts T8H, T4HL and T4HH (0x1b, 0x24, 0x2c) as 32-bit
-texels (match1p #16897863); `sceGsExecStoreImage(sp, dst)` reads GS memory there is none of: the image (its size from
-the packet's TRXREG and format) as zeros, 0 (TMB's lens flares outside a match, through its override: match1p frame
-13736).
+texels (match1p #16897863). `sceGsExecStoreImage` now requires a native port override; it throws rather than parsing
+a packet and fabricating an image. Ports implement readback from their own query/model/texture inputs.
 
-There is no GS. The SetDef functions build, in guest memory, the packets the game sends later (the sends themselves are
-DMA and GIF stores, answered from the log until the native renderer takes the draws); the native library writes them
-exactly as the reference did. Their layout follows the game's own libgraph (its code in the ELF, `0x2033b0`-`0x204e80`)
-where the reference agrees with it; where it does not, the reference wins (the records), noted below. What a renderer
-needs is kept in `GsState` (`bozo/libs/gs.h`).
+There is no GS register bank or transfer history. The SetDef functions only write SDK output structures for
+recompiled callers that still use those bytes; native rendering never consumes those packets. When a port explicitly
+enables `Registry::nativeGraphics`, image load/store SetDef calls instead return 0 without reading arguments beyond
+the port mode, dereferencing the output or serializing any packet. Native uploads belong to the asset boundary;
+readback belongs to the port's high-level caller, and unsupported ExecStoreImage still fails explicitly. Other SDK
+templates remain available because callers may inspect their scalar fields. Scalar video
+parameters come from the SDK's scratchpad parameters, without a second engine copy. The native renderer gets draws,
+materials, textures and presentation settings directly from the port. The historical call-log totals below describe
+the earlier implementation and do not qualify the current packet-free boundary.
+`native_image_builders` is a standalone game-free test of this opt-in boundary: generic calls journal their SDK
+output, native calls do not write valid guarded output buffers, and inaccessible native outputs are never read.
 
 | Function | Native answer | Where the reference differs from the game's libgraph |
 |---|---|---|
 | `sceGsResetGraph(mode, interlace, video, field)` | mode 0: keeps the display mode; writes `{interlace, video, field, 3}` as bytes at scratchpad `0x100`; sets the kernel's field rate (`OP` 37, 60000/1001 in NTSC); returns 0 | the reference writes its own 4 bytes at scratchpad `0x100` (the game's libgraph keeps them in its GParam at `0x4e1f30`, which the reference leaves alone) and does not call `SetGsCrt` |
 | `sceGsResetPath()` | nothing (no result) | |
 | `sceGsSetDefDispEnv(disp, psm, w, h, dx, dy)` | PMODE `0x66`, SMODE2 (from the display mode), DISPFB, DISPLAY (magnification `(w + 2559) / w`, the vertical start 50/25 in NTSC), BGCOLOR 0; returns 0 | the horizontal start is 652 in NTSC (the game's libgraph: 636) |
-| `sceGsSetDefDrawEnv(env, psm, w, h, ztest, zpsm)`, `...DrawEnv2` | the eight A+D pairs (FRAME, ZBUF with the Z buffer after two frame buffers, XYOFFSET at 2048 - w/2, SCISSOR, PRMODECONT and COLCLAMP or'ed with 1, DTHE for 16-bit formats, TEST) for context 1 or 2; returns 8 | |
+| `sceGsSetDefDrawEnv(env, psm, w, h, ztest, zpsm)`, `...DrawEnv2` | writes eight A+D pairs for context 1 or 2; initializes PRMODECONT/COLCLAMP to 1 and DTHE from the format without reading old packet bytes; returns 8 | reserved bits are initialized |
 | `sceGsSetDefClear(clear, ztest, x, y, w, h, r, g, b, a, z)` | TEST, PRIM sprite, RGBAQ (Q 1.0), two XYZ2, TEST; returns 0 | returns 0 (libgraph: 6) |
 | `sceGsSetDefLoadImage(lp, dbp, dbw, dpsm, x, y, w, h)` | the GIF tag, BITBLTBUF, TRXPOS, TRXREG, TRXDIR 0, the IMAGE tag (its size from the format, as libgraph's table); returns 0 | BITBLTBUF has SBW = 1; returns 0 (libgraph: 6) |
 | `sceGsSetDefStoreImage(sp, sbp, sbw, spsm, x, y, w, h)` | VIF codes, the GIF tag, BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR 1; returns 0 | the first VIF code is a NOP (libgraph: MSKPATH3); BITBLTBUF has DBW = 1; returns 0 (libgraph: 7) |
-| `sceGsPutDrawEnv(packet)` | the A+D pairs kept in `GsState::registers`; returns 0 | |
+| `sceGsPutDrawEnv(packet)` | returns 0 without reading the packet; the port supplies native materials | |
 | `sceGsSyncPath(mode, timeout)` | 0: nothing is ever in flight | |
 | `sceGsSyncV(mode)` | 1 when the frames ended by then (this one included) are odd, else 0 | (settled on all 8 calls of boot and 2,290 of match1p; the vblank count's parity matches only half of them) |
 
@@ -203,13 +208,8 @@ from the log (`Function::frameBoundary`), in the real runtime from the presentat
 A call the run was cut inside (match1p's last `sceGsSyncV`, record flag `cut`: its result is not recorded) stays
 answered from the log.
 
-**What the native renderer will need from here** (phase 3's renderer, or TMB's native renderer moved over in phase 4):
-the display mode (`interlace`, `videoMode`, `fieldMode`), the display environment (DISPFB: the frame buffer's width and
-format; DISPLAY: position, magnification and size of the picture), the draw environment registers the game sets
-(FRAME, ZBUF, XYOFFSET, SCISSOR, TEST, DTHE, COLCLAMP of both contexts), and the image transfers set up (GS buffer base,
-width, format, rectangle, direction; the last 64 kept). The pixel data of uploads never goes through here: TMB's native
-renderer takes textures from the game's own assets; the packets the game kicks (`sceGsExecLoadImage` and the DMA chains)
-are still answered from the log as stores, until the renderer takes them (no-packets plan).
+Native rendering does not obtain any state from libgraph packet submissions. A port must translate its high-level
+draw and image operations into native renderer calls. Unhandled readback cannot silently return a black image.
 
 Results: boot 20,982 calls native (`sceGsSyncPath` 17,966, `sceGsPutDrawEnv` 2,994, `sceGsSyncV` 6, the SetDef and
 Reset calls 16), match1p 117,534 (`sceGsSyncPath` 95,644, `sceGsPutDrawEnv` 19,291, `sceGsSyncV` 2,289,
@@ -526,8 +526,32 @@ be answered from the log and counted ("calls with no native answer").
 
 ## 11. Hardware registers (`io`)
 
-Native: every hardware load and store TMB's logs hold (`bozo/libs/io.h`, `libs/io.cpp`), answered by a model of only
-what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
+Native: the remaining register/status compatibility operations (`bozo/libs/io.h`, `libs/io.cpp`). No DMA, VIF, GIF,
+IPU or GS executes behind them. `sceDmaReset` clears native completion bookkeeping at its SDK entry point instead
+of running a hardware reset loop. The free host faults on unknown device accesses; it no longer silently returns
+zero or drops a write. Channel register accesses support byte, halfword and word widths at the register base.
+
+`sceDmaSend`, `sceDmaSendN`, `sceDmaSendI` and `sceDmaSync` also have native SDK bindings. VIF1/GIF sends acknowledge
+the graphics work the port already submitted and queue the kernel's completion handlers, without reading or
+retaining the packet/chain address or transfer length. Normal, chain and interleave calls keep the SDK's completion
+status convention; sync returns immediately for completed native work instead of executing libdma's polling loops.
+VIF0 chain submissions select a known native VU0 program image by source identity. IPU-to submissions retain only
+the native movie decoder's deferred-completion contract. Invalid handles, unsupported data producers, overlapping
+pending transfers and unimplemented blocking waits fail explicitly. `IoState::nativeSubmissions` and
+`nativeSynchronizations` are service diagnostics, not device state. A port still touching the registers directly
+uses the compatibility operations listed below.
+
+With a port registered for native graphics, these SDK submissions and sync calls bypass the retired channel and
+status banks entirely. The SDK scheduler receives completion notifications directly. Masked callbacks retain native
+job-completion state (`nativeCompleted`) so enabling their handler still delivers them; no CHCR/D_STAT/CPCOND0
+values are manufactured. Native reset clears SDK jobs/configuration without resetting a device model.
+`sceDmaPutEnv` / `sceDmaGetEnv` validate and round-trip the opaque 20-byte SDK configuration, including the original
+field error codes, without programming a controller. `sceGsPutDispEnv` returns without reading its obsolete display
+structure or issuing display-register writes; the native renderer/platform layer already owns presentation.
+
+`FreeOptions::profileIo` collects remaining device accesses by guest PC and address in `FreeStats::ioSites`.
+It is off by default. Ports can use it to find callers that still need native adaptation; the existing native
+graphics guard rejects any attempt to access retired graphics devices before the compatibility path runs.
 
 | Address | Register | Native answer |
 |---|---|---|
@@ -537,7 +561,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 | 0x12001000 | GS CSR (loads) | FIELD (bit 13) the vblank count's parity, nothing else (TMB's vblankHandler reads it inside its override: boot #729700 on). A port's own access (`bozo::port::ioRead32` / `ioWrite32`) is not the game's: a store of its does not complete channel 4's transfer (match1p #14450438); a T0 read of its is a poll as the game's, a T0 write keeps the last read, its (#34736003) and the game's alike (stage-level0 #13062314: the game read 0, wrote 0 and read 0: a poll), and the EE time the port charges (`bozo::port::accountCycles`, TMB's frame end) takes the poll's pending cycles as a checkpoint would (#17538393, #17541951) |
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
 | 0x10009000-30 | VIF1 | as VIF0 (D_STAT bit 1): TMB's 3D packets, 2.5M kicks in match1p |
-| 0x1000a000-30 | GIF | as VIF0 (bit 2), except a chain whose first packet draws (its GIF tag sets PRIM: the sprite TMB sends from 0x4fe180 before `sceGsSyncV` on its loading screens, 2,269 kicks in match1p): the reference drops it, no completion and no interrupt |
+| 0x1000a000-30 | GIF | immediate native completion (bit 2); no chain or packet is read, regardless of PRE/PRIM |
 | 0x1000b400-30 | IPU_TO (channel 4) | the transfer completes (bit 4, the interrupt) at the game's first store after libmpeg's decoder took it, i.e. after the decoder asked for more data (it queued the game's nodata callback: the native libmpeg says so, section 9.4); a CHCR store without STR stops the channel (TMB's movie end: the last transfer never completes) |
 | any channel | CHCR load | the value written, STR cleared once complete |
 | any channel | MADR, QWC, TADR loads | 0 (the reference's answer: TMB reads channel 4's MADR, 0 in every record, also before any transfer) |
@@ -547,7 +571,7 @@ what the game observes. No DMA, VIF, GIF, IPU or GS runs behind them.
 | 0x1000e030-60 | D_SQWC, D_RBSR, D_RBOR, D_STADR | kept |
 | 0x1000f520 | D_ENABLER | 0: no transfer is ever suspended (none runs) |
 | 0x1000f590 | D_ENABLEW | kept |
-| 0x12000000-f0 | the GS's privileged registers (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2, BGCOLOR...) | 64-bit stores kept in `IoState::gsPrivileged` for the renderer (TMB's movie layer uses both circuits: PMODE 0xff03) |
+| 0x12000000-f0 | obsolete GS display-register stores | acknowledged and discarded; native presentation owns the display, no register bank is retained |
 
 The kernel's question at `EnableDmac` (is the channel's D_STAT bit still set, `calllog.md` section 6) is now answered by
 the model's D_STAT, no longer from the log.

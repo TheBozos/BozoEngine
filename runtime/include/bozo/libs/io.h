@@ -21,7 +21,6 @@ namespace bozo::libs
 
     struct IoState
     {
-        bool completeNativeGraphics = false; // complete discarded graphics work without reading packets
         // ---- Timer 0 (T0_COUNT, T0_MODE; TMB polls the count) ----
         uint32_t t0Mode = 0;
         uint64_t t0Base = 0;      // the EE cycle the count was last written
@@ -38,6 +37,11 @@ namespace bozo::libs
             bool running = false; // started, not complete yet (channel 4: the reference completes it later)
         };
         std::array<Channel, 10> channels{};
+        // Native SDK service diagnostics, not device registers. The first three channels
+        // are native VU0 image selection, VIF1 graphics, and GIF graphics respectively.
+        std::array<uint64_t, 3> nativeSubmissions{};
+        std::array<bool, 3> nativeCompleted{}; // completed SDK jobs, including callbacks masked at submission
+        uint64_t nativeSynchronizations = 0;
         // libmpeg's decoder asked the game for more data (it queued the game's nodata callback) since channel 4 was
         // last started: the IPU has taken that transfer, which completes at the game's next store.
         bool ipuDemand = false;
@@ -45,9 +49,6 @@ namespace bozo::libs
         // game's stores: it does not complete the IPU's transfer (match1p #14450438: none at the frame end's T0 write).
         bool hostAccess = false;
         uint32_t ctrl = 0, stat = 0, pcr = 0, sqwc = 0, rbsr = 0, rbor = 0, stadr = 0, enable = 0;
-
-        // ---- The GS's privileged registers (PMODE ... BGCOLOR): what the game sets, for the renderer ----
-        std::array<uint64_t, 16> gsPrivileged{};
 
         bool pcrWritten = false;
         // The transfers CPCOND0 sees completed: D_STAT's channel bits as completions set them and the game's D_STAT

@@ -5,7 +5,6 @@
 
 #include "bozo/ee/kernel.h"
 #include "bozo/libs/cd.h"
-#include "bozo/libs/gs.h"
 #include "bozo/libs/guest.h"
 #include "bozo/libs/io.h"
 #include "bozo/libs/mc.h"
@@ -195,12 +194,14 @@ namespace bozo::libs
         // ---- State ----
         Heap heap;
         Rand rand;
-        GsState gs;
         PadState pad;
         McState mc;
         CdState cd;
         Vu0State vu0;
         IoState io;
+        // Opaque libdma SDK configuration returned by GetEnv. Native services do not
+        // turn it into DMA controller registers or execute a hardware environment.
+        std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
         SifState sif;
         SndDriver snd;
@@ -234,6 +235,7 @@ namespace bozo::libs
     void addLibc(std::vector<Function> &out);
     void addLibm(std::vector<Function> &out);
     void addGs(std::vector<Function> &out);
+    void addDma(std::vector<Function> &out);
     void addPad(std::vector<Function> &out);
     void addMc(std::vector<Function> &out);
     void addCd(std::vector<Function> &out);

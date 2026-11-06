@@ -5,6 +5,8 @@
 #include "bozo/ee/dispatcher.h"
 #include "bozo/libs/libraries.h"
 #include "bozo/port.h"
+#include <stdexcept>
+#include <cstring>
 
 namespace bozo::libs
 {
@@ -13,7 +15,7 @@ namespace bozo::libs
         // The DMA channels' register blocks (CHCR at +0, MADR +0x10, QWC +0x20, TADR +0x30).
         constexpr uint32_t kChannelBase[10] = {0x10008000u, 0x10009000u, 0x1000A000u, 0x1000B000u, 0x1000B400u,
                                                0x1000C000u, 0x1000C400u, 0x1000C800u, 0x1000D000u, 0x1000D400u};
-        constexpr uint32_t kGif = 2, kIpuTo = 4;
+        constexpr uint32_t kIpuTo = 4;
 
         int channelOf(uint32_t a, uint32_t &reg)
         {
@@ -54,32 +56,6 @@ namespace bozo::libs
 
     }
 
-    namespace
-    {
-        // Whether a GIF chain's first packet draws: its GIF tag sets PRIM (PRE, bit 46). The reference completes a
-        // GIF transfer of register writes at once (its interrupt raised), and drops one that draws (TMB's clear
-        // before a loading screen's frame boundary): no completion, no interrupt (libraries.md section 11).
-        bool drawsPrimitive(Libraries &l, const IoState::Channel &c)
-        {
-            if (((c.chcr >> 2) & 3u) != 1u)
-                return false;
-            Guest g(l.dispatcher()->runtime(), nullptr);
-            try
-            {
-                const uint32_t tag = g.read32(c.tadr), addr = g.read32(c.tadr + 4);
-                const uint32_t id = (tag >> 28) & 7u, qwc = tag & 0xFFFFu;
-                if (qwc == 0)
-                    return false;
-                const uint32_t data = id == 0 || id == 3 || id == 4 ? addr & ~15u : c.tadr + 16;
-                return (g.read32(data + 4) >> 14) & 1u;
-            }
-            catch (const BadAccess &)
-            {
-                return false;
-            }
-        }
-    }
-
     bool ioKnown(uint32_t address, uint32_t size, bool store)
     {
         const uint32_t a = address & 0x1FFFFFFFu;
@@ -87,14 +63,14 @@ namespace bozo::libs
         if (a == 0x10000000u || a == 0x10000010u)
             return size == 4;
         if (channelOf(a, reg) >= 0)
-            return size == 4;
+            return size == 1 || size == 2 || size == 4;
         if (a >= 0x1000E000u && a <= 0x1000E060u && (a & 0xFu) == 0)
             return size == 4;
         if (a == 0x1000F520u || a == 0x1000F590u)
             return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
-        if (!store && a == 0x12001000u) // the GS's CSR (TMB's vblank handler reads its FIELD)
+        if (a == 0x12001000u) // FIELD reads; obsolete CSR acknowledgement stores have no effect
             return size == 8 || size == 4;
         return false;
     }
@@ -142,11 +118,11 @@ namespace bozo::libs
         return v;
     }
 
-    void ioStore(Libraries &l, uint32_t address, uint32_t, uint64_t value, uint64_t cycle)
+    void ioStore(Libraries &l, uint32_t address, uint32_t size, uint64_t value, uint64_t cycle)
     {
         IoState &io = l.io;
         const uint32_t a = address & 0x1FFFFFFFu;
-        const uint32_t v = static_cast<uint32_t>(value);
+        uint32_t v = static_cast<uint32_t>(value);
         uint32_t reg = 0;
         // Channel 4 (to the IPU) completes as the reference completed it: at the game's first store after libmpeg's
         // decoder took the transfer (asked for more data), before the store's own effect (libraries.md section 11).
@@ -164,6 +140,12 @@ namespace bozo::libs
         else if (const int ch = channelOf(a, reg); ch >= 0)
         {
             IoState::Channel &c = io.channels[static_cast<uint32_t>(ch)];
+            if (size < 4)
+            {
+                const uint32_t mask = size == 1 ? 0xffu : 0xffffu;
+                const uint32_t old = reg == 0 ? c.chcr : reg == 1 ? c.madr : reg == 2 ? c.qwc : c.tadr;
+                v = (old & ~mask) | (v & mask);
+            }
             switch (reg)
             {
             case 0:
@@ -181,12 +163,6 @@ namespace bozo::libs
                     }
                     else
                     {
-                        if (static_cast<uint32_t>(ch) == kGif && !io.completeNativeGraphics && drawsPrimitive(l, c))
-                        {
-                            c.running = false; // dropped: no completion, no interrupt (the reference's renderer path)
-                            c.chcr &= ~0x100u;
-                            break;
-                        }
                         complete(l, static_cast<uint32_t>(ch)); // VIF0, VIF1, GIF: done at once (no DMA runs)
                     }
                 }
@@ -221,8 +197,8 @@ namespace bozo::libs
         {
             io.enable = v;
         }
-        else if (a >= 0x12000000u && a <= 0x120000F0u)
-            io.gsPrivileged[(a - 0x12000000u) >> 4] = value;
+        // Native presentation owns the display. Obsolete display-register stores are
+        // acknowledged without retaining a GS register bank.
     }
 
     namespace
@@ -248,5 +224,124 @@ namespace bozo::libs
     {
         static const Function f{"hardware register", kIo, access};
         return f;
+    }
+
+    namespace
+    {
+        uint32_t sdkChannel(Guest &g)
+        {
+            const uint32_t handle = g.arg(0) & 0x1fffffffu;
+            for (uint32_t ch = 0; ch < 10; ++ch)
+                if (handle == kChannelBase[ch])
+                    return ch;
+            throw std::runtime_error("native libdma: invalid channel handle");
+        }
+
+        template <uint32_t Mode>
+        void submitDma(Libraries &l, Guest &g)
+        {
+            const uint32_t ch = sdkChannel(g);
+            if (ch > 2 && ch != kIpuTo)
+                throw std::runtime_error("native libdma: transfer needs a native data producer");
+            if (!l.dispatcher())
+                throw std::runtime_error("native libdma: no SDK scheduler attached");
+            if (ch < 3u && port::nativeGraphics(&l.dispatcher()->runtime()))
+            {
+                ++l.io.nativeSubmissions[ch];
+                l.io.nativeCompleted[ch] = true;
+                if (ch == 0u && (Mode & 0xcu) == 4u) l.vu0.kick(Mode, g.arg(1));
+                // Native work is complete. Notify the SDK scheduler directly; do not
+                // manufacture CHCR, D_STAT, or CPCOND0 state for a retired device.
+                l.dispatcher()->kernel().irq(true, ch);
+                g.ret(0);
+                return;
+            }
+            auto &c = l.io.channels[ch];
+            if (c.running)
+                throw std::runtime_error("native libdma: previous native transfer is still pending");
+            c.chcr = (c.chcr & ~0xcu) | Mode;
+            if (ch == 0 && (Mode & 0xcu) == 4u)
+                l.vu0.kick(Mode, g.arg(1)); // select a native program image by its known source, no chain read
+            if (ch == kIpuTo)
+            {
+                // Native libmpeg supplies the stream to FFmpeg. Keep only its outstanding
+                // completion until the decoder asks for more data, as for direct SDK stores.
+                c.running = true;
+                l.io.ipuDemand = false;
+            }
+            else
+            {
+                ++l.io.nativeSubmissions[ch];
+                // Renderer work was already submitted by the port. Retain no packet address,
+                // DMA length or transfer chain, and never run libdma's busy-polling code.
+                complete(l, ch);
+            }
+            g.ret(0);
+        }
+
+        void syncDma(Libraries &l, Guest &g)
+        {
+            const uint32_t ch = sdkChannel(g);
+            ++l.io.nativeSynchronizations;
+            if (ch < 3u && l.dispatcher() && port::nativeGraphics(&l.dispatcher()->runtime()))
+            {
+                g.ret(0);
+                return;
+            }
+            const bool busy = l.io.channels[ch].running;
+            if (busy && g.arg(1) != 1u)
+                throw std::runtime_error("native libdma: blocking wait needs a native completion service");
+            g.ret(busy ? 1 : 0);
+        }
+
+        // Replace libdma's device-register reset loop at its SDK entry point. Nothing is
+        // transferred; only outstanding native completion acknowledgements are cleared.
+        void resetDma(Libraries &l, Guest &g)
+        {
+            l.dmaEnvironment.fill(0);
+            if (l.dispatcher() && port::nativeGraphics(&l.dispatcher()->runtime()))
+            {
+                l.io.nativeCompleted.fill(false);
+                g.ret(0);
+                return;
+            }
+            auto &io = l.io;
+            const uint32_t enabled = io.ctrl & 1u;
+            io.channels = {};
+            io.stat = io.cpcondDone = io.pcr = io.sqwc = io.rbsr = io.rbor = io.stadr = 0;
+            io.pcrWritten = true;
+            io.ipuDemand = false;
+            io.ctrl = g.arg(0) == 1 ? 1u : enabled;
+            g.ret(enabled);
+        }
+
+        void putDmaEnvironment(Libraries &l, Guest &g)
+        {
+            const auto *bytes = g.in(g.arg(0), l.dmaEnvironment.size());
+            for (unsigned i = 0; i < 4; ++i)
+                if (bytes[i] >= (i == 3 ? 7u : 10u))
+                {
+                    g.ret(-static_cast<int32_t>(i) - 1);
+                    return;
+                }
+            std::memcpy(l.dmaEnvironment.data(), bytes, l.dmaEnvironment.size());
+            g.ret(0);
+        }
+        void getDmaEnvironment(Libraries &l, Guest &g)
+        {
+            g.write(g.arg(0), l.dmaEnvironment.data(), l.dmaEnvironment.size());
+            g.ret(0);
+        }
+    }
+
+    void addDma(std::vector<Function> &out)
+    {
+        out.push_back({"sceDmaReset", kIo, resetDma});
+        out.push_back({"sceDmaSend", kIo, submitDma<0x105u>});
+        out.push_back({"sceDmaSendN", kIo, submitDma<0x101u>});
+        out.push_back({"sceDmaSendI", kIo, submitDma<0x109u>});
+        out.push_back({"sceDmaSync", kIo, syncDma});
+        out.push_back({"sceDmaPutEnv", kIo, putDmaEnvironment});
+        out.push_back({"sceDmaGetEnv", kIo, getDmaEnvironment});
     }
 }

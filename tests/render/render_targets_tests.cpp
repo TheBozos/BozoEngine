@@ -13,7 +13,7 @@ namespace
     constexpr float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     Screen screen{0, 0, 16, 16};
     Renderer &renderer = Renderer::instance();
-    void quad(Material m, uint32_t colour, float y0 = 0, float y1 = 16)
+    void quad(Material m, uint32_t colour, float y0 = 0, float y1 = 16, float z = 1)
     {
         Vertex v[6];
         const float xy[6][2] = {{0, y0}, {16, y0}, {0, y1}, {16, y0}, {16, y1}, {0, y1}};
@@ -21,7 +21,7 @@ namespace
         {
             v[i].x = xy[i][0];
             v[i].y = xy[i][1];
-            v[i].z = 1;
+            v[i].z = z;
             v[i].u = xy[i][0] / 16;
             v[i].v = xy[i][1] / 16;
             v[i].rgba = colour;
@@ -122,6 +122,37 @@ int main()
     quad(destination, 0x40004000);
     present();
     pixel("source plus destination times source alpha", 16, {64, 128, 0});
+    // The same asynchronous native depth cache used by game visibility queries. A real
+    // depth-writing primitive must be distinguishable from the next frame's empty depth.
+    Screen depthScreen = screen;
+    depthScreen.depthMax = 1000;
+    auto depthMaterial = plain;
+    depthMaterial.depthTest = depthMaterial.depthWrite = true;
+    renderer.beginFrame(depthScreen);
+    quad(depthMaterial, 0x80808080, 0, 16, 500);
+    renderer.wantDepth();
+    present();
+    auto expectDepth = [&](uint32_t expected)
+    {
+        uint32_t z = ~0u;
+        for (int attempt = 0; attempt < 100; ++attempt)
+        {
+            renderer.wantDepth();
+            const bool available = renderer.depthAt(8, 8, z);
+            if (available && std::abs(int(z) - int(expected)) <= 1)
+                return;
+            renderer.present(0, 0, 32, 32);
+            SDL_GL_SwapWindow(window);
+            SDL_Delay(2);
+        }
+        std::printf("FAIL native visibility depth: %u, expected %u\n", z, expected);
+        ++failures;
+    };
+    expectDepth(500);
+    renderer.beginFrame(depthScreen);
+    quad(plain, 0x80808080);
+    present();
+    expectDepth(0);
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);
