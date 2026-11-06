@@ -358,6 +358,40 @@ namespace bozo
         stats_.unresolvedJr += static_cast<uint32_t>(f.unresolvedJr.size());
     }
 
+    std::string Analysis::report() const
+    {
+        std::string out;
+        char line[128];
+        const auto put = [&](const char *kind, uint32_t a, uint32_t b, const std::string &text) {
+            std::snprintf(line, sizeof(line), "%s 0x%x 0x%x ", kind, a, b);
+            out += line;
+            out += text;
+            out += '\n';
+        };
+        out += stats_.symbolDriven ? "mode symbols\n" : "mode code\n";
+        for (const Function &f : functions_)
+        {
+            put("function", f.start, f.end, f.symbol);
+            for (uint32_t e : f.extraEntries)
+                put("entry", e, f.start, "");
+            for (const auto &[jr, t] : f.jumpTables)
+            {
+                std::string targets = t.inPlace ? "goto" : "dispatch";
+                for (uint32_t target : t.targets)
+                {
+                    std::snprintf(line, sizeof(line), " 0x%x", target);
+                    targets += line;
+                }
+                put("table", jr, t.tableAddress, targets);
+            }
+            for (uint32_t jr : f.returnJr)
+                put("return", jr, f.start, "");
+            for (uint32_t jr : f.unresolvedJr)
+                put("unresolved", jr, f.start, "");
+        }
+        return out;
+    }
+
     void Analysis::addEntry(uint32_t addr, const char *why)
     {
         Function *f = mutableContaining(addr);
@@ -425,6 +459,12 @@ namespace bozo
     void Analysis::run()
     {
         addSymbolFunctions();
+        uint64_t codeBytes = 0, symbolBytes = 0;
+        for (const auto &r : program_.code)
+            codeBytes += r.end - r.start;
+        for (const Function &f : functions_)
+            symbolBytes += f.end - f.start;
+        stats_.symbolDriven = symbolBytes * 2 >= codeBytes;
         std::set<uint32_t> seeds;
         collectSeeds(seeds);
         carveGaps(seeds);

@@ -43,6 +43,7 @@ namespace bozo
     {
         uint32_t symbolFunctions = 0;   // functions from ELF function symbols
         uint32_t gapFunctions = 0;      // functions found in code not covered by a symbol
+        bool symbolDriven = false;      // sized function symbols cover most of the code (else discovery from the code)
         uint32_t extraEntries = 0;      // entries into the middle of a function
         uint32_t jumpTables = 0;
         uint32_t jumpTableTargets = 0;
@@ -71,6 +72,9 @@ namespace bozo
         const Function *functionAt(uint32_t addr) const;
         // Is `addr` an address the generated code can be entered at (a function start or an extra entry)?
         bool isEntry(uint32_t addr) const;
+
+        // The whole result as text, one fact per line, for tools and for people (docs/specs/discovery.md).
+        std::string report() const;
 
     private:
         Function *mutableContaining(uint32_t addr);
