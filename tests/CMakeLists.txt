@@ -74,6 +74,7 @@ if(MINGW)
 endif()
 add_test(NAME kernel_services COMMAND bozo-kernel-services-tests)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME explicit_entries COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py $<TARGET_FILE:bozo-recomp>)
 add_test(NAME strict_irx_generation COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_irx.py)
 
 if(BOZO_APP)
