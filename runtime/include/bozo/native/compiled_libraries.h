@@ -37,6 +37,9 @@ namespace bozo::native::irx
         // Only entries belonging to an admitted image may be bound, before it starts.
         // Captured application state is owned by the caller and must outlive this host.
         void bindNative(uint32_t address, std::function<void(Env &)> function);
+        // Deliver already completed native audio jobs at linked-call safe points.
+        // Opt in before execution; existing ports retain their callback schedule.
+        void useReadyAudioCompletions();
         int32_t startImage(const std::string &name);
         void reset();
         audio::Mixer *advanceTo(uint64_t eeCycle);

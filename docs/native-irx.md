@@ -24,6 +24,14 @@ The host implements a strict subset of loadcore, stdio, sysclib, sysmem, thbase,
 
 Native tasks are cooperative and callbacks execute at safe points. The SDK's logical time uses 36.864 MHz units; EE-to-library time conversion is explicit. Periodic callbacks support clock/divisor rates, including the SDK's H-line source. Device-register reads/writes are not available. Task stacks and root callback stacks use separate bounded arenas so repeated RPC/timer callbacks cannot overwrite suspended task frames. Root nesting is limited to four 16-KiB stacks; task stacks honor the requested aligned size and fail if the arena is exhausted. The heap ends at `0x180000`; ports choose a heap start above their images.
 
+Ports may opt into `useReadyAudioCompletions()` before execution. Actual completed libsd byte copies
+and consumed mixer halves then queue ready callbacks for delivery when a linked native function
+returns. This allows compiled game code to poll its own completion flag inside a root call. Delivery
+honors callback exclusion, dequeues before invocation and prevents recursive redelivery. It does not
+advance logical time or change work budgets. The default scheduling policy is unchanged; reset clears
+pending events and retains the selected policy. The ready-audio suite reproduces default starvation
+and checks actual copied bytes, exactly-once delivery, reentrancy, exclusion, reset and host isolation.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services
