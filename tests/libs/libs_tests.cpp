@@ -327,6 +327,16 @@ void nativeIsoFiles() {
         eq("read next sector head",m.rt->memory.ram()[0x103008],0x33);
         eq("native file close",m.call("sceClose",{uint32_t(fd)}),0);
         eq("closed descriptor cannot read",m.call("sceRead",{uint32_t(fd),0x103000,1}),-1);
+        uint32_t lbn;std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);
+        eq("no IOP memory, no IOP read",m.call("sceCdReadIOPm",{lbn,2,0x4000,0}),0);
+        uint32_t iopAt=0;std::vector<uint8_t> iopData;
+        m.libs.sif.transfer=[&](uint32_t at,const uint8_t *from,uint32_t bytes){iopAt=at;iopData.assign(from,from+bytes);};
+        eq("sectors read into IOP memory",m.call("sceCdReadIOPm",{lbn,2,0x4000,0}),1);
+        eq("the IOP address",iopAt,0x4000);
+        eq("two sectors",iopData.size(),4096);
+        eq("the first sector's tail",iopData[2047],0x22);
+        eq("the next sector's head",iopData[2048],0x33);
+        eq("sceCdSync sees the read",m.call("sceCdSync",{1}),1);
     }
     std::filesystem::remove(path);
 }
