@@ -32,7 +32,7 @@ Ports can also statically compile disc libraries into native C++ and bind their 
 | `runtime/native/`, `tools/native_irx/` | Strict offline library translation and native SDK host services |
 | `runtime/render/`, `runtime/audio/` | The native renderer (OpenGL 3.3) and mixer |
 | `runtime/app/`, `runtime/host/`, `runtime/port/` | Window, input and settings (SDL3); the real-time host; the API a port's own code uses |
-| `tools/` | The checkers (`run`, `replay`), the pack writers (`native_pack`), `externals`, `symbolmap` (names a stripped ELF, [spec](docs/specs/symbol-map.md)), capture and IRX readers, `branding` |
+| `tools/` | The checkers (`run`, `replay`), the pack writers (`native_pack`), `externals`, `symbolmap` (names a stripped ELF, [spec](docs/specs/symbol-map.md)), `discovery` (scores function discovery, [spec](docs/specs/discovery.md)), capture and IRX readers, `branding` |
 | `tests/` | Instruction, library, audio and runtime tests |
 | `reference/` | Hashes of the reference runs the checks compare against (no game data) |
 | `docs/` | The plan, the specs the code is written from, the branding |
