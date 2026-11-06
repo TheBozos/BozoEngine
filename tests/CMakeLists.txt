@@ -102,6 +102,7 @@ add_test(NAME cd_callbacks COMMAND bozo-cd-callback-tests)
 set_tests_properties(cd_callbacks PROPERTIES TIMEOUT 10)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME reference_records COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_reference.py)
+add_test(NAME data_objects_in_code COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_data_objects.py $<TARGET_FILE:bozo-recomp>)
 add_test(NAME explicit_entries COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py $<TARGET_FILE:bozo-recomp>)
 set(entry_gen "${CMAKE_CURRENT_BINARY_DIR}/explicit_entry_gen")
 add_custom_command(
