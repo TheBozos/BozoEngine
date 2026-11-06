@@ -40,6 +40,10 @@ namespace bozo::native::irx
         // Deliver already completed native audio jobs at linked-call safe points.
         // Opt in before execution; existing ports retain their callback schedule.
         void useReadyAudioCompletions();
+        // Map linked frame listeners to actual native game-frame completions.
+        // Opt in before execution; no display interrupt or frame period is generated.
+        void useNativeFrameCallbacks();
+        void notifyFrameCompleted();
         int32_t startImage(const std::string &name);
         void reset();
         audio::Mixer *advanceTo(uint64_t eeCycle);

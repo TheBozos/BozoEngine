@@ -97,6 +97,11 @@ namespace bozo::native::irx
         };
         std::deque<Event> events;
         bool readyAudioCompletions = false, deliveringReadyAudio = false;
+        struct FrameListener { Interrupt callback;int32_t priority;uint64_t order; };
+        std::map<uint32_t,FrameListener> frameListeners;
+        std::deque<std::vector<std::pair<uint32_t,uint64_t>>> completedFrames;
+        bool nativeFrameCallbacks = false, deliveringFrames = false;
+        uint64_t frameListenerSerial = 0;
         struct Sema
         {
             int32_t count = 0;
@@ -144,6 +149,28 @@ namespace bozo::native::irx
                 const auto event = *found;
                 events.erase(found); // Remove before invoking reentrant native SDK/game code.
                 if (event.function) invoke(event.function,event.gp,event.a0,event.a1);
+            }
+        }
+        void deliverFrames()
+        {
+            if (!nativeFrameCallbacks || deliveringFrames || !exclusions.empty()) return;
+            deliveringFrames = true;
+            struct Scope { bool &active; ~Scope(){active=false;} } scope{deliveringFrames};
+            unsigned work = 0;
+            while (!completedFrames.empty())
+            {
+                if (++work > 1024) throw std::runtime_error("native frame callback work limit");
+                auto listeners = std::move(completedFrames.front());completedFrames.pop_front();
+                for (const auto &[function,order] : listeners)
+                {
+                    const auto found = frameListeners.find(function);
+                    if (found == frameListeners.end() || found->second.order != order) continue;
+                    const auto callback = found->second.callback;
+                    const auto result = invoke(callback.function,callback.gp,callback.argument);
+                    const auto after = frameListeners.find(function);
+                    if (!result && after != frameListeners.end() && after->second.order == order)
+                        frameListeners.erase(after);
+                }
             }
         }
         uint32_t physical(uint32_t a, uint32_t n) const
@@ -363,6 +390,7 @@ namespace bozo::native::irx
             if (!exclusions.empty()) { deferredTarget = std::max(deferredTarget, target); return; }
             target = std::max(target, deferredTarget);
             deferredTarget = 0;
+            deliverFrames();
             runReady();
             unsigned work = 0;
             while (true)
@@ -798,6 +826,21 @@ namespace bozo::native::irx
                 return;
             } // native callbacks are only delivered at safe points
         }
+        if (lib == "vblank" && (n == 8 || n == 9) && nativeFrameCallbacks)
+        {
+            if (a0) throw std::runtime_error("native frames have no display-end phase");
+            if (n == 9)
+            {
+                ret(frameListeners.erase(a1) ? 0 : uint32_t(-105));return;
+            }
+            if (!a2 || !functions.contains(a2) || imports.contains(a2) ||
+                std::none_of(images.begin(),images.end(),[&](const auto &image){
+                    return a2 >= image.base && uint64_t(a2) < uint64_t(image.base)+image.bytes.size();
+                })) throw std::runtime_error("native frame listener requires an admitted linked function");
+            if (frameListeners.contains(a2)) {ret(uint32_t(-104));return;}
+            frameListeners.emplace(a2,FrameListener{{a2,a3,c.gpr[28],false},int32_t(a1),++frameListenerSerial});
+            ret();return;
+        }
         if (lib == "timrman")
         {
             static unsigned trace = 0;
@@ -1129,11 +1172,33 @@ namespace bozo::native::irx
             throw std::runtime_error("native audio completion policy must be installed before execution");
         p.readyAudioCompletions = true;
     }
+    void CompiledLibraries::useNativeFrameCallbacks()
+    {
+        auto &p = *impl_;
+        if (!p.started.empty() || p.invokeDepth || !p.tasks.empty() || p.calls)
+            throw std::runtime_error("native frame policy must be installed before execution");
+        p.nativeFrameCallbacks = true;
+    }
+    void CompiledLibraries::notifyFrameCompleted()
+    {
+        auto &p = *impl_;
+        if (!p.nativeFrameCallbacks) throw std::runtime_error("native frame callbacks are not enabled");
+        if (p.completedFrames.size() >= 1024) throw std::runtime_error("native frame callback queue limit");
+        std::vector<std::pair<uint32_t,uint64_t>> listeners;
+        for (const auto &[function,listener] : p.frameListeners) listeners.emplace_back(function,listener.order);
+        std::stable_sort(listeners.begin(),listeners.end(),[&](const auto &a,const auto &b){
+            const auto &first=p.frameListeners.at(a.first), &second=p.frameListeners.at(b.first);
+            return first.priority != second.priority ? first.priority < second.priority : first.order < second.order;
+        });
+        p.completedFrames.push_back(std::move(listeners));
+        if (!p.invokeDepth && !p.current) p.deliverFrames();
+    }
     void CompiledLibraries::reset()
     {
         auto &p = *impl_;
         p.tasks.clear();
         p.events.clear();
+        p.frameListeners.clear();p.completedFrames.clear();p.frameListenerSerial=0;p.deliveringFrames=false;
         p.deliveringReadyAudio = false;
         p.interrupts.clear();
         p.timers.clear();
