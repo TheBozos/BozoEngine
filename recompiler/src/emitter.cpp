@@ -583,14 +583,18 @@ namespace bozo
             if (target >= f.start && target < f.end)
                 labels.insert(target);
         }
-        std::set<uint32_t> extra;
-        for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+        // Repeated until nothing is added: such a label can itself fall in a delay slot that then needs one.
+        for (bool added = true; added;)
         {
-            const Insn i = decodeAt(p.read32(a), a);
-            if (hasDelaySlot(i.op) && labels.count(a + 4) && !(opFlags(i.op) & ENDS))
-                extra.insert(a + 8);
+            added = false;
+            for (uint32_t a = f.start; a + 4 <= f.end; a += 4)
+            {
+                const Insn i = decodeAt(p.read32(a), a);
+                if (hasDelaySlot(i.op) && a + 4 < f.end && labels.count(a + 4) && !(opFlags(i.op) & ENDS) &&
+                    labels.insert(a + 8).second)
+                    added = true;
+            }
         }
-        labels.insert(extra.begin(), extra.end());
 
         auto label = [](uint32_t a) { return std::format("L_{:x}", a); };
         // The EE time model (calllog.md section 2, kernel.md section 3): a taken backward branch or jump to a label of
@@ -825,7 +829,7 @@ namespace bozo
                                    delay, leave("target"), check);
             }
             line(i, code);
-            if (labels.count(a + 4))
+            if (a + 4 < f.end && labels.count(a + 4))
             {
                 // The delay slot is also reached by a jump: emit it again as an ordinary instruction.
                 if (!(flags & ENDS))
