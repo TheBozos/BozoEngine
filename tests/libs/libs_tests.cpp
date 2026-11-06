@@ -586,6 +586,13 @@ static void dmaCalls()
     eq("receive from the scratchpad", m.call("sceDmaRecvN", {0x1000D000, 0x100100, 2}), 0);
     eq("in memory", m.rt->memory.ram()[0x100100 + 31], 32);
     eq("the store is known", bozo::libs::ioKnown(0x1000D080, 4, true), 1);
+    eq("the load is known", bozo::libs::ioKnown(0x1000D080, 4, false), 1);
+    {
+        uint32_t pending = 0;
+        eq("and reads the store back", static_cast<uint32_t>(bozo::libs::ioLoad(m.libs, 0x1000D080, 4, pending, 0)), 0x20);
+    }
+    eq("SIGLBLID is stored", bozo::libs::ioKnown(0x12001080u, 8, true), 1);
+    eq("SIGLBLID is not read", bozo::libs::ioKnown(0x12001080u, 8, false), 0);
 
     eq("no watch left", m.call("sceDmaWatch", {0x10009000, 0x100000, 1, 0}), 0);
     eq("old stall address", m.call("sceDmaPutStallAddr", {0x100000}), 0);
@@ -698,6 +705,22 @@ int main()
                                  0x10001800u, 0x10001810u, 0x10001820u})
             eq("a timer register is known", bozo::libs::ioKnown(address, 4, false), 1);
         eq("Tn_HOLD is not", bozo::libs::ioKnown(0x10000030u, 4, false), 0);
+        for (const uint32_t address : {0x10003020u, 0x10003800u, 0x10003C00u})
+        {
+            eq("an idle path's status is read", bozo::libs::ioKnown(address, 4, false), 1);
+            eq("and not stored", bozo::libs::ioKnown(address, 4, true), 0);
+        }
+        for (const uint32_t address : {0x10003010u, 0x10003820u, 0x10003C20u})
+        {
+            eq("a path's mode or error mask is stored", bozo::libs::ioKnown(address, 4, true), 1);
+            eq("and not read", bozo::libs::ioKnown(address, 4, false), 0);
+        }
+        eq("IPU_CTRL is read", bozo::libs::ioKnown(0x10002010u, 4, false), 1);
+        eq("IPU_CTRL is stored", bozo::libs::ioKnown(0x10002010u, 4, true), 1);
+        eq("IPU_CMD is read", bozo::libs::ioKnown(0x10002000u, 4, false), 1);
+        eq("IPU_CMD is not stored", bozo::libs::ioKnown(0x10002000u, 4, true), 0);
+        eq("IMR is stored", bozo::libs::ioKnown(0x12001010u, 8, true), 1);
+        eq("IMR is not read", bozo::libs::ioKnown(0x12001010u, 8, false), 0);
         eq("a timer register is a word", bozo::libs::ioKnown(0x10001800u, 2, false), 0);
 
         bozo::libs::Libraries libs;

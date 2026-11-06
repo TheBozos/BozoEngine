@@ -82,14 +82,16 @@ namespace bozo::libs
             return size == 4;
         if (a == 0x1000F520u || a == 0x1000F590u)
             return size == 4;
-        if (store && (a == 0x1000D080u || a == 0x1000D480u))
+        if (a == 0x1000D080u || a == 0x1000D480u)
             return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
         if (a == 0x12001000u) // FIELD reads; obsolete CSR acknowledgement stores have no effect
             return size == 8 || size == 4;
-        if (a == 0x12001010u) // IMR: a mask with no device behind it
+        if (a == 0x12001010u || a == 0x12001080u) // IMR, SIGLBLID: no device behind them, nothing raises INTC 0
             return store && (size == 8 || size == 4);
+        if (a >= 0x10002000u && a <= 0x10002030u && (a & 0xFu) == 0) // IPU_CMD, IPU_CTRL, IPU_BP, IPU_TOP: an idle decoder
+            return size == 4 && (!store || a == 0x10002010u);
         if (a == 0x10003020u || a == 0x10003800u || a == 0x10003C00u) // GIF_STAT, VIF0_STAT, VIF1_STAT: idle
             return !store && size == 4;
         if (a == 0x10003010u || a == 0x10003820u || a == 0x10003C20u) // GIF_MODE, VIF0_ERR, VIF1_ERR: no path, no error
@@ -138,6 +140,10 @@ namespace bozo::libs
             v = io.stat;
         else if (a == 0x1000E020u)
             v = io.pcr;
+        else if (a == 0x1000D080u)
+            v = io.sprAddress[0];
+        else if (a == 0x1000D480u)
+            v = io.sprAddress[1];
         else if (a == 0x1000F520u)
             v = 0; // D_ENABLER: no transfer is ever suspended (none runs)
         return v;
