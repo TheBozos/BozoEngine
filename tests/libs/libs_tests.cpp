@@ -295,6 +295,60 @@ void nativeIsoFiles() {
     }
     std::filesystem::remove(path);
 }
+void nativeDualLayerIso() {
+    const auto word=[](uint8_t *at,uint32_t value){for(int i=0;i<4;++i){at[i]=uint8_t(value>>(8*i));at[7-i]=at[i];}};
+    const auto record=[&](uint8_t *at,const std::string &name,uint32_t sector,uint32_t bytes,bool directory){
+        const uint8_t size=uint8_t((33+name.size()+1)&~1u);
+        at[0]=size;word(at+2,sector);word(at+10,bytes);at[25]=directory?2:0;
+        at[28]=1;at[31]=1;at[32]=uint8_t(name.size());std::memcpy(at+33,name.data(),name.size());return size;
+    };
+    const auto volume=[&](uint8_t *base,uint32_t sectors,const std::string &file,uint8_t fill){
+        uint8_t *pvd=base+16*2048;pvd[0]=1;std::memcpy(pvd+1,"CD001",5);pvd[6]=1;word(pvd+80,sectors);
+        record(pvd+156,std::string(1,'\0'),18,2048,true);
+        record(base+18*2048,"LEVELS",19,2048,true);
+        record(base+19*2048,file,20,2048,false);
+        std::memset(base+20*2048,fill,2048);
+    };
+    std::vector<uint8_t> iso((24+16)*2048);
+    volume(iso.data(),24,"A.BIN;1",0xAA);
+    std::vector<uint8_t> second(32*2048);
+    volume(second.data(),32,"B.BIN;1",0xBB);
+    std::memcpy(iso.data()+24*2048,second.data()+16*2048,16*2048);
+    const auto path=std::filesystem::temp_directory_path()/("bozo-dvd9-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".iso");
+    {std::ofstream f(path,std::ios::binary);f.write(reinterpret_cast<const char *>(iso.data()),iso.size());}
+    {
+        Machine m;m.libs.cd.imagePath=path.string();
+        eq("dual-layer info returns",m.call("sceCdReadDvdDualInfo",{0x104000,0x104004}),1);
+        uint32_t dual,start;std::memcpy(&dual,m.rt->memory.ram()+0x104000,4);std::memcpy(&start,m.rt->memory.ram()+0x104004,4);
+        eq("image is dual-layer",dual,1);
+        eq("second layer starts 16 sectors before its descriptor",start,8);
+        m.string(0x101000,"\\LEVELS\\B.BIN;1");
+        eq("layer 1 search",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),1);
+        uint32_t lbn;std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 1 extent is the disc's own sector",lbn,28);
+        eq("layer 0 search does not see layer 1's file",m.call("sceCdSearchFile",{0x102000,0x101000}),0);
+        m.string(0x101000,"\\LEVELS");
+        eq("directory search on layer 1",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),1);
+        std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 1 directory sector",lbn,27);
+        m.string(0x101000,"cdrom0:\\levels\\a.bin;1");
+        eq("layer 0 search through the layer call",m.call("sceCdLayerSearchFile",{0x102000,0x101000,0}),1);
+        std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 0 extent",lbn,20);
+        eq("no third layer",m.call("sceCdLayerSearchFile",{0x102000,0x101000,2}),0);
+    }
+    std::filesystem::remove(path);
+    std::vector<uint8_t> single(24*2048);
+    volume(single.data(),24,"A.BIN;1",0xAA);
+    const auto singlePath=std::filesystem::temp_directory_path()/("bozo-dvd5-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".iso");
+    {std::ofstream f(singlePath,std::ios::binary);f.write(reinterpret_cast<const char *>(single.data()),single.size());}
+    {
+        Machine m;m.libs.cd.imagePath=singlePath.string();
+        {const uint32_t ones=0xFFFFFFFFu;std::memcpy(m.rt->memory.ram()+0x104000,&ones,4);}
+        eq("single-layer info returns",m.call("sceCdReadDvdDualInfo",{0x104000,0x104004}),1);
+        uint32_t dual;std::memcpy(&dual,m.rt->memory.ram()+0x104000,4);eq("single-layer image",dual,0);
+        m.string(0x101000,"\\LEVELS\\A.BIN;1");
+        eq("no layer 1 on a single-layer image",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),0);
+    }
+    std::filesystem::remove(singlePath);
+}
 
 static void padCalls()
 {
@@ -531,6 +585,7 @@ int main()
     reentrantAllocator();
     cardSlotAliases();
     nativeIsoFiles();
+    nativeDualLayerIso();
     nativeCardDirectories();
     liveScriptInput();
     {
