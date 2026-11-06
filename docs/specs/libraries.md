@@ -222,8 +222,12 @@ Native: `scePadInit`, `scePadPortOpen`, `scePadGetState`, `scePadGetReqState`, `
 `scePadRead`. (The Logitech wheel's `lgDevInit` and `input*Lg*` are the game's own functions over the USB driver, port
 overrides in the reference: they stay with the log.)
 
-The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0. A game's multitap library is its port's
-(TMB's `sceMtap*` overrides open one in port 1 at its first frame, in every reference run: `PadState::multitap`).
+The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0. libmtap is native: `sceMtapInit` 1,
+`sceMtapPortOpen(port)` 1 and `PadState::multitap` set for port 1 (0) when `PadState::multitapAttached` (default on),
+else 0; `sceMtapPortClose(port)` 1 and the multitap closed for port 1; `sceMtapGetConnection(port)` 1 while port 1's is
+open, else 0; `sceMtapChangeThreadPriority` 1; `sceMtapGetModVersion` 0x0300 (MTAPMAN 3.0, the major version
+`sceMtapInit` checks). TMB's `sceMtap*` overrides do the same and open one in port 1 at its first frame, in every
+reference run.
 
 Players (`padPlayer`): with the multitap, port 1's slots 0-3 are players 1-4 and port 2 has no player; without it, port 1
 slot 0 is player 1 and port 2 slot 0 player 2. Sockets:
