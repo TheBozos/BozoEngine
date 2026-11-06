@@ -317,11 +317,39 @@ namespace bozo::host
                                         ctx ? ctx->r[31].uw[0] : 0, ctx ? functionAt(ctx->r[31].uw[0]) : "?"));
     }
 
+    void FreeHost::kernelCallBegin(ee::Dispatcher &, R5900Context *ctx, uint32_t, uint32_t kind)
+    {
+        const ee::KernelCall call = kind == 3 ? ee::kernelCallBySyscall(ctx->r[3].sw[0]) : ee::KernelCall::None;
+        flushCacheSyscall_ = call == ee::KernelCall::FlushCache || call == ee::KernelCall::iFlushCache;
+    }
+
     void FreeHost::kernelCallEnd(ee::Dispatcher &, R5900Context *, uint32_t target, bool)
     {
         ++stats_.kernelCalls;
-        if (!nativeGraphics() && flushCacheAt_.count(target))
+        if (!nativeGraphics() && (flushCacheAt_.count(target) || flushCacheSyscall_))
             libs_.io.flushCache();
+        flushCacheSyscall_ = false;
+    }
+
+    bool FreeHost::librarySyscall(ee::Dispatcher &, R5900Context *ctx, const char *name)
+    {
+        const libs::Function *f = libs_.find(name);
+        if (!f)
+            return false;
+        ++stats_.libraryCalls;
+        libs_.pin = libs::Pin{};
+        libs::Guest g(d_->runtime(), ctx);
+        try
+        {
+            f->handler(libs_, g);
+        }
+        catch (const libs::BadAccess &b)
+        {
+            fault(*d_, ctx, std::format("native {}: an access to 0x{:x} ({} bytes) outside guest memory", f->name, b.address, b.bytes));
+        }
+        if (g.cycles)
+            d_->setNow(ctx, d_->now(ctx) + g.cycles);
+        return true;
     }
 
     bool FreeHost::dmacStatusSet(uint32_t cause)

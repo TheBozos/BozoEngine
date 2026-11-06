@@ -43,6 +43,9 @@ namespace bozo::ee
         virtual void ioRead(Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, uint64_t value[2]) = 0;
         virtual void ioWrite(Dispatcher &, R5900Context *ctx, uint32_t address, uint32_t size, const uint64_t value[2]) = 0;
         virtual bool cop0Condition(Dispatcher &, R5900Context *) { return true; }
+        // A syscall whose service is a native library function (`name`, kernel.md section 2): false when the host
+        // has none (the dispatcher then faults).
+        virtual bool librarySyscall(Dispatcher &, R5900Context *, const char * /*name*/) { return false; }
         // Around a native kernel call (kind 1: a kernel function at `target`; kind 3: a syscall at `target`).
         virtual void kernelCallBegin(Dispatcher &, R5900Context *, uint32_t /*target*/, uint32_t /*kind*/) {}
         virtual void kernelCallEnd(Dispatcher &, R5900Context *, uint32_t /*target*/, bool /*stopping*/) {}
@@ -92,6 +95,11 @@ namespace bozo::ee
     };
     // The kernel call a symbol name stands for (a leading "ps2_" and leading "_" are ignored), None if it is not one.
     KernelCall kernelCallByName(const std::string &name);
+    // The kernel call an EE syscall number stands for (v1 at the `syscall`, negative for the interrupt-safe entries:
+    // kernel.md section 2), None if it is not one.
+    KernelCall kernelCallBySyscall(int32_t number);
+    // The native library function an EE syscall number stands for (the SIF DMA calls), null if none.
+    const char *librarySyscall(int32_t number);
 
     class Dispatcher final : public RuntimeServices
     {
@@ -242,6 +250,7 @@ namespace bozo::ee
         std::map<uint32_t, KernelCall> kernelCalls_;
         uint64_t cycle_ = 0;
         uint32_t heapStart_ = 0;
+        int32_t syscall_ = 0; // the syscall being answered (0: none; 0 is no service BozoEngine answers)
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
         uint32_t timerPending_ = 0;
