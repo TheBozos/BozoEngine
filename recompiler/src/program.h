@@ -34,6 +34,8 @@ namespace bozo
         std::vector<AddressRange> code; // R5900 code to translate
         std::vector<AddressRange> data; // initialised data, scanned for code pointers
         std::vector<ProgramSymbol> symbols;
+        // Explicit offline entry points; do not infer callable entries from all assembler labels.
+        std::vector<uint32_t> entries;
 
         bool contains(uint32_t addr, uint32_t size = 4) const
         {
