@@ -26,6 +26,7 @@ namespace bozo::ee
     KernelCall kernelCallByName(const std::string &full)
     {
         static const std::map<std::string, KernelCall> names = {
+            {"InitSys", KernelCall::InitSys},
             {"InitThread", KernelCall::InitThread},
             {"CreateThread", KernelCall::CreateThread},
             {"StartThread", KernelCall::StartThread},
@@ -725,6 +726,7 @@ namespace bozo::ee
         const int32_t a0 = static_cast<int32_t>(arg(ctx, 0));
         switch (call)
         {
+        case KernelCall::InitSys: ret(ctx, 0); return false;
         case KernelCall::InitThread: ret(ctx, 1); return false;
         case KernelCall::CreateThread:
         {
