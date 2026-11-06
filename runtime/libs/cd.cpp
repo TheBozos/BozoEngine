@@ -171,6 +171,27 @@ namespace bozo::libs
         void diskReady(Libraries &, Guest &g) { g.ret(2); }
         void fsReset(Libraries &, Guest &g) { g.ret(0); }
 
+        void callback(Libraries &l, Guest &g)
+        {
+            // The SDK refuses replacement while a read is in progress.
+            if(l.now(g)<l.cd.readEnd) { g.ret(0); return; }
+            const auto old=l.cd.callback;
+            l.cd.callback=g.arg(0);l.cd.callbackGp=g.context()->r[28].uw[0];
+            g.ret(static_cast<int32_t>(old));
+        }
+
+        void initCallback(Libraries &l, Guest &g)
+        {
+            if(l.cd.callbackConfigured) { g.ret(0); return; }
+            // sceCdInitEeCB(priority, stack, stack_bytes): native completion uses
+            // the handler queue. Keep its caller-supplied stack, without an EE
+            // SDK worker waiting on private semaphore globals.
+            const uint32_t stack=g.arg(1),bytes=g.arg(2);
+            if(g.arg(0)>=ee::kPriorities || !bytes || stack>0xffffffffu-bytes ||
+               !g.runtime().memory.hostPointer(stack,bytes)) { g.ret(-1); return; }
+            l.cd.callbackStack=stack+bytes;l.cd.callbackConfigured=true;g.ret(1);
+        }
+
         // sceCdReadClock(sceCdCLOCK *): stat, second, minute, hour, pad, day, month, year (BCD); 1.
         void readClock(Libraries &l, Guest &g)
         {
@@ -203,6 +224,15 @@ namespace bozo::libs
             cd.error = ok ? 0 : -1;
             g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
             cd.readEnd = l.now(g) + g.cycles;
+            if(ok && cd.callback)
+            {
+                if(!l.dispatcher()) throw std::runtime_error("CD callback requires native dispatcher");
+                ee::QueuedHandler h;h.kind=ee::kInvokeLibraryCall;h.pc=cd.callback;
+                h.gp=cd.callbackGp;h.sp=cd.callbackStack;h.a[0]=1; // SCECdFuncRead
+                // The existing native read returns after charging its full
+                // read duration; this callback cannot execute inside that call.
+                l.queueHandler(h,{});
+            }
             g.ret(ok ? 1 : 0);
         }
 
@@ -378,6 +408,8 @@ namespace bozo::libs
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
         out.push_back({"sceCdInit", kCd, init});
+        out.push_back({"sceCdCallback", kCd, callback});
+        out.push_back({"sceCdInitEeCB", kCd, initCallback});
         out.push_back({"sceCdMmode", kCd, mmode});
         out.push_back({"sceCdDiskReady", kCd, diskReady});
         out.push_back({"sceFsReset", kCd, fsReset});
