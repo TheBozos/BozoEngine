@@ -318,7 +318,7 @@ read/sync timing remains unchanged. The synthetic `cd_callbacks` suite checks se
 replacement/unregistration/busy refusal, ownership isolation and actual dispatcher read/callback ordering on a
 private generated ISO. It makes no full-game or other CD command callback claim.
 
-Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
+Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdReadIOPm`, `sceCdSync`,
 `sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
 Sectors come from the game's disc image (`DiscImage`: an ISO 9660 image of 2048-byte sectors, checked by its primary
@@ -337,6 +337,7 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | `sceFsReset()` | 0 |
 | `sceCdReadClock(clock)` | 1; the 8 bytes stat 0, second, minute, hour, 0, day, month, year in BCD: the reference's deterministic clock, 2001-06-18 12:00:00 (`CdState::hostClock` for the host's time in the real runtime) |
 | `sceCdRead(lbn, sectors, buffer, mode)` | 1; the sectors are in the buffer when it returns (the reference's too: its runs hold them); it takes `sectors` x 114,400 EE cycles (every read of the logs) |
+| `sceCdReadIOPm(lbn, sectors, IOP buffer, mode)` | as `sceCdRead`, the sectors handed to `SifState::transfer` (a port's compiled modules); 0 and the error set when the port has none |
 | `sceCdSync(0)` | waits for the read to end: when it waits, a vblank wait (reason 4, its result 0, no completion) until the vblank the drive is done by; then 0 |
 | `sceCdSync(1)` | 1 while a read is in progress, else 0 |
 | `sceCdGetError()` | the last read's error: 0 |
