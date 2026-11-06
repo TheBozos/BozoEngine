@@ -3,6 +3,7 @@
 // sceSifSetSreg, sceSifInitIopHeap, sceSifAllocIopHeap, sceSifFreeIopHeap, sceSifLoadModule, sceSifRebootIop,
 // sceSifSyncIop (and, inside port overrides only, sceSifSetDma and sceSifDmaStat).
 #include "bozo/libs/libraries.h"
+#include <stdexcept>
 #include "bozo/ee/dispatcher.h"
 
 #include <algorithm>
@@ -89,7 +90,12 @@ namespace bozo::libs
             SifState &s = l.sif;
             g.write32(client + 4, ++s.rpcId);
             g.write32(client + 8, 0xFFFFFFFFu);
-            if (service == k989snd && s.bindAttempts[service]++ >= 1)
+            if (s.servers.count(service)) {
+                // The server handle is opaque to the EE client; native providers need no fake server RAM.
+                g.write32(client + 0x24, service | 0x80000000u);
+                s.bound[client]=service;
+            }
+            else if (service == k989snd && s.bindAttempts[service]++ >= 1)
             {
                 g.write32(client + 0x24, SifState::kServerData);
                 g.write32(SifState::kServerData, service);
@@ -118,6 +124,20 @@ namespace bozo::libs
             const uint32_t ssize = g.arg(4), recv = g.arg(5), rsize = g.arg(6);
             g.write32(client + 0x0C, mode);
             g.write32(client + 0x10, fno);
+            const auto binding=l.sif.bound.find(client);
+            if (binding!=l.sif.bound.end()) {
+                const auto provider=l.sif.servers.find(binding->second);
+                if (provider!=l.sif.servers.end()) {
+                    provider->second(l,g,NativeRpcRequest{fno,send,ssize,recv,rsize});
+                    if (const uint32_t callback=g.arg(7)) {
+                        ee::QueuedHandler handler;
+                        handler.kind=ee::kInvokeRpcCallback; handler.pc=callback;
+                        handler.a[0]=g.arg(8); handler.gp=g.context()->r[28].uw[0];
+                        l.queueHandler(handler,{});
+                    }
+                    g.ret(0); return;
+                }
+            }
             const uint32_t server = g.read32(client + 0x24);
             if (server)
             {
@@ -161,6 +181,8 @@ namespace bozo::libs
                     snd.call(l, g, fno, request, recv, rsize, reply, &memory, true);
                 }
             }
+            if(binding==l.sif.bound.end())
+                throw std::runtime_error("native RPC call has no bound server");
             g.ret(0);
         }
 
@@ -180,22 +202,26 @@ namespace bozo::libs
         // sceSifInitIopHeap(): 0. sceSifAllocIopHeap(bytes): the block's IOP address (0 if none). sceSifFreeIopHeap
         // (address): 0.
         void initIopHeap(Libraries &, Guest &g) { g.ret(0); }
-        void allocIopHeap(Libraries &l, Guest &g) { g.retU(l.sif.heap.allocate(g.arg(0))); }
+        void allocIopHeap(Libraries &l, Guest &g) { g.retU((l.sif.allocateBuffer ? l.sif.allocateBuffer(g.arg(0)) : l.sif.heap.allocate(g.arg(0)))); }
         void freeIopHeap(Libraries &l, Guest &g)
         {
             // -1 for a block that is not allocated (match4p #11334788: the movie player's stream buffer freed a second
             // time).
-            g.ret(l.sif.heap.release(g.arg(0)) ? 0 : -1);
+            g.ret((l.sif.freeBuffer ? l.sif.freeBuffer(g.arg(0)) : l.sif.heap.release(g.arg(0))) ? 0 : -1);
         }
 
         // sceSifLoadModule(path, args, argp): nothing is loaded (the driver behind each module is native); the module
         // id, 1 for the first module since the IOP's reboot, then 2, 3...
-        void loadModule(Libraries &l, Guest &g) { g.ret(static_cast<int32_t>(++l.sif.modules)); }
+        void loadModule(Libraries &l, Guest &g) {
+            if (l.sif.moduleLoader) { g.ret(l.sif.moduleLoader(g.string(g.arg(0)))); return; }
+            g.ret(static_cast<int32_t>(++l.sif.modules));
+        }
         // sceSifRebootIop(image): the IOP starts again with no module; 1. sceSifSyncIop(): 1 (the IOP is up).
         void rebootIop(Libraries &l, Guest &g)
         {
             l.sif.modules = 0;
-            l.snd.iopReset(l.now(g));
+            if (l.sif.resetProvider) l.sif.resetProvider();
+            else l.snd.iopReset(l.now(g));
             g.ret(1);
         }
         void syncIop(Libraries &, Guest &g) { g.ret(1); }
@@ -208,7 +234,7 @@ namespace bozo::libs
         // (TMB's only transfers: the movie's PCM into 989SND's movie buffer).
         void setDma(Libraries &l, Guest &g)
         {
-            if (l.sndNative)
+            if (l.sif.transfer || l.sndNative)
             {
                 const uint32_t transfers = g.arg(0), count = g.arg(1);
                 for (uint32_t i = 0; i < count && i < 32; ++i)
@@ -216,7 +242,8 @@ namespace bozo::libs
                     const uint32_t t = transfers + 16u * i;
                     const uint32_t source = g.read32(t), dest = g.read32(t + 4), bytes = g.read32(t + 8);
                     if (bytes && bytes <= 0x200000u)
-                        l.snd.iopWrite(l, l.now(g), dest, g.in(source, bytes), bytes);
+                        if (l.sif.transfer) l.sif.transfer(dest,g.in(source,bytes),bytes);
+                        else l.snd.iopWrite(l,l.now(g),dest,g.in(source,bytes),bytes);
                 }
             }
             g.retU(++l.sif.dmaId);

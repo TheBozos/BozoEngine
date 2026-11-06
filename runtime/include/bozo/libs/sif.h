@@ -6,10 +6,17 @@
 
 #include <cstdint>
 #include <map>
+#include <functional>
+#include <string>
 #include <unordered_map>
 
 namespace bozo::libs
 {
+    class Libraries;
+    class Guest;
+    struct NativeRpcRequest {
+        uint32_t command, send, sendBytes, receive, receiveBytes;
+    };
     // IOP memory as the reference's IOP allocator gave it out (libraries.md section 14.3): blocks aligned to 16
     // bytes, first fit by address, from the first byte its loaded modules left free; a freed block merges with its free
     // neighbours.
@@ -35,6 +42,14 @@ namespace bozo::libs
         // The reference keeps the IOP side of each bound server (its SifRpcServerData) in EE RAM; the 989SND's at
         // 0x1f10000. A call writes the request's fields there.
         static constexpr uint32_t kServerData = 0x1F10000u;
+        // Native service providers registered by a port or reusable library. No IOP/device backend.
+        using RpcHandler = std::function<void(Libraries &, Guest &, const NativeRpcRequest &)>;
+        std::map<uint32_t, RpcHandler> servers;
+        std::function<void(uint32_t, const uint8_t *, uint32_t)> transfer;
+        std::function<int32_t(const std::string &)> moduleLoader;
+        std::function<void()> resetProvider;
+        std::function<uint32_t(uint32_t)> allocateBuffer;
+        std::function<bool(uint32_t)> freeBuffer;
         uint32_t rpcId = 0;                       // the client headers' rpc_id: one more at each bind attempt
         std::map<uint32_t, uint32_t> bindAttempts; // per service id
         // The service each bound client header calls (by the client's address). The server data in EE RAM is the game's

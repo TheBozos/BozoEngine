@@ -12,6 +12,7 @@ namespace bozo::libs
 
     struct IoState
     {
+        bool completeNativeGraphics = false; // complete discarded graphics work without reading packets
         // ---- Timer 0 (T0_COUNT, T0_MODE; TMB polls the count) ----
         uint32_t t0Mode = 0;
         uint64_t t0Base = 0;      // the EE cycle the count was last written

@@ -81,6 +81,13 @@ namespace bozo
         RecompiledFunction override(uint32_t address) const; // nullptr if none
         void clearOverrides() { overrides_.clear(); }
         size_t overrideCount() const { return overrides_.size(); }
+        // Statically compiled images sharing a guest address range. A module is callable only while the
+        // resident identity bytes match. The resident storage and generated tables outlive this table.
+        // This selects native code; it never loads or interprets guest instructions.
+        void addModule(uint32_t start, uint32_t end, const uint8_t *resident,
+                       std::vector<uint8_t> identity, const BozoFunctionEntry *functions, size_t count,
+                       const BozoResumeEntry *resume, size_t resumeCount);
+        void clearModules() { modules_.clear(); }
 
     private:
         const BozoFunctionEntry *table_ = nullptr;
@@ -88,6 +95,18 @@ namespace bozo
         const BozoResumeEntry *resume_ = nullptr;
         size_t resumeCount_ = 0;
         std::vector<BozoFunctionEntry> overrides_; // sorted by address
+        struct Module
+        {
+            uint32_t start, end;
+            const uint8_t *resident;
+            std::vector<uint8_t> identity;
+            const BozoFunctionEntry *functions;
+            size_t count;
+            const BozoResumeEntry *resume;
+            size_t resumeCount;
+        };
+        std::vector<Module> modules_;
+        const Module *moduleAt(uint32_t address, bool &reserved) const;
     };
 
     // ---- Services --------------------------------------------------------------------------------------------------

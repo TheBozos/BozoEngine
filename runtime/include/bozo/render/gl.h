@@ -37,6 +37,8 @@ namespace bozo::render::gl
     constexpr GLenum kTriangles = 0x0004;
     constexpr GLenum kUnsignedByte = 0x1401, kUnsignedInt = 0x1405, kFloat = 0x1406;
     constexpr GLenum kZero = 0, kOne = 1, kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303;
+    constexpr GLenum kDstAlpha = 0x0304;
+    constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501;
     constexpr GLenum kFuncAdd = 0x8006;
     constexpr GLenum kCullFace = 0x0B44, kDepthTest = 0x0B71, kBlend = 0x0BE2, kScissorTest = 0x0C11;
     constexpr GLenum kLequal = 0x0203;
@@ -74,6 +76,7 @@ namespace bozo::render::gl
     X(void, BlendEquation, (GLenum mode))                                                                              \
     X(void, DepthFunc, (GLenum func))                                                                                  \
     X(void, DepthMask, (GLboolean flag))                                                                               \
+    X(void, ColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                                           \
     X(void, Scissor, (GLint x, GLint y, GLsizei width, GLsizei height))                                                \
     X(void, PixelStorei, (GLenum name, GLint param))                                                                   \
     X(void, ReadBuffer, (GLenum mode))                                                                                 \
@@ -123,6 +126,8 @@ namespace bozo::render::gl
     X(void, TexImage2D, (GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, \
                          GLenum format, GLenum type, const void *pixels))                                              \
     X(void, TexParameteri, (GLenum target, GLenum name, GLint param))                                                  \
+    X(void, TexParameterf, (GLenum target, GLenum pname, GLfloat param))                                               \
+    X(void, GenerateMipmap, (GLenum target))                                                                         \
     X(void, CopyTexSubImage2D, (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y,            \
                                 GLsizei width, GLsizei height))                                                        \
     X(void, GenFramebuffers, (GLsizei n, GLuint *framebuffers))                                                        \

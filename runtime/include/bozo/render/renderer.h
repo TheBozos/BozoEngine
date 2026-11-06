@@ -50,6 +50,8 @@ namespace bozo::render
             Alpha,                 // (Cs - Cd) * As + Cd
             Additive,              // Cs * As + Cd
             AdditiveByDestination, // Cs * Ad + Cd, Ad the target's alpha (0x80 is 1.0)
+            DestinationBySource, // source + destination * source alpha
+            AlphaOnly,           // preserve destination RGB; replace alpha
         } blend = Blend::Alpha;
         uint8_t alphaRef = 0; // texels at or below are discarded when alphaTest
         bool alphaTest = false;
@@ -61,6 +63,14 @@ namespace bozo::render
         // The texture is the target being drawn into, as it is when this batch is drawn (a game's screen distortion:
         // heat haze sampling the frame); u, v in the target's GS pixels.
         bool sampleTarget = false;
+        // Native render-to-texture operations. Targets 1..7 are independent images; source 0 is the main
+        // frame so far, kPreviousFrame is its previous presentation. Coordinates span frameWidth/Height.
+        // fromFrame != 0 samples source; its value is the main-frame mipmap LOD bias.
+        // Aux/previous sources have no LOD bias. A same-target source is snapshotted before drawing.
+        uint8_t fromFrame = 0, target = 0, source = 0;
+        uint16_t frameWidth = 0, frameHeight = 0;
+        static constexpr uint8_t kPreviousFrame = 8;
+        bool nearest = false;
         uint32_t fogColour = 0; // FOGCOL, R in the low byte
         // Kept for the draw-list hash's layout (the reference's GS-context batches); a native port never sets it.
         bool fromGsContext = false;
@@ -181,6 +191,16 @@ namespace bozo::render
         bool enabled() const { return m_enabled; }
         void setEnabled(bool on) { m_enabled = on; }
 
+        void setTargetSize(uint8_t n, uint16_t width, uint16_t height) {
+            if (n > 0 && n < 8) m_targetSize[n].store(uint32_t(width) << 16 | height);
+        }
+        void setTargetSharesDepth(uint8_t n, bool share) {
+            if (n > 0 && n < 8) {
+                if (share) m_sharedDepth.fetch_or(1u << n);
+                else m_sharedDepth.fetch_and(~(1u << n));
+            }
+        }
+
         // ---- What a frame is ----
         struct Batch
         {
@@ -273,6 +293,8 @@ namespace bozo::render
         uint64_t m_group = 0;
         float m_clip[4] = {0, 0, 0, 0};
         std::atomic<uint32_t> m_clearColour{0};
+        std::atomic<uint32_t> m_targetSize[8]{};
+        std::atomic<uint32_t> m_sharedDepth{0};
         std::atomic<int> m_frameRate{0};
         uint64_t m_key = 0, m_keyBase = 0;
         bool m_hasParts = false;
