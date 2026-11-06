@@ -1424,7 +1424,47 @@ namespace bozo::native::irx
                 ret(a0);
                 return;
             }
-            if (n == 19)
+            if (n == 15)
+            {
+                const auto found = libraries.sif.eeServers.find(a1);
+                write(a0 + 0x24, a1 && found != libraries.sif.eeServers.end() ? a1 : 0);
+                ret();
+                return;
+            }
+            if (n == 16)
+            {
+                const uint32_t sp = c.gpr[29], sendBytes = read(sp + 16), receive = read(sp + 20),
+                               receiveBytes = read(sp + 24), end = read(sp + 28), endArgument = read(sp + 32);
+                const uint32_t service = read(a0 + 0x24);
+                const auto found = libraries.sif.eeServers.find(service);
+                if (!service || found == libraries.sif.eeServers.end())
+                    throw std::runtime_error(std::format("native IOP call to an unbound EE RPC client 0x{:x}", a0));
+                if (end && (!functions.contains(end) || imports.contains(end) ||
+                            std::none_of(images.begin(), images.end(), [&](const auto &image) {
+                                return end >= image.base && uint64_t(end) < uint64_t(image.base) + image.bytes.size();
+                            })))
+                    throw std::runtime_error("native EE RPC completion requires an admitted linked function");
+                const auto from = physical(a3, sendBytes);
+                const std::vector<uint8_t> sent(memory.begin() + from, memory.begin() + from + sendBytes);
+                std::vector<uint8_t> reply(receiveBytes);
+                if (receiveBytes)
+                    physical(receive, receiveBytes);
+                found->second(a1, sent, reply);
+                if (receiveBytes)
+                    copy(receive, reply.data(), receiveBytes);
+                write(a0 + 0x10, a1);
+                if (end)
+                    events.push_back({cycle, end, endArgument, 0, c.gpr[28]});
+                ret();
+                return;
+            }
+            if (n == 24)
+            {
+                libraries.sif.servers.erase(read(a0 + 0x20));
+                ret(a0);
+                return;
+            }
+            if (n == 19 || n == 25)
             {
                 ret(a0);
                 return;

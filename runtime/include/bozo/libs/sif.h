@@ -46,6 +46,10 @@ namespace bozo::libs
         // Native service providers registered by a port or reusable library. No IOP/device backend.
         using RpcHandler = std::function<void(Libraries &, Guest &, const NativeRpcRequest &)>;
         std::map<uint32_t, RpcHandler> servers;
+        // Native EE services that compiled IOP modules bind (sceSifBindRpc) and call (sceSifCallRpc) by service id: the
+        // command, the bytes sent, and the reply to fill (the caller's receive size). The call completes when it returns.
+        using EeRpcHandler = std::function<void(uint32_t, std::span<const uint8_t>, std::span<uint8_t>)>;
+        std::map<uint32_t, EeRpcHandler> eeServers;
         std::function<void(uint32_t, const uint8_t *, uint32_t)> transfer;
         std::function<int32_t(const std::string &)> moduleLoader;
         std::function<void()> resetProvider;
