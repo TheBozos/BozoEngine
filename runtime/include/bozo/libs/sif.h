@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <span>
 
 namespace bozo::libs
 {
@@ -50,6 +51,9 @@ namespace bozo::libs
         std::function<void()> resetProvider;
         std::function<uint32_t(uint32_t)> allocateBuffer;
         std::function<bool(uint32_t)> freeBuffer;
+        // Direct native user-message receiver: command, data, extra destination/data.
+        // The receiver copies data and queues its actual application callback.
+        std::function<uint32_t(uint32_t,std::span<const uint8_t>,uint32_t,std::span<const uint8_t>)> receiveCommand;
         uint32_t rpcId = 0;                       // the client headers' rpc_id: one more at each bind attempt
         std::map<uint32_t, uint32_t> bindAttempts; // per service id
         // The service each bound client header calls (by the client's address). The server data in EE RAM is the game's
