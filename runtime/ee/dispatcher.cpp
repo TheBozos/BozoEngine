@@ -753,6 +753,15 @@ namespace bozo::ee
             return k.transfer(false);
         case KernelCall::iRotateThreadReadyQueue: ret(ctx, k.rotateReadyQueue(arg(ctx, 0), true)); return false;
         case KernelCall::GetThreadId: ret(ctx, k.running()); return false;
+        case KernelCall::SleepThread:
+            ret(ctx, k.sleepThread());
+            return k.running() == 0;
+        case KernelCall::WakeupThread:
+            ret(ctx, k.wakeupThread(a0, false));
+            return k.transfer(false);
+        case KernelCall::iWakeupThread: ret(ctx, k.wakeupThread(a0, true)); return false;
+        case KernelCall::CancelWakeupThread: ret(ctx, k.cancelWakeupThread(a0, false)); return false;
+        case KernelCall::iCancelWakeupThread: ret(ctx, k.cancelWakeupThread(a0, true)); return false;
         case KernelCall::ReferThreadStatus:
         case KernelCall::iReferThreadStatus:
         {

@@ -223,6 +223,7 @@ namespace bozo::ee
             return -405; // KE_NOT_DORMANT
         emit(kOpStart, {static_cast<uint32_t>(id), arg, interruptSafe ? 1u : 0u});
         t->arg = arg;
+        t->wakeupCount = 0;
         t->priority = t->initPriority;
         t->frames.resize(1);
         Frame &f = *t->frames[0];
@@ -316,6 +317,48 @@ namespace bozo::ee
         return 0;
     }
 
+    int32_t Kernel::sleepThread()
+    {
+        Thread *t = thread(running_);
+        if (!t || t->depth() != 0)
+            return -1; // SleepThread is a thread-context operation.
+        if (t->wakeupCount != 0)
+            t->wakeupCount = static_cast<int32_t>(static_cast<uint32_t>(t->wakeupCount) - 1u);
+        else
+            block(t->id, kWaitSleep, 0, 0, 0, false, 0, 0);
+        return 0;
+    }
+
+    int32_t Kernel::wakeupThread(int32_t id, bool interruptSafe)
+    {
+        if (id == 0 || id == running_)
+            return -406; // KE_ILLEGAL_THID: the SDK wrapper disallows self wakeup.
+        Thread *t = thread(id);
+        if (!t)
+            return -407; // KE_UNKNOWN_THID
+        if (t->state == ThreadState::Dormant)
+            return -413; // KE_DORMANT
+        emit(kOpWakeup, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
+        Nested n(*this);
+        if ((t->state == ThreadState::Waiting || t->state == ThreadState::WaitSuspended) &&
+            t->waitReason == kWaitSleep)
+            wake(id, 0, false, kWaitSleep);
+        else
+            t->wakeupCount = static_cast<int32_t>(static_cast<uint32_t>(t->wakeupCount) + 1u);
+        return id; // SDK ABI returns the target id on success.
+    }
+
+    int32_t Kernel::cancelWakeupThread(int32_t id, bool interruptSafe)
+    {
+        Thread *t = thread(id == 0 ? running_ : id);
+        if (!t)
+            return -407;
+        emit(kOpCancelWakeup, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
+        const int32_t count = t->wakeupCount;
+        t->wakeupCount = 0;
+        return count;
+    }
+
     void Kernel::block(int32_t id, uint32_t reason, uint32_t object, uint32_t bits, uint32_t mode, bool completion,
                        uint64_t token, int32_t fixedResult)
     {
@@ -340,15 +383,19 @@ namespace bozo::ee
     {
         emit(kOpWake, {static_cast<uint32_t>(id), result, completion ? 1u : 0u, reason});
         Thread *t = thread(id);
-        if (!t || t->state != ThreadState::Waiting)
+        if (!t || (t->state != ThreadState::Waiting && t->state != ThreadState::WaitSuspended))
             return;
+        const bool suspended = t->state == ThreadState::WaitSuspended;
         if (reason == kWaitSemaphore)
             if (Semaphore *s = sema(static_cast<int32_t>(t->waitObject)))
                 s->waiters.erase(std::remove(s->waiters.begin(), s->waiters.end(), id), s->waiters.end());
         t->top().ctx.r[2].sd[0] = static_cast<int32_t>(result);
         t->waitReason = kWaitNone;
         t->completionDue = completion;
-        makeReady(*t);
+        if (suspended)
+            t->state = ThreadState::Suspended;
+        else
+            makeReady(*t);
     }
 
     // ---- Semaphores ----------------------------------------------------------------------------------------------
@@ -650,6 +697,8 @@ namespace bozo::ee
             break;
         case kOpPriority: changePriority(static_cast<int32_t>(arg(0)), arg(1), arg(2) != 0); break;
         case kOpRotate: rotateReadyQueue(arg(0), arg(1) != 0); break;
+        case kOpWakeup: wakeupThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
+        case kOpCancelWakeup: cancelWakeupThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
         case kOpSemaCreate:
             createSema(static_cast<int32_t>(arg(0)), static_cast<int32_t>(arg(1)), arg(2), arg(3));
             break;
