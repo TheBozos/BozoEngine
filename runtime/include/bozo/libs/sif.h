@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <span>
+#include <vector>
 
 namespace bozo::libs
 {
@@ -52,6 +53,8 @@ namespace bozo::libs
         std::map<uint32_t, EeRpcHandler> eeServers;
         std::function<void(uint32_t, const uint8_t *, uint32_t)> transfer;
         std::function<int32_t(const std::string &)> moduleLoader;
+        // Takes the place of moduleLoader when set: also given sceSifLoadModule's arguments, split at their NULs.
+        std::function<int32_t(const std::string &, const std::vector<std::string> &)> moduleLoaderWithArguments;
         std::function<void()> resetProvider;
         std::function<uint32_t(uint32_t)> allocateBuffer;
         std::function<bool(uint32_t)> freeBuffer;

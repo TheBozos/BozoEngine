@@ -1593,7 +1593,7 @@ namespace bozo::native::irx
             throw std::runtime_error("native bindings must be installed before library execution");
         p.functions.at(address) = std::move(function);
     }
-    int32_t CompiledLibraries::startImage(const std::string &name)
+    int32_t CompiledLibraries::startImage(const std::string &name, std::span<const std::string> arguments)
     {
         auto &p = *impl_;
         if (auto it = p.started.find(name); it != p.started.end())
@@ -1605,7 +1605,33 @@ namespace bozo::native::irx
         if (image->nativeLibsd)
             p.libsd.init();
         else
-            p.invoke(image->entry, image->gp);
+        {
+            uint32_t argc = 0, argv = 0;
+            if (!arguments.empty())
+            {
+                argc = uint32_t(arguments.size()) + 1;
+                const std::string module = name.substr(0, name.find(';'));
+                uint32_t bytes = (argc + 1) * 4 + uint32_t(module.size()) + 1;
+                for (const auto &argument : arguments)
+                    bytes += uint32_t(argument.size()) + 1;
+                argv = p.heap.allocate(bytes);
+                if (!argv)
+                    throw std::runtime_error("native module arguments do not fit the heap");
+                uint32_t text = argv + (argc + 1) * 4, slot = argv;
+                const auto put = [&](const std::string &value)
+                {
+                    p.write(slot, text);
+                    slot += 4;
+                    p.copy(text, reinterpret_cast<const uint8_t *>(value.c_str()), uint32_t(value.size()) + 1);
+                    text += uint32_t(value.size()) + 1;
+                };
+                put(module);
+                for (const auto &argument : arguments)
+                    put(argument);
+                p.write(slot, 0);
+            }
+            p.invoke(image->entry, image->gp, argc, argv);
+        }
         p.runReady();
         const int32_t id = int32_t(p.started.size() + 1);
         p.started[name] = id;
