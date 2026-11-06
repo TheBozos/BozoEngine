@@ -1,9 +1,80 @@
 #include "program.h"
 
 #include "elf.h"
+#include "decoder.h"
+#include <charconv>
+#include <fstream>
+#include <format>
+#include <set>
+#include <sstream>
 
 namespace bozo
 {
+    bool readInstructionPatches(const std::string &path, std::vector<InstructionPatch> &out, std::string &error)
+    {
+        std::ifstream in(path);
+        if (!in) { error = "cannot read instruction patches: " + path; return false; }
+        std::vector<InstructionPatch> parsed;
+        std::string line;
+        unsigned number = 0;
+        auto word = [](std::string text, uint32_t &value)
+        {
+            if (text.starts_with("0x") || text.starts_with("0X")) text.erase(0, 2);
+            if (text.empty()) return false;
+            const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 16);
+            return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+        };
+        while (std::getline(in, line))
+        {
+            ++number;
+            line.resize(line.find('#') == std::string::npos ? line.size() : line.find('#'));
+            std::istringstream fields(line);
+            std::string a, b, c, extra;
+            if (!(fields >> a)) continue;
+            InstructionPatch patch{};
+            if (!(fields >> b >> c) || (fields >> extra) || !word(a, patch.address) ||
+                !word(b, patch.expected) || !word(c, patch.replacement))
+            {
+                error = std::format("{}:{}: expected three hexadecimal words: address original replacement", path, number);
+                return false;
+            }
+            parsed.push_back(patch);
+        }
+        if (in.bad()) { error = "cannot finish reading instruction patches: " + path; return false; }
+        out.insert(out.end(), parsed.begin(), parsed.end());
+        return true;
+    }
+
+    bool applyInstructionPatches(Program &program, const std::vector<InstructionPatch> &patches, std::string &error)
+    {
+        // Validate the complete batch before changing any bytes, including duplicate entries.
+        std::set<uint32_t> seen;
+        for (const auto &p : patches)
+        {
+            if ((p.address & 3u) || !program.contains(p.address, 4) || !program.isCode(p.address) ||
+                !program.isCode(p.address + 3u) || !seen.insert(p.address).second)
+            {
+                error = std::format("invalid or duplicate instruction patch address 0x{:08x}", p.address);
+                return false;
+            }
+            if (program.read32(p.address) != p.expected)
+            {
+                error = std::format("instruction patch at 0x{:08x}: expected 0x{:08x}, found 0x{:08x}",
+                                    p.address, p.expected, program.read32(p.address));
+                return false;
+            }
+            if (decode(p.replacement) == Op::Unknown)
+            {
+                error = std::format("instruction patch at 0x{:08x}: unsupported replacement 0x{:08x}", p.address, p.replacement);
+                return false;
+            }
+        }
+        for (const auto &p : patches)
+            for (unsigned byte = 0; byte < 4; ++byte)
+                program.image[p.address - program.base + byte] = static_cast<uint8_t>(p.replacement >> (byte * 8));
+        return true;
+    }
+
     namespace
     {
         bool isVuSection(const std::string &name)

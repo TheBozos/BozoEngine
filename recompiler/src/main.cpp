@@ -6,6 +6,7 @@
 // Options: --prefix <name> (file and table names, default "bozo"), --max-file-bytes <n> (split size of the generated
 // .cpp files, default 1 MiB), --files <n> (exactly n .cpp files instead), --externals <file> (addresses the runtime
 // answers: "stub 0xADDR" / "override 0xADDR" lines), --no-comments (no disassembly comment per instruction),
+// --patches <file> (guarded instruction adaptations, analysis image only),
 // --verbose (list the unresolved jr instructions and the extra entry points).
 #include "analysis.h"
 #include "decoder.h"
@@ -29,7 +30,7 @@ namespace
     int usage()
     {
         std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
-                             "                   [--externals file] [--no-comments] [--verbose]\n"
+                             "                   [--externals file] [--patches file] [--no-comments] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -82,6 +83,7 @@ int main(int argc, char **argv)
     const bool censusOnly = std::strcmp(argv[2], "--census") == 0;
     const std::string outDir = censusOnly ? std::string() : argv[2];
     EmitOptions options;
+    std::vector<InstructionPatch> patches;
     bool verbose = false;
     for (int k = 3; k < argc; ++k)
     {
@@ -98,6 +100,15 @@ int main(int argc, char **argv)
         {
             std::string error;
             if (!readExternals(argv[++k], options.externals, error, &options.storePcs, &options.nativePcs))
+            {
+                std::fprintf(stderr, "bozo-recomp: %s\n", error.c_str());
+                return 1;
+            }
+        }
+        else if (a == "--patches" && k + 1 < argc)
+        {
+            std::string error;
+            if (!readInstructionPatches(argv[++k], patches, error))
             {
                 std::fprintf(stderr, "bozo-recomp: %s\n", error.c_str());
                 return 1;
@@ -120,7 +131,14 @@ int main(int argc, char **argv)
     }
     if (elf.machine() != 8)
         std::fprintf(stderr, "bozo-recomp: warning: ELF machine %u is not MIPS (8)\n", elf.machine());
-    const Program program = programFromElf(elf);
+    Program program = programFromElf(elf);
+    std::string patchError;
+    if (!applyInstructionPatches(program, patches, patchError))
+    {
+        std::fprintf(stderr, "bozo-recomp: %s\n", patchError.c_str());
+        return 1;
+    }
+    if (!patches.empty()) std::printf("native instruction adaptations: %zu guarded replacements\n", patches.size());
     const uint64_t unknown = census(program, censusOnly);
     if (censusOnly)
         return unknown == 0 ? 0 : 1;
