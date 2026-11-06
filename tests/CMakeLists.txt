@@ -147,6 +147,13 @@ endif()
 add_test(NAME native_image_builders COMMAND bozo-image-builders-tests)
 
 # Native graphics services retain no GS register/transfer bank or packet readers.
+add_executable(bozo-port-hooks-tests native/port_hooks_tests.cpp)
+target_link_libraries(bozo-port-hooks-tests PRIVATE bozo_host)
+if(MINGW)
+  target_link_options(bozo-port-hooks-tests PRIVATE -static)
+endif()
+add_test(NAME port_hooks COMMAND bozo-port-hooks-tests)
+set_tests_properties(port_hooks PROPERTIES TIMEOUT 10)
 add_executable(bozo-native-graphics-tests libs/native_graphics_tests.cpp)
 target_link_libraries(bozo-native-graphics-tests PRIVATE bozo_libs)
 if(MINGW)

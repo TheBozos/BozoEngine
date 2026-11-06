@@ -6,6 +6,7 @@
 // clock (a sample per 768 IOP cycles), libsd's entries and batches, and the reference's samples (mixer_scenario.h).
 #include "bozo/audio/libsd.h"
 #include "bozo/audio/mixer.h"
+#include "bozo/audio/port_stream.h"
 #include "mixer_scenario.h"
 
 #include <cstdio>
@@ -264,8 +265,40 @@ namespace
     }
 }
 
+static void testPortStream()
+{
+    using bozo::audio::PortStream;
+    Mixer m;
+    PortStream stream;
+    m.setPortStream(&stream);
+    m.setClocked(true);
+    m.advanceTo(0);
+    const int16_t frames[6] = {1000, -1000, 2000, -2000, 32000, -32000};
+    eq("pushed", static_cast<long long>(stream.push(frames, 3)), 3);
+    m.advanceTo(2 * Mixer::kIopCyclesPerSample);
+    eq("taken as the clock makes samples", static_cast<long long>(stream.queued()), 1);
+    int16_t out[8] = {};
+    eq("two made", static_cast<long long>(m.take(out, 4)), 2);
+    eq("left", out[0], 1000);
+    eq("right", out[1], -1000);
+    eq("the next", out[2], 2000);
+    m.advanceTo(4 * Mixer::kIopCyclesPerSample);
+    eq("two more", static_cast<long long>(m.take(out, 4)), 2);
+    eq("the last", out[0], 32000);
+    eq("then silence, not a wait", out[2], 0);
+
+    std::vector<int16_t> big(2u * (PortStream::kFrames + 10u), 1);
+    eq("it holds two seconds", static_cast<long long>(stream.push(big.data(), PortStream::kFrames + 10u)),
+       static_cast<long long>(PortStream::kFrames));
+    eq("nothing more", static_cast<long long>(stream.push(big.data(), 1)), 0);
+    stream.clear();
+    eq("cleared", static_cast<long long>(stream.queued()), 0);
+    m.setPortStream(nullptr);
+}
+
 int main()
 {
+    testPortStream();
     testAttack();
     testEnd(false);
     testEnd(true);
