@@ -544,6 +544,11 @@ an out-call), so the image is the hierarchy one until a kick of the 2D chain is 
 model's VIF0 channel); the 2D image's programs (0x278, 0x3b0, 0x438, 0x548, 0x5e0) are not native: a call to one would
 be answered from the log and counted ("calls with no native answer").
 
+**A port's programs.** `Registry::vu0Program(entry, fn)` registers a native program for an entry in VU0's code memory. The
+free host looks there first; a port with any has only those, a VCALLMS at another entry faults, and the TMB table above
+(whose images and entries are TMB's) is not consulted. A program runs inline on the calling context and VU0's data memory:
+it must not block or change pc or ra. Without registrations nothing changes. `bozo-run`'s pinned host stays on the table.
+
 ## 11. Hardware registers (`io`)
 
 Native: the remaining register/status compatibility operations (`bozo/libs/io.h`, `libs/io.cpp`). No DMA, VIF, GIF,
@@ -1265,3 +1270,11 @@ sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffe
 256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
 address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
 8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
+
+**A port's stream.** `audio::PortStream` (`port::audioStream(rt)`, thread-safe) takes a port's PCM, a movie soundtrack: 16-bit
+stereo at 48 kHz, interleaved. The port resamples anything else. Each output sample the mixer makes takes one frame from it
+and adds it after the voices and the master volumes, so the stream is clocked by the same `advanceTo` as the voices, goes
+into `takeMixed`'s digest and to the same device. An empty stream adds silence and nothing waits; a full one (2 s) takes
+what fits and `push` returns the frames taken. The free host attaches it to whichever mixer it takes samples from, at its
+first take. `MovieSoundSink` stays libmpeg's.
+
