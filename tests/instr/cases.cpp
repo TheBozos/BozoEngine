@@ -708,6 +708,9 @@ namespace itest
                     k.eq("v0", get(c, v0), 1);
                     k.events(rt, {});
                 });
+            add("mfc0 25 and mtc0 25 pass the performance counter's select", {mtc0(a0, 25) | 3u, mfc0(v0, 25) | 1u},
+                [](Ctx &, uint8_t *, Runtime &) {},
+                [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.eq("register", rt.cop0Last, 25u | (1u << 8)); });
             add("mfc0/mtc0 and ei/di go to the runtime", {mfc0(v0, 12), mtc0(a0, 12), di, ei, di},
                 [](Ctx &c, uint8_t *, Runtime &rt) { rt.cop0[12] = 0x70030C13u; set(c, a0, 0x1234); },
                 [](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
