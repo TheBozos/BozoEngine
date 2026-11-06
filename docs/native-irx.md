@@ -28,6 +28,16 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+Compiled-library `sifman:7/32` are native bulk-copy jobs from bounded library data into attached EE RAM.
+Every descriptor/source/destination is checked and the full batch snapshotted before any output write.
+Only plain data copies (attribute zero, 1..32 descriptors) are admitted; packet/tag/device/VU targets
+reject. Jobs return an owned monotonic ID after real writes; `sifman:8` reports the terminal/error result
+(-1), since no copy remains in flight. Export 32 queues one linked native completion with its argument
+and GP after the bytes are copied. No DMA channel, protocol/packet executor or device status is modeled.
+`library_bulk_copy` covers actual bytes and ordered overlaps, invalid-batch atomicity, attributes/bounds,
+one completion, reset and two hosts. ABI checked against PS2SDK's sifman declarations; no implementation
+copied. This currently requires `Libraries::attach` and an EE RAM destination.
+
 `intrman:17/18` protects native callback scheduling with balanced per-host exclusion scopes. The SDK
 receives a restore token; no processor status/register state is stored or executed. Nested exclusion
 reports KE_CPUDI (-102), preserves its restore token, and must release in order. Native timer/event

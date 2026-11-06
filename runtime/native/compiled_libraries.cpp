@@ -67,6 +67,7 @@ namespace bozo::native::irx
         struct CallbackExclusion { int32_t owner; uint32_t token; };
         std::vector<CallbackExclusion> exclusions;
         uint64_t deferredTarget = 0;
+        uint32_t transferSerial = 0;
         uint32_t nextStack = 0x1fe000, invokeDepth = 0;
         struct Interrupt
         {
@@ -798,6 +799,49 @@ namespace bozo::native::irx
                 return;
             }
         }
+        if (lib == "sifman" && (n == 7 || n == 32))
+        {
+            auto *dispatcher = libraries.dispatcher();
+            if (!dispatcher) throw std::runtime_error("native bulk copy requires attached EE data");
+            if (!a1 || a1 > 32 || uint64_t(a0) + uint64_t(a1) * 16 > memory.size())
+                throw std::runtime_error("invalid native bulk-copy descriptor batch");
+            if (transferSerial == 0x7fffffffu) throw std::runtime_error("native bulk-copy IDs exhausted");
+            if (n == 32 && a2)
+            {
+                const bool admitted = std::any_of(images.begin(), images.end(), [&](const auto &image) {
+                    return a2 >= image.base && uint64_t(a2) < uint64_t(image.base) + image.bytes.size();
+                });
+                if (!admitted || !functions.contains(a2) || imports.contains(a2))
+                    throw std::runtime_error("native bulk completion requires an admitted linked function");
+            }
+            struct Copy { uint8_t *destination; std::vector<uint8_t> bytes; };
+            std::vector<Copy> batch;
+            auto &ee = dispatcher->runtime().memory;
+            for (uint32_t i = 0; i < a1; ++i)
+            {
+                const uint32_t descriptor = a0 + i * 16;
+                const auto source = read(descriptor), destination = read(descriptor + 4);
+                const auto bytes = read(descriptor + 8), attributes = read(descriptor + 12);
+                if (attributes) throw std::runtime_error("unported native bulk-copy attributes");
+                const auto offset = physical(source, bytes);
+                auto *to = ee.hostPointer(destination, bytes);
+                if (!to || to < ee.ram() || uint64_t(to - ee.ram()) + bytes > 0x2000000u)
+                    throw std::runtime_error("native bulk-copy destination is outside EE RAM");
+                batch.push_back({to, std::vector<uint8_t>(memory.begin() + offset, memory.begin() + offset + bytes)});
+            }
+            // Validate and snapshot the whole batch before writing any output.
+            for (const auto &copy : batch)
+                if (!copy.bytes.empty()) std::memcpy(copy.destination, copy.bytes.data(), copy.bytes.size());
+            const uint32_t id = ++transferSerial;
+            if (n == 32 && a2) events.push_back({cycle, a2, a3, 0, c.gpr[28]});
+            ret(id);return;
+        }
+        if (lib == "sifman" && n == 8)
+        {
+            // Native copies are complete when returned. Unknown IDs also have
+            // no pending operation; this is the SDK's terminal/error result.
+            ret(0xffffffffu);return;
+        }
         if (lib == "sifman" && (n == 5 || n == 29))
         {
             ret(1);
@@ -1008,6 +1052,7 @@ namespace bozo::native::irx
         p.callbackTask = 0;
         p.exclusions.clear();
         p.deferredTarget = 0;
+        p.transferSerial = 0;
         p.cycle = 0;
         p.origin = false;
         std::fill(p.memory.begin(), p.memory.end(), 0);
