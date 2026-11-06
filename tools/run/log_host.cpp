@@ -484,9 +484,6 @@ namespace bozo::run
 
     void LogHost::runNativeCall(R5900Context *ctx, const Options::NativeCall &call)
     {
-        const ee::KernelCall kernelCall = ee::kernelCallByName(call.name);
-        if (kernelCall == ee::KernelCall::None)
-            endRun(std::format("--native-call {}: no native kernel call has this name", call.name));
         std::string err;
         uint64_t cycle = d_->now(ctx);
         while (const Record *p = log_.peek())

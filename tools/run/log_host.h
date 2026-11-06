@@ -25,9 +25,9 @@ namespace bozo::run
         uint32_t frames = 0;           // stop after this many frames (0: the log's frame limit)
         uint64_t traceFrom = ~0ull;    // print every record matched from this record index
         bool traceCheckpoints = false; // and every checkpoint passed from there
-        // A function the reference ran as guest code and this run answers natively, with no record of its own: at the
-        // address, the kernel call runs, the kernel operations of the log's records up to `until` are made again and
-        // every other record is dropped, counted in nativeCallRecords.
+        // A function the reference ran as guest code and this run leaves out, with no record of its own: at the address
+        // it returns 0, the kernel operations of the log's records up to `until` are made again and every other record
+        // is dropped, counted in nativeCallRecords.
         struct NativeCall
         {
             std::string name;
