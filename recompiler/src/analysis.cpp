@@ -140,6 +140,7 @@ namespace bozo
     void Analysis::collectSeeds(std::set<uint32_t> &seeds)
     {
         seeds.insert(program_.entry);
+        seeds.insert(program_.entries.begin(), program_.entries.end());
         std::set<uint32_t> calls;
         for (const auto &r : program_.code)
         {
@@ -403,6 +404,8 @@ namespace bozo
             }
         }
         addEntry(program_.entry, "entry point");
+        for (uint32_t entry : program_.entries)
+            addEntry(entry, "explicit entry");
         for (uint32_t p : codePointers_)
             addEntry(p, "code pointer");
         // Data words pointing at code, except jump table entries (those are labels of their own function).

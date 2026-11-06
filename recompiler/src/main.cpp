@@ -19,6 +19,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <set>
 #include <map>
 #include <string>
 #include <vector>
@@ -30,7 +33,7 @@ namespace
     int usage()
     {
         std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
-                             "                   [--externals file] [--patches file] [--no-comments] [--verbose]\n"
+                             "                   [--externals file] [--patches file] [--entries file] [--no-comments] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -85,11 +88,14 @@ int main(int argc, char **argv)
     EmitOptions options;
     std::vector<InstructionPatch> patches;
     bool verbose = false;
+    std::string entriesPath;
     for (int k = 3; k < argc; ++k)
     {
         const std::string a = argv[k];
         if (a == "--prefix" && k + 1 < argc)
             options.prefix = argv[++k];
+        else if (a == "--entries" && k + 1 < argc)
+            entriesPath = argv[++k];
         else if (a == "--symbol-prefix" && k + 1 < argc)
             options.symbolPrefix = argv[++k];
         else if (a == "--max-file-bytes" && k + 1 < argc)
@@ -139,6 +145,31 @@ int main(int argc, char **argv)
         return 1;
     }
     if (!patches.empty()) std::printf("native instruction adaptations: %zu guarded replacements\n", patches.size());
+    if (!entriesPath.empty())
+    {
+        std::ifstream in(entriesPath);
+        if (!in) { std::fprintf(stderr, "bozo-recomp: cannot open entries file\n"); return 1; }
+        std::string line;
+        std::set<uint32_t> seen;
+        while (std::getline(in, line))
+        {
+            line = line.substr(0, line.find('#'));
+            std::istringstream words(line);
+            std::string token, extra;
+            if (!(words >> token)) continue;
+            char *end = nullptr;
+            const auto address = std::strtoull(token.c_str(), &end, 0);
+            if (token[0]=='-' || !end || *end || address>UINT32_MAX || (address&3) ||
+                !std::any_of(program.code.begin(), program.code.end(), [&](const AddressRange &r) {
+                    return address >= r.start && address + 4 <= r.end;
+                }) ||
+                !program.contains(static_cast<uint32_t>(address),4) || (words >> extra) ||
+                !seen.insert(static_cast<uint32_t>(address)).second)
+            { std::fprintf(stderr, "bozo-recomp: invalid/duplicate explicit entry: %s\n", token.c_str()); return 1; }
+            program.entries.push_back(static_cast<uint32_t>(address));
+        }
+        if (!in.eof()) { std::fprintf(stderr, "bozo-recomp: failed reading entries\n"); return 1; }
+    }
     const uint64_t unknown = census(program, censusOnly);
     if (censusOnly)
         return unknown == 0 ? 0 : 1;
