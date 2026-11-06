@@ -71,13 +71,19 @@ must outlive the host and the port resets that state itself. This does not run t
 body or supply any device responses. `library_bindings` tests two independent sources, a retained compiled
 consumer, reset, repeat start and invalid bindings.
 
-The native library host supports FIFO `thsemap` creation/deletion, signal/iSignal, wait and poll using per-host
-counts and cooperative task wait queues. SDK descriptor fields are attr/option/initial/max; non-FIFO attributes
+The native library host supports FIFO/priority `thsemap` creation/deletion, signal/iSignal, wait and poll using per-host
+counts and cooperative task wait queues. SDK descriptor fields are attr/option/initial/max; attributes beyond 0/1
 and invalid counts reject explicitly. Unknown/poll-empty/overflow/delete-wakeup results use SDK errors
 -408/-419/-420/-425. An empty wait from a root call returns illegal-context (-100); native tasks block/resume.
 WakeupThread credits do not release semaphore or RPC waits. The synthetic `library_semaphores` suite covers
 real native task stop/resume, mixed sleep credits, deletion wakeup, reset and two-host isolation. ABI declarations
 were checked against https://ps2dev.github.io/ps2sdk/thsemap_8h_source.html; no SDK implementation was copied.
+
+Priority mode grants to the waiting native task with the lowest current priority number, preserving FIFO
+ties. Selection reads the current task record when signalled, so reprioritizing a waiter takes effect.
+`library_priority_semaphores` checks actual blocking/grants, equal-priority ties, a changed waiting
+priority, unsupported attributes, reset and two owners. It qualifies native semaphore grant ordering,
+not a full console scheduler/timing model. Work-limit errors include the actual stop PC and accounted work.
 
 - Recompiler `--symbol-prefix` isolates independently compiled images; `FunctionTable::addModule` guards overlapping image tables by resident identity, including resume entries. Unsupported or unloaded slots cannot dispatch another image's code.
 - `McState::slotMask` controls accepted card slots. Native memory-card operations support current directories, relative paths, parent traversal within the card root, paginated listings and operation IDs returned through Sync.

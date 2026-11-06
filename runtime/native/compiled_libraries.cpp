@@ -289,7 +289,8 @@ namespace bozo::native::irx
             if (exclusions.size() != exclusionsBefore)
                 throw std::runtime_error("native routine returned with unbalanced callback exclusion");
             if (!done)
-                throw std::runtime_error(std::format("native library call 0x{:x} exceeded its work budget", function));
+                throw std::runtime_error(std::format("native library call 0x{:x} stopped at 0x{:x}; work {} budget {}, calls {}",
+                    function,cpu.pc,env.executed,env.budget,calls));
             return cpu.gpr[2];
         }
         void runReady()
@@ -512,7 +513,7 @@ namespace bozo::native::irx
             {
                 const auto attr=read(a0),option=read(a0+4);
                 const auto initial=static_cast<int32_t>(read(a0+8)),max=static_cast<int32_t>(read(a0+12));
-                if(attr!=0)throw std::runtime_error("native library semaphore supports FIFO attributes only");
+                if(attr>1)throw std::runtime_error("native library semaphore supports FIFO/priority attributes only");
                 if(initial<0 || max<=0 || initial>max)
                     throw std::runtime_error("invalid native library semaphore counts");
                 const int32_t id=nextSema++;
@@ -533,7 +534,13 @@ namespace bozo::native::irx
             }
             if(n==6 || n==7)
             {
-                if(!s.waiting.empty()) {const auto id=s.waiting.front();s.waiting.pop_front();wake(id,0);}
+                if(!s.waiting.empty()) {
+                    auto selected=s.waiting.begin();
+                    if(s.attr==1)selected=std::min_element(s.waiting.begin(),s.waiting.end(),[&](int32_t a,int32_t b){
+                        return tasks.at(a).priority<tasks.at(b).priority;
+                    });
+                    const auto id=*selected;s.waiting.erase(selected);wake(id,0);
+                }
                 else if(s.count==s.max){ret(static_cast<uint32_t>(-420));return;}
                 else ++s.count;
                 ret();return;
