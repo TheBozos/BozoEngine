@@ -705,6 +705,18 @@ int main()
                                  0x10001800u, 0x10001810u, 0x10001820u})
             eq("a timer register is known", bozo::libs::ioKnown(address, 4, false), 1);
         eq("Tn_HOLD is not", bozo::libs::ioKnown(0x10000030u, 4, false), 0);
+        for (const uint32_t address : {0x10003020u, 0x10003800u, 0x10003C00u})
+        {
+            eq("an idle path's status is read", bozo::libs::ioKnown(address, 4, false), 1);
+            eq("and not stored", bozo::libs::ioKnown(address, 4, true), 0);
+        }
+        for (const uint32_t address : {0x10003010u, 0x10003820u, 0x10003C20u})
+        {
+            eq("a path's mode or error mask is stored", bozo::libs::ioKnown(address, 4, true), 1);
+            eq("and not read", bozo::libs::ioKnown(address, 4, false), 0);
+        }
+        eq("IMR is stored", bozo::libs::ioKnown(0x12001010u, 8, true), 1);
+        eq("IMR is not read", bozo::libs::ioKnown(0x12001010u, 8, false), 0);
         eq("a timer register is a word", bozo::libs::ioKnown(0x10001800u, 2, false), 0);
 
         bozo::libs::Libraries libs;
