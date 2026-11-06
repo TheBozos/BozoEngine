@@ -158,6 +158,19 @@ static void sifAndSnd()
     eq("first fit reuses the hole", heap.allocate(0x100), 0x80290);
     eq("block lookup", heap.blockAt(c + 8), c);
 
+    {
+        Machine q;
+        eq("IOP RAM size", q.call("sceSifQueryMemSize", {}), 0x200000);
+        eq("fresh heap's largest block", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60);
+        eq("fresh heap's free total", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60);
+        const uint32_t a = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x10000}));
+        const uint32_t b = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x8000}));
+        q.call("sceSifFreeIopHeap", {a});
+        eq("largest block after a hole", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x18000);
+        eq("free total counts the hole", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x8000);
+        (void)b;
+    }
+
     Machine m;
     m.libs.sndNative = true;
     const uint32_t client = 0x100000, send = 0x100100, recv = 0x100200;
