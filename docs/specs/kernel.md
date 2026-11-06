@@ -289,6 +289,12 @@ not checked:
 - eeCycle, BozoEngine's clock at the frame's end. Out-calls set the clock to the log's, so this is the clock at the
   frame's out-call plus how far it was from the log's there.
 
+**COP0 registers a game writes.** A game's profiling code sets the performance counters with Status.ERL set and
+leaves through `eret` (Soulcalibur III's 0x427420). The dispatcher keeps PCCR as written, EPC and ErrorEPC for `eret`,
+and answers PCR0 and PCR1 from the EE clock: each counts EE cycles from its last written value while PCCR's bit 31 is
+set, whatever event the game selected, and holds its value while the bit is clear. Nothing else is modelled: no event
+selection, no overflow interrupt.
+
 **SWITCH reasons.** Start for the first; handler-end after a handler returned; handler-start for a handler stacked on
 the thread that ran; else from the state of the thread that ran last: blocked (with its wait), preempted (ready),
 ended (dormant), suspended, deleted.
