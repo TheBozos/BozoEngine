@@ -147,7 +147,7 @@ namespace bozo::libs
     namespace
     {
         // Copies `count` sectors from `lbn` to guest memory at `to`. False when the disc cannot be read.
-        bool sectorsTo(Libraries &l, Guest &g, uint32_t lbn, uint32_t count, uint32_t to)
+        bool sectors(Libraries &l, uint32_t lbn, uint32_t count, std::vector<uint8_t> &data)
         {
             CdState &cd = l.cd;
             if (!cd.disc.isOpen())
@@ -156,8 +156,14 @@ namespace bozo::libs
                 if (cd.imagePath.empty() || !cd.disc.open(cd.imagePath, err))
                     return false;
             }
-            std::vector<uint8_t> data(static_cast<size_t>(count) * kSectorBytes);
-            if (!cd.disc.read(lbn, count, data.data()))
+            data.resize(static_cast<size_t>(count) * kSectorBytes);
+            return cd.disc.read(lbn, count, data.data());
+        }
+
+        bool sectorsTo(Libraries &l, Guest &g, uint32_t lbn, uint32_t count, uint32_t to)
+        {
+            std::vector<uint8_t> data;
+            if (!sectors(l, lbn, count, data))
                 return false;
             g.write(to, data.data(), static_cast<uint32_t>(data.size()));
             return true;
@@ -253,6 +259,18 @@ namespace bozo::libs
         {
             const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
             readEnds(l, g, sectorsTo(l, g, lbn, n, to), n);
+        }
+
+        // sceCdReadIOPm(lbn, sectors, IOP buffer, mode): as sceCdRead, into the memory of the port's compiled modules
+        // (SifState::transfer); 0 without such memory.
+        void readIop(Libraries &l, Guest &g)
+        {
+            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
+            std::vector<uint8_t> data;
+            const bool ok = l.sif.transfer && sectors(l, lbn, n, data);
+            if (ok)
+                l.sif.transfer(to, data.data(), static_cast<uint32_t>(data.size()));
+            readEnds(l, g, ok, n);
         }
 
         // sceCdSync(mode): mode 0 waits for the read to finish (a vblank wait, its v0 0), then 0; mode 1: 1 while a
@@ -436,6 +454,7 @@ namespace bozo::libs
         out.push_back({"sceFsReset", kCd, fsReset});
         out.push_back({"sceCdReadClock", kCd, readClock});
         out.push_back({"sceCdRead", kCd, read, false, true});
+        out.push_back({"sceCdReadIOPm", kCd, readIop, false, true});
         out.push_back({"sceCdSync", kCd, sync, false, true});
         out.push_back({"sceCdGetError", kCd, getError});
         out.push_back({"sceCdStInit", kCd, stInit});
