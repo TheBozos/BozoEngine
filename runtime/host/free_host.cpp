@@ -522,6 +522,7 @@ namespace bozo::host
         framesEnded_.store(stats_.frames, std::memory_order_relaxed);
         libs_.framesEnded = static_cast<uint32_t>(stats_.frames);
         det::frameCounter().store(stats_.frames, std::memory_order_relaxed);
+        d_->frameCompleted();
         if (onFrame)
             onFrame(frame, ctx);
         if (opt_.frames && stats_.frames >= opt_.frames)

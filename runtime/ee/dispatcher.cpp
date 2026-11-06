@@ -828,6 +828,42 @@ namespace bozo::ee
         }
     }
 
+    // ---- The native frame boundary --------------------------------------------------------------------------------
+
+    void Dispatcher::frameCompleted()
+    {
+        ++framesCompleted_;
+        if (vsyncFlag_)
+            if (uint8_t *p = rt_.memory.hostPointer(vsyncFlag_, 4))
+            {
+                const uint32_t one = 1;
+                std::memcpy(p, &one, 4);
+            }
+        if (vsyncCsr_)
+            if (uint8_t *p = rt_.memory.hostPointer(vsyncCsr_, 8))
+            {
+                const uint64_t field = (framesCompleted_ & 1u) << 13;
+                std::memcpy(p, &field, 8);
+            }
+        if (syncVCallback_)
+        {
+            QueuedHandler h;
+            h.kind = kInvokeGsCallback;
+            h.pc = syncVCallback_;
+            h.a[0] = 2; // INTC cause of the vblank's start, what libgraph's handler receives
+            h.gp = syncVGp_;
+            kernel_.queue(h);
+        }
+    }
+
+    uint32_t Dispatcher::setSyncVCallback(uint32_t pc, uint32_t gp)
+    {
+        const uint32_t old = syncVCallback_;
+        syncVCallback_ = pc;
+        syncVGp_ = gp;
+        return old;
+    }
+
     // ---- Kernel calls ------------------------------------------------------------------------------------------
 
     bool Dispatcher::kernelCall(KernelCall call, R5900Context *ctx)
@@ -955,6 +991,11 @@ namespace bozo::ee
         case KernelCall::EnableCache:
         case KernelCall::DisableCache: ret(ctx, 0); return false;
         case KernelCall::GetMemorySize: ret(ctx, 0x2000000); return false;
+        case KernelCall::SetVSyncFlag:
+            vsyncFlag_ = arg(ctx, 0);
+            vsyncCsr_ = arg(ctx, 1);
+            ret(ctx, 0);
+            return false;
         case KernelCall::SetAlarm:
         case KernelCall::iSetAlarm:
             ret(ctx, k.setAlarm(now(ctx) + (arg(ctx, 0) & 0xFFFFu) * k.hblank(), arg(ctx, 1), arg(ctx, 2), ctx->r[28].uw[0],

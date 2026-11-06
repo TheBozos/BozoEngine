@@ -127,6 +127,13 @@ namespace bozo::ee
         void boot(uint32_t entry, uint32_t sp);
         void run();
 
+        // ---- The native frame boundary (kernel.md section 2) ----
+        // A game frame ended: SetVSyncFlag's words are written and the sync-V callback is queued. Nothing here follows
+        // the field clock.
+        void frameCompleted();
+        // sceGsSyncVCallback: returns the callback it replaces (0: none; `pc` 0 removes it).
+        uint32_t setSyncVCallback(uint32_t pc, uint32_t gp);
+
         // ---- EE time ----
         uint64_t cycle() const { return cycle_; }
         // The running guest code's clock (ctx->cycles while guest code runs; the dispatcher's otherwise).
@@ -257,6 +264,9 @@ namespace bozo::ee
         int32_t syscall_ = 0; // the syscall being answered (0: none; 0 is no service BozoEngine answers)
         int32_t heapSize_ = -1; // SetupHeap's size (negative: up to the main thread's stack)
         uint64_t gsImr_ = 0x7F00; // GsPutIMR's mask (no GS behind it): every GS interrupt masked
+        uint32_t vsyncFlag_ = 0, vsyncCsr_ = 0; // SetVSyncFlag's addresses
+        uint32_t syncVCallback_ = 0, syncVGp_ = 0;
+        uint64_t framesCompleted_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
         uint32_t timerPending_ = 0;
