@@ -79,6 +79,9 @@ namespace bozo::native::irx
         {
             uint32_t compare = 0, mode = 0, cause = 0, rate = 36864000, prescale = 1;
             uint64_t due = 0;
+            Interrupt handler;
+            bool configured = false, direct = false;
+            uint64_t revision = 0;
             uint64_t period() const
             {
                 return std::max<uint64_t>(1, (uint64_t(compare) * prescale * 36864000 + rate - 1) / rate);
@@ -399,6 +402,24 @@ namespace bozo::native::irx
                         timer->second.due > cycle)
                         continue;
                     timer->second.due = cycle + timer->second.period();
+                    if (timer->second.direct)
+                    {
+                        const auto handler = timer->second.handler;
+                        const auto revision = timer->second.revision;
+                        if (handler.function)
+                        {
+                            const auto nextCompare = invoke(handler.function, handler.gp, handler.argument);
+                            const auto after = timers.find(id);
+                            if (after != timers.end() && after->second.revision == revision)
+                            {
+                                // Callback result supplies the next native period; zero cancels.
+                                after->second.compare = nextCompare;
+                                if (!nextCompare) after->second.mode = 0;
+                                else after->second.due = cycle + after->second.period();
+                            }
+                        }
+                        continue;
+                    }
                     const auto irq = interrupts.find(timer->second.cause);
                     if (irq != interrupts.end() && irq->second.enabled && irq->second.function)
                     {
@@ -797,6 +818,46 @@ namespace bozo::native::irx
             if (it == timers.end())
                 throw std::runtime_error("unknown native periodic callback handle");
             auto &timer = it->second;
+            if (n == 20)
+            {
+                if (timer.mode) { ret(uint32_t(-156));return; }
+                if (a2)
+                {
+                    const bool admitted = std::any_of(images.begin(), images.end(), [&](const auto &image) {
+                        return a2 >= image.base && uint64_t(a2) < uint64_t(image.base) + image.bytes.size();
+                    });
+                    if (!admitted || !functions.contains(a2) || imports.contains(a2))
+                        throw std::runtime_error("native timer handler requires an admitted linked function");
+                    if (!a1) throw std::runtime_error("native timer callback requires a nonzero period");
+                }
+                timer.direct = true;timer.handler = {a2,a3,c.gpr[28],false};timer.compare = a1;
+                ++timer.revision;ret();return;
+            }
+            if (n == 22)
+            {
+                if (timer.mode) { ret(uint32_t(-154));return; }
+                // Gated modes require an external signal; no device gate is synthesized.
+                if (a2) throw std::runtime_error("unported native timer gate mode");
+                if (a1 != 1 && a1 != 2 && a1 != 4)
+                    throw std::runtime_error("unsupported native timer clock source");
+                if (a3 != 1 && a3 != 8 && a3 != 16 && a3 != 256)
+                    throw std::runtime_error("unsupported native timer clock divisor");
+                timer.rate = a1 == 4 ? 15734 : a1 == 2 ? 13500000 : 36864000;
+                timer.prescale = a3;timer.configured = true;++timer.revision;ret();return;
+            }
+            if (n == 23)
+            {
+                if (timer.mode) { ret(uint32_t(-154));return; }
+                if (!timer.configured) { ret(uint32_t(-155));return; }
+                if (!timer.direct || !timer.handler.function || !timer.compare)
+                    throw std::runtime_error("native periodic timer requires a registered callback");
+                timer.mode = 1;timer.due = cycle + timer.period();++timer.revision;ret();return;
+            }
+            if (n == 24)
+            {
+                if (!timer.mode) { ret(uint32_t(-156));return; }
+                timer.mode = 0;++timer.revision;ret();return;
+            }
             if (n == 6)
             {
                 timers.erase(it);
