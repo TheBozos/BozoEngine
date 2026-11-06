@@ -60,6 +60,12 @@ registration/removal, copied bytes, GP, once-only delivery, bounds, exclusion, r
 hosts. ABI checked against PS2SDK's sifcmd/common declarations. This API does not yet connect EE
 `sceSifSendCmd` or extra-buffer copies; ports must provide a native producer before those paths work.
 
+`allocatedBuffer(address,bytes)` exposes a transient span into one live native heap allocation,
+including checked interior subranges. Public allocations and compiled sysmem allocations use the
+same ownership check. Spans cannot cross adjacent blocks, alias opaque module handles or address
+images, stacks, freed data or devices. Reset invalidates all views. `library_allocation_views` checks
+real writes, interior ranges, adjacent boundaries, invalid/overflow spans, free, reset and two hosts.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services

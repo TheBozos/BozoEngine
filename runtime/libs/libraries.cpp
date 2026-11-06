@@ -122,6 +122,13 @@ namespace bozo::libs
         return 0;
     }
 
+    bool Heap::contains(uint32_t address,uint32_t bytes) const
+    {
+        for (const auto &[start,size] : used_)
+            if (address >= start && uint64_t(address)-start <= size &&
+                bytes <= uint64_t(size)-(uint64_t(address)-start)) return true;
+        return false;
+    }
     bool Heap::release(uint32_t address)
     {
         auto u = used_.find(address);
