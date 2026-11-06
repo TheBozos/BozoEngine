@@ -510,6 +510,8 @@ namespace bozo::run
             }
             log_.advance();
         }
+        if (const Record *next = log_.peek())
+            seq_ = next->seq;
         d_->setNow(ctx, cycle);
         ctx->r[2].ud[0] = 0;
     }
