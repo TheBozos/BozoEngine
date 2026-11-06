@@ -47,6 +47,7 @@ namespace bozo::libs
         // Native SDK service diagnostics, not device registers. The first three channels
         // are native VU0 image selection, VIF1 graphics, and GIF graphics respectively.
         std::array<uint64_t, 3> nativeSubmissions{};
+        std::array<uint32_t, 2> sprAddress{}; // the scratchpad offset the game stored for sceDmaRecvN / sceDmaSendN
         std::array<bool, 3> nativeCompleted{}; // completed SDK jobs, including callbacks masked at submission
         uint64_t nativeSynchronizations = 0;
         // libmpeg's decoder asked the game for more data (it queued the game's nodata callback) since channel 4 was
