@@ -247,6 +247,7 @@ namespace
         sd.call(20u, status, 0u, r);
         eq("sceSdBlockTransStatus after 300 samples", r, 0xA0000u + 1024u + 44u * 2u);
         eq("libsd handles 27", Libsd::handles(27u), 1);
+        eq("libsd handles 31 (sceSdCleanEffectWorkArea)", Libsd::handles(31u), 1);
         eq("libsd does not handle 13", Libsd::handles(13u), 0);
     }
 
