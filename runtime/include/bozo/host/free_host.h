@@ -43,6 +43,9 @@ namespace bozo::host
         // free mode), the frame's samples to onAudio and to the record's sound field. Off: the mixer runs only as the
         // driver's commands bring it up (nothing is output).
         bool sound = true;
+        // Optional native game-frame duration. Ports with host-paced frames can charge their logical
+        // clock here instead of running a console timer/device loop. Zero keeps explicit port accounting.
+        uint64_t framePeriodCycles = 0;
     };
 
     struct FreeStats
@@ -118,7 +121,7 @@ namespace bozo::host
         // Ends the run when no frame ended for opt_.stallFields fields (a wait that never ends), saying where.
         void watchdog(R5900Context *ctx);
         uint64_t lastFrameCycle_ = 0;
-        void endFrame(const R5900Context *ctx);
+        void endFrame(R5900Context *ctx);
         void frameSound(uint64_t &hash, uint32_t &count);
         std::vector<int16_t> audio_;
         // Real time with sound (libraries.md 15.13e): when no frame has ended for a while (a load, a stall), the sound

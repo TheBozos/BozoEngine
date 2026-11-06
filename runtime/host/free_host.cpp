@@ -13,6 +13,7 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <filesystem>
 #include <iterator>
 
 namespace bozo::host
@@ -46,7 +47,7 @@ namespace bozo::host
         libs_.snd.freeTiming = true;
         libs_.snd.timing = libs::snd989::Timing::freeRun(0);
         // In real time the sound is played as it is made: the IOP's clock follows the host's (15.13e).
-        libs_.snd.realTimeClock = opt_.realTime && opt_.sound;
+        libs_.snd.realTimeClock = !libs_.audioProvider && opt_.realTime && opt_.sound;
         libs_.cd.imagePath = opt_.iso;
         libs_.mc.hostDirectory = opt_.cardDir;
         for (int player = 0; player < 4; ++player)
@@ -125,7 +126,7 @@ namespace bozo::host
             h.elfHash = hash::xxh64(elf.bytes().data(), elf.bytes().size(), 0);
             h.run = "free";
             h.build = "BozoEngine free host";
-            h.elfName = "SCUS_971.01";
+            h.elfName = std::filesystem::path(opt_.elf).filename().string();
             writing_ = writer_.open(opt_.out, h);
         }
         // The draw lists' digest is the record's `draws`: not computed when no record is written.
@@ -151,7 +152,12 @@ namespace bozo::host
 
     void FreeHost::fault(ee::Dispatcher &, R5900Context *ctx, const std::string &what)
     {
-        endReason_ = std::format("FAULT: {} (frame {}, pc 0x{:x})", what, stats_.frames, ctx ? ctx->pc : 0);
+        const auto *thread=d_ ? d_->currentThread() : nullptr;
+        for(int id=1;id<16;++id) if(const auto *t=d_->kernel().thread(id))
+            std::fprintf(stderr,"[native:fault] thread %d state=%u wait=%u object=%u entry=%x pc=%x\n",id,unsigned(t->state),t->waitReason,t->waitObject,t->entry,t->frames.empty()?0:t->frames.front()->ctx.pc);
+        const uint32_t root=thread && !thread->frames.empty() ? thread->frames.front()->ctx.pc : 0;
+        endReason_ = std::format("FAULT: {} (frame {}, pc 0x{:x}, root 0x{:x} {}, clock {}, last frame {})", what, stats_.frames,
+                                ctx ? ctx->pc : 0,root,functionAt(root),d_?d_->now(ctx):0,lastFrameCycle_);
         throw ee::EndRun{};
     }
 
@@ -382,8 +388,9 @@ namespace bozo::host
         count = 0;
         if (!opt_.sound)
             return;
-        libs_.snd.advanceAudio(libs_, d_->now());
-        audio::Mixer *mixer = libs_.snd.mixer();
+        audio::Mixer *mixer;
+        if (libs_.audioProvider) mixer=libs_.audioProvider(d_->now());
+        else { libs_.snd.advanceAudio(libs_, d_->now()); mixer=libs_.snd.mixer(); }
         if (!mixer)
             return;
         mixer->takeMixed(hash, count);
@@ -406,10 +413,11 @@ namespace bozo::host
     void FreeHost::stallSound(const R5900Context *ctx)
     {
         soundDue_.store(false, std::memory_order_relaxed);
-        audio::Mixer *mixer = libs_.snd.mixer();
-        if (!mixer || !onAudio)
-            return;
-        libs_.snd.advanceAudio(libs_, ctx ? d_->now(ctx) : d_->now());
+        audio::Mixer *mixer;
+        const uint64_t cycle=ctx ? d_->now(ctx) : d_->now();
+        if (libs_.audioProvider) mixer=libs_.audioProvider(cycle);
+        else { libs_.snd.advanceAudio(libs_,cycle); mixer=libs_.snd.mixer(); }
+        if (!mixer || !onAudio) return;
         audio_.resize(2u * audio::Mixer::kQueueFrames);
         const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
         if (n)
@@ -443,9 +451,11 @@ namespace bozo::host
         soundDue_.store(false);
     }
 
-    void FreeHost::endFrame(const R5900Context *ctx)
+    void FreeHost::endFrame(R5900Context *ctx)
     {
         const uint64_t frame = stats_.frames;
+        if (ctx && d_->currentDepth() == 0 && opt_.framePeriodCycles && d_->now(ctx)-lastFrameCycle_ < opt_.framePeriodCycles)
+            port::accountCycles(&d_->runtime(),ctx,opt_.framePeriodCycles-(d_->now(ctx)-lastFrameCycle_));
         lastFrameCycle_ = d_->now();
         if (writing_)
         {

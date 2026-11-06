@@ -206,6 +206,9 @@ namespace bozo::libs
         SndDriver snd;
         // Whether the 989SND driver answers the RPC (else its replies come from the log and it follows them).
         bool sndNative = true;
+        // Optional native audio implementation. Advances to EE time and returns its sample queue.
+        // Unset: the built-in 989SND source. Its lifetime belongs to the port.
+        std::function<audio::Mixer *(uint64_t)> audioProvider;
         MovieSoundSink *movieSound = nullptr; // the movie's sound (null: dropped)
         IoAccess ioAccess;
         // The I/O library as a function: makes the access in `ioAccess`.

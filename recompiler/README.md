@@ -64,3 +64,14 @@ cmake --build build-cc && build-cc/compile_check
 | `src/main.cpp` | The command line |
 
 The game's executable is input data: never commit it, or generated code made from it, to this repository.
+
+## Separately compiled code images
+
+`--symbol-prefix name_` prefixes every emitted C++ function, independently of `--prefix` (the output filenames and
+table names). This lets multiple code images at the same guest addresses link in one executable without symbol
+collisions. A port registers each image's function and resume tables with `FunctionTable::addModule`, its guest
+address range and a resident identity. Only a matching resident image may execute or resume. Missing identities
+fail through the normal unknown-target path; there is no instruction interpreter or dynamic compiler.
+
+The port prepares ELF files with their real EE code ranges and symbols; proprietary overlay containers and their
+load/identity rules belong to that port. This API contains no game names, fixed addresses or container formats.

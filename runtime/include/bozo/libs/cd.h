@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <map>
 
 namespace bozo::libs
 {
@@ -24,6 +25,8 @@ namespace bozo::libs
         bool isOpen() const { return f_ != nullptr; }
         const std::string &path() const { return path_; }
         uint32_t sectors() const { return sectors_; }
+        // ISO 9660 directory lookup, including nested paths and optional ;version suffixes.
+        bool findFile(const std::string &path, uint32_t &lbn, uint32_t &bytes);
         // Reads `count` sectors from `lbn` into `out`; sectors past the end of the image read as zeros. False when
         // the image cannot be read.
         bool read(uint32_t lbn, uint32_t count, uint8_t *out);
@@ -36,6 +39,9 @@ namespace bozo::libs
 
     struct CdState
     {
+        struct File { uint32_t sector = 0, bytes = 0, position = 0; };
+        std::map<int32_t, File> files;
+        int32_t nextFile = 3;
         DiscImage disc;
         std::string imagePath; // opened at the first call that needs a sector
         // sceCdReadClock's time: the reference's deterministic clock (2001-06-18 12:00:00) unless the host's.

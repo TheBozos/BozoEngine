@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <stdexcept>
 
 bool bozo_native_instruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
 {
@@ -32,10 +33,16 @@ namespace bozo
 
     const BozoResumeEntry *FunctionTable::resumeEntry(uint32_t pc) const
     {
-        const BozoResumeEntry *end = resume_ + resumeCount_;
+        bool reserved = false;
+        const Module *module = moduleAt(pc, reserved);
+        const BozoResumeEntry *resume = module ? module->resume : resume_;
+        const size_t count = module ? module->resumeCount : resumeCount_;
+        if ((!module && reserved) || !count)
+            return nullptr;
+        const BozoResumeEntry *end = resume + count;
         const BozoResumeEntry *it =
-            std::upper_bound(resume_, end, pc, [](uint32_t a, const BozoResumeEntry &e) { return a < e.start; });
-        if (it == resume_)
+            std::upper_bound(resume, end, pc, [](uint32_t a, const BozoResumeEntry &e) { return a < e.start; });
+        if (it == resume)
             return nullptr;
         --it;
         return pc < it->end ? it : nullptr;
@@ -43,10 +50,43 @@ namespace bozo
 
     RecompiledFunction FunctionTable::generated(uint32_t address) const
     {
-        const BozoFunctionEntry *end = table_ + count_;
+        bool reserved = false;
+        const Module *module = moduleAt(address, reserved);
+        const BozoFunctionEntry *table = module ? module->functions : table_;
+        const size_t count = module ? module->count : count_;
+        if ((!module && reserved) || !count)
+            return nullptr;
+        const BozoFunctionEntry *end = table + count;
         const BozoFunctionEntry *it =
-            std::lower_bound(table_, end, address, [](const BozoFunctionEntry &e, uint32_t a) { return e.address < a; });
+            std::lower_bound(table, end, address, [](const BozoFunctionEntry &e, uint32_t a) { return e.address < a; });
         return it != end && it->address == address ? it->function : nullptr;
+    }
+
+    void FunctionTable::addModule(uint32_t start, uint32_t end, const uint8_t *resident,
+                                 std::vector<uint8_t> identity, const BozoFunctionEntry *functions, size_t count,
+                                 const BozoResumeEntry *resume, size_t resumeCount)
+    {
+        if (start >= end || !resident || identity.empty() || identity.size() > uint64_t(end) - start ||
+            (count && !functions) || (resumeCount && !resume))
+            throw std::invalid_argument("invalid native module registration");
+        modules_.push_back({start, end, resident, std::move(identity), functions, count, resume, resumeCount});
+    }
+
+    const FunctionTable::Module *FunctionTable::moduleAt(uint32_t address, bool &reserved) const
+    {
+        const Module *active = nullptr;
+        for (const Module &module : modules_)
+        {
+            if (address < module.start || address >= module.end)
+                continue;
+            reserved = true;
+            if (std::memcmp(module.resident, module.identity.data(), module.identity.size()) != 0)
+                continue;
+            if (active)
+                throw std::runtime_error("ambiguous native module identity");
+            active = &module;
+        }
+        return active;
     }
 
     void FunctionTable::setOverride(uint32_t address, RecompiledFunction fn)

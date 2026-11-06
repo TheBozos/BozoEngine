@@ -88,6 +88,8 @@ int main(int argc, char **argv)
         const std::string a = argv[k];
         if (a == "--prefix" && k + 1 < argc)
             options.prefix = argv[++k];
+        else if (a == "--symbol-prefix" && k + 1 < argc)
+            options.symbolPrefix = argv[++k];
         else if (a == "--max-file-bytes" && k + 1 < argc)
             options.maxBytesPerFile = std::strtoull(argv[++k], nullptr, 0);
         else if (a == "--files" && k + 1 < argc)

@@ -56,6 +56,8 @@ namespace bozo::render
     Material::Blend blendOf(uint64_t alpha)
     {
         const uint32_t a = alpha & 3u, b = (alpha >> 2) & 3u, c = (alpha >> 4) & 3u, d = (alpha >> 6) & 3u;
+        if (a == b && d == 1u) return Material::Blend::AlphaOnly;
+        if (a == 1u && b == 2u && c == 0u && d == 0u) return Material::Blend::DestinationBySource;
         if (a == b && d == 0u)
             return Material::Blend::Opaque;
         if (a == 0u && b == 2u && d == 1u)
@@ -129,6 +131,11 @@ namespace bozo::render
                                            static_cast<uint64_t>(m.context) << 40,
                                        m.fogColour, textureIdentity(batch.texture), batch.count, 0u};
             h = hash::xxh64(words, sizeof(words), h);
+            if(m.fromFrame || m.target || m.source || m.nearest) {
+                const uint64_t extended=uint64_t(m.fromFrame) | uint64_t(m.target)<<8 | uint64_t(m.source)<<16 |
+                    uint64_t(m.nearest)<<24 | uint64_t(m.frameWidth)<<32 | uint64_t(m.frameHeight)<<48;
+                h=hash::xxh64(&extended,sizeof(extended),h);
+            }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())

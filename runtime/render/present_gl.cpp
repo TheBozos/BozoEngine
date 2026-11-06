@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <stdexcept>
 #include <cstring>
 #include <string>
 
@@ -100,8 +101,10 @@ void main()
 {
     vec4 colour = vCol * (255.0 / 128.0);
     vec4 texel = uTextured != 0 ? texture(uTex, vUv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
-    if (uTarget != 0)
+    if (uTarget == 1)
         texel.a = 1.0;
+    else if (uTarget == 2)
+        texel.a = texture(uTex, vUv).a;
     fragColor = clamp(texel * colour, 0.0, 1.0);
     if (uAlphaTest != 0 && fragColor.a <= uAlphaRef)
         discard;
@@ -152,6 +155,9 @@ void main()
         {
             Alpha,         // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             Additive,      // SRC_ALPHA, ONE
+            AdditiveByDestination,
+            DestinationBySource,
+            AlphaOnly,
             Premultiplied, // ONE, ONE_MINUS_SRC_ALPHA
             Replace,       // ONE, ZERO: the frame as it is, its alpha ignored
         };
@@ -203,12 +209,17 @@ void main()
         void setFlatBlend(FlatBlend blend)
         {
             const gl::Api &g = gl::api();
+            const bool alphaOnly=blend==FlatBlend::AlphaOnly;
+            g.ColorMask(alphaOnly?gl::kFalse:gl::kTrue,alphaOnly?gl::kFalse:gl::kTrue,alphaOnly?gl::kFalse:gl::kTrue,gl::kTrue);
             g.Enable(gl::kBlend);
             g.BlendEquation(gl::kFuncAdd);
             switch (blend)
             {
             case FlatBlend::Alpha: g.BlendFunc(gl::kSrcAlpha, gl::kOneMinusSrcAlpha); break;
             case FlatBlend::Additive: g.BlendFunc(gl::kSrcAlpha, gl::kOne); break;
+            case FlatBlend::AdditiveByDestination: g.BlendFunc(gl::kDstAlpha,gl::kOne); break;
+            case FlatBlend::DestinationBySource: g.BlendFunc(gl::kOne,gl::kSrcAlpha); break;
+            case FlatBlend::AlphaOnly: g.BlendFunc(gl::kOne,gl::kZero); break;
             case FlatBlend::Premultiplied: g.BlendFunc(gl::kOne, gl::kOneMinusSrcAlpha); break;
             case FlatBlend::Replace: g.BlendFunc(gl::kOne, gl::kZero); break;
             }
@@ -234,6 +245,30 @@ void main()
         bool targetFiltered = false; // bilinear (render scale other than 1) rather than point
         gl::GLuint targetCopy = 0;   // Material::sampleTarget: the target's colour, copied per batch
         int copyWidth = 0, copyHeight = 0;
+        struct Target {
+            gl::GLuint fbo = 0, colour = 0, depth = 0;
+            int width = 0, height = 0;
+        };
+        Target auxiliary[8];
+        gl::GLuint previousColour = 0;
+        int previousWidth = 0, previousHeight = 0;
+        uint64_t previousSerial = 0;
+        bool auxiliaryTarget(unsigned n, int width, int height, bool shared) {
+            const auto &g = gl::api();
+            auto &t = auxiliary[n];
+            if (!t.fbo) { g.GenFramebuffers(1,&t.fbo); g.GenRenderbuffers(1,&t.depth); }
+            if (t.width != width || t.height != height) {
+                if (t.colour) g.DeleteTextures(1,&t.colour);
+                t.colour = makeTexture(nullptr,width,height,gl::kClampToEdge);
+                g.BindRenderbuffer(gl::kRenderbuffer,t.depth);
+                g.RenderbufferStorage(gl::kRenderbuffer,gl::kDepthComponent24,width,height);
+                t.width=width; t.height=height;
+            }
+            g.BindFramebuffer(gl::kFramebuffer,t.fbo);
+            g.FramebufferTexture2D(gl::kFramebuffer,gl::kColorAttachment0,gl::kTexture2D,t.colour,0);
+            g.FramebufferRenderbuffer(gl::kFramebuffer,gl::kDepthAttachment,gl::kRenderbuffer,shared ? depth : t.depth);
+            return g.CheckFramebufferStatus(gl::kFramebuffer)==gl::kFramebufferComplete;
+        }
         struct GpuTexture
         {
             gl::GLuint id = 0;
@@ -359,6 +394,14 @@ void main()
                 for (auto &[key, slot] : *map)
                     if (slot.id != 0)
                         g.DeleteTextures(1, &slot.id);
+            for (auto &t : auxiliary) {
+                if (t.colour) g.DeleteTextures(1,&t.colour);
+                if (t.depth) g.DeleteRenderbuffers(1,&t.depth);
+                if (t.fbo) g.DeleteFramebuffers(1,&t.fbo);
+                t=Target{};
+            }
+            if (previousColour) g.DeleteTextures(1,&previousColour);
+            previousColour=0;
             textures.clear();
             overlayTextures.clear();
             for (gl::GLuint *t : {&white, &colour, &targetCopy, &displayPicture})
@@ -673,9 +716,11 @@ void main()
         for (const Batch &batch : overlay.batches)
         {
             const Material &m = batch.material;
-            const FlatBlend want = m.blend == Material::Blend::Additive || m.blend == Material::Blend::AdditiveByDestination
-                                       ? FlatBlend::Additive
-                                       : FlatBlend::Alpha;
+            const FlatBlend want = m.blend == Material::Blend::Additive ? FlatBlend::Additive :
+                m.blend==Material::Blend::AdditiveByDestination ? FlatBlend::AdditiveByDestination :
+                m.blend==Material::Blend::DestinationBySource ? FlatBlend::DestinationBySource :
+                m.blend==Material::Blend::AlphaOnly ? FlatBlend::AlphaOnly :
+                m.blend==Material::Blend::Opaque ? FlatBlend::Replace : FlatBlend::Alpha;
             const gl::GLuint id = m.textured && batch.texture ? gpu.overlayTexture(batch.texture) : gpu.white;
             if (id != texture || want != blend)
             {
@@ -720,6 +765,7 @@ void main()
             }
         }
         gpu.flushFlat(texture, blend, viewport[2], viewport[3]);
+        g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
     }
 
     void Renderer::wantDepth() { m_depthWantedAt.store(secondsNow(), std::memory_order_relaxed); }
@@ -1077,6 +1123,18 @@ void main()
             gpu.targetFiltered = filtered;
         }
 
+        // Keep history stable when the same game frame is presented more than once.
+        if (gpu.previousWidth != w || gpu.previousHeight != h) {
+            if (gpu.previousColour) g.DeleteTextures(1,&gpu.previousColour);
+            std::vector<uint32_t> black(size_t(w)*h,0);
+            gpu.previousColour=gpu.makeTexture(black.data(),w,h,gl::kClampToEdge);
+            gpu.previousWidth=w; gpu.previousHeight=h; gpu.previousSerial=frame->serial;
+        } else if (gpu.previousSerial != frame->serial) {
+            g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+            g.BindTexture(gl::kTexture2D,gpu.previousColour);
+            g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,w,h);
+            gpu.previousSerial=frame->serial;
+        }
         const size_t bytes = frame->vertices.size() * sizeof(Vertex);
         g.BindVertexArray(gpu.vao);
         if (bytes > gpu.vboBytes)
@@ -1217,6 +1275,7 @@ void main()
         else
             g.ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         g.ClearDepth(1.0);
+        g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
         g.Clear(gl::kColorBufferBit | gl::kDepthBufferBit);
         const float screenRect[4] = {screen.originX, screen.originY, screen.width, screen.height};
         g.Disable(gl::kCullFace);
@@ -1232,38 +1291,68 @@ void main()
         {
             int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         };
+        int drawWidth=w, drawHeight=h;
         const auto clipOf = [&](const Batch &batch)
         {
             Rect rect;
             const float *own = batch.clip;
             if (own[2] <= own[0])
                 return rect;
-            const float sx = static_cast<float>(w) / screen.width, sy = static_cast<float>(h) / screen.height;
-            rect.x0 = std::clamp(static_cast<int>(std::lround((own[0] - screen.originX) * sx)), 0, w);
-            rect.x1 = std::clamp(static_cast<int>(std::lround((own[2] - screen.originX) * sx)), 0, w);
-            rect.y0 = std::clamp(static_cast<int>(std::lround(h - (own[3] - screen.originY) * sy)), 0, h);
-            rect.y1 = std::clamp(static_cast<int>(std::lround(h - (own[1] - screen.originY) * sy)), 0, h);
-            if (rect.x0 == 0 && rect.y0 == 0 && rect.x1 == w && rect.y1 == h)
+            const float sx = static_cast<float>(drawWidth) / screen.width, sy = static_cast<float>(drawHeight) / screen.height;
+            rect.x0 = std::clamp(static_cast<int>(std::lround((own[0] - screen.originX) * sx)), 0, drawWidth);
+            rect.x1 = std::clamp(static_cast<int>(std::lround((own[2] - screen.originX) * sx)), 0, drawWidth);
+            rect.y0 = std::clamp(static_cast<int>(std::lround(drawHeight - (own[3] - screen.originY) * sy)), 0, drawHeight);
+            rect.y1 = std::clamp(static_cast<int>(std::lround(drawHeight - (own[1] - screen.originY) * sy)), 0, drawHeight);
+            if (rect.x0 == 0 && rect.y0 == 0 && rect.x1 == drawWidth && rect.y1 == drawHeight)
                 rect = Rect{}; // the whole target: no clip
             else if (rect.x1 <= rect.x0 || rect.y1 <= rect.y0)
                 rect = Rect{0, 0, 0, -1}; // nothing shows
             return rect;
         };
         bool scissored = false;
+        bool touched[8] = {};
+        uint8_t drawingTarget = 0;
         for (size_t index = 0; index < frame->batches.size(); ++index)
         {
             const Batch &batch = frame->batches[index];
             const float *matrix = !s_lerped.empty() && s_lerped[index].use ? s_lerped[index].matrix : batch.matrix;
             const Material &m = batch.material;
+            if (m.target >= 8 || m.source > Material::kPreviousFrame)
+                throw std::runtime_error("native render target index outside supported range");
+            if (m.target != drawingTarget) {
+                drawingTarget=m.target;
+                drawWidth=w; drawHeight=h;
+                if (drawingTarget) {
+                    const uint32_t size=m_targetSize[drawingTarget].load();
+                    const bool shared=(m_sharedDepth.load() & (1u << drawingTarget)) != 0;
+                    if (size && !shared) { drawWidth=size >> 16; drawHeight=size & 0xffff; }
+                    if (!gpu.auxiliaryTarget(drawingTarget,drawWidth,drawHeight,shared))
+                        throw std::runtime_error("native render target framebuffer incomplete");
+                    if (!touched[drawingTarget]) {
+                        g.Disable(gl::kScissorTest); scissored=false;
+                        g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
+                        g.DepthMask(gl::kTrue); g.ClearColor(0,0,0,0);
+                        g.Clear(gl::kColorBufferBit | (shared ? 0 : gl::kDepthBufferBit));
+                        touched[drawingTarget]=true;
+                    }
+                } else g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                g.Viewport(0,0,drawWidth,drawHeight);
+            }
             const Rect clip = clipOf(batch);
             if (clip.y1 < 0)
                 continue;
-            if (m.blend == Material::Blend::Opaque)
+            const bool alphaOnly=m.blend==Material::Blend::AlphaOnly;
+            g.ColorMask(alphaOnly ? gl::kFalse : gl::kTrue,alphaOnly ? gl::kFalse : gl::kTrue,
+                        alphaOnly ? gl::kFalse : gl::kTrue,gl::kTrue);
+            if (m.blend == Material::Blend::Opaque || alphaOnly)
                 g.Disable(gl::kBlend);
             else
             {
                 g.Enable(gl::kBlend);
-                g.BlendFuncSeparate(gl::kSrcAlpha, m.blend == Material::Blend::Alpha ? gl::kOneMinusSrcAlpha : gl::kOne, gl::kOne,
+                g.BlendFuncSeparate(m.blend==Material::Blend::DestinationBySource ? gl::kOne :
+                                    m.blend==Material::Blend::AdditiveByDestination ? gl::kDstAlpha : gl::kSrcAlpha,
+                                    m.blend==Material::Blend::DestinationBySource ? gl::kSrcAlpha :
+                                    m.blend == Material::Blend::Alpha ? gl::kOneMinusSrcAlpha : gl::kOne, gl::kOne,
                                     gl::kOneMinusSrcAlpha);
                 g.BlendEquation(gl::kFuncAdd);
             }
@@ -1285,7 +1374,58 @@ void main()
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
-            if (m.sampleTarget && sampleTargetEnabled())
+            if (m.fromFrame) {
+                gl::GLuint source=0;
+                if (m.source==Material::kPreviousFrame) source=gpu.previousColour;
+                else if (m.source && m.source!=drawingTarget) {
+                    auto &t=gpu.auxiliary[m.source];
+                    const bool shared=(m_sharedDepth.load() & (1u << m.source)) != 0;
+                    const uint32_t size=m_targetSize[m.source].load();
+                    const int sw=size && !shared ? int(size >> 16) : w;
+                    const int sh=size && !shared ? int(size & 0xffff) : h;
+                    const bool fresh=!t.colour || t.width!=sw || t.height!=sh;
+                    if (!gpu.auxiliaryTarget(m.source,sw,sh,shared))
+                        throw std::runtime_error("native source framebuffer incomplete");
+                    if (fresh) {
+                        // A source may first be sampled by a clipped or alpha-only draw. Initialize its
+                        // whole image independently of that draw's write masks, without clearing shared depth.
+                        g.Disable(gl::kScissorTest);
+                        g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
+                        g.DepthMask(gl::kTrue);
+                        g.ClearColor(0,0,0,0); g.Clear(gl::kColorBufferBit | (shared ? 0 : gl::kDepthBufferBit));
+                        g.ColorMask(alphaOnly ? gl::kFalse : gl::kTrue,alphaOnly ? gl::kFalse : gl::kTrue,
+                                    alphaOnly ? gl::kFalse : gl::kTrue,gl::kTrue);
+                        g.DepthMask(m.depthWrite ? gl::kTrue : gl::kFalse);
+                        if (scissored) g.Enable(gl::kScissorTest);
+                    }
+                    source=t.colour;
+                } else {
+                    const int sw=m.source ? drawWidth : w, sh=m.source ? drawHeight : h;
+                    g.BindFramebuffer(gl::kFramebuffer,m.source ? gpu.auxiliary[m.source].fbo : gpu.fbo);
+                    if (!gpu.targetCopy || gpu.copyWidth!=sw || gpu.copyHeight!=sh) {
+                        if (gpu.targetCopy) g.DeleteTextures(1,&gpu.targetCopy);
+                        gpu.targetCopy=gpu.makeTexture(nullptr,sw,sh,gl::kClampToEdge);
+                        gpu.copyWidth=sw; gpu.copyHeight=sh;
+                    }
+                    source=gpu.targetCopy;
+                    g.BindTexture(gl::kTexture2D,source);
+                    g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,sw,sh);
+                }
+                g.BindFramebuffer(gl::kFramebuffer,drawingTarget ? gpu.auxiliary[drawingTarget].fbo : gpu.fbo);
+                g.BindTexture(gl::kTexture2D,source);
+                g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,m.nearest ? gl::kNearest : gl::kLinear);
+                g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,m.nearest ? gl::kNearest : gl::kLinear);
+                if(m.source==0 && !m.nearest) {
+                    g.GenerateMipmap(gl::kTexture2D);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kLinearMipmapLinear);
+                    g.TexParameterf(gl::kTexture2D,gl::kTextureLodBias,float(m.fromFrame));
+                } else g.TexParameterf(gl::kTexture2D,gl::kTextureLodBias,0);
+                const float uv[4]={1,0,-1,1};
+                g.Uniform4fv(gpu.locUvMap,1,uv);
+                g.Uniform1i(gpu.locTextured,1);
+                g.Uniform1i(gpu.locTarget,m.source && m.source!=Material::kPreviousFrame ? 2 : 1);
+            }
+            else if (m.sampleTarget && sampleTargetEnabled())
             {
                 // The frame drawn so far, as the texture: u, v in its GS pixels from the screen's top left.
                 if (gpu.targetCopy == 0 || gpu.copyWidth != w || gpu.copyHeight != h)
@@ -1297,6 +1437,8 @@ void main()
                     gpu.copyHeight = h;
                 }
                 g.BindTexture(gl::kTexture2D, gpu.targetCopy);
+                g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kLinear);
+                g.TexParameterf(gl::kTexture2D,gl::kTextureLodBias,0);
                 g.CopyTexSubImage2D(gl::kTexture2D, 0, 0, 0, 0, 0, w, h);
                 const float toTarget[4] = {1.0f / screen.width, 0.0f, -1.0f / screen.height, 1.0f};
                 g.Uniform4fv(gpu.locUvMap, 1, toTarget);
@@ -1312,6 +1454,8 @@ void main()
                 {
                     const gl::GLuint id = gpu.texture(m.tex0 ^ (m.texa * 0x9e3779b97f4a7c15ull) ^ (m.region * 0xc2b2ae3d27d4eb4full), texture);
                     g.BindTexture(gl::kTexture2D, id);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,m.nearest ? gl::kNearest : gl::kLinear);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,m.nearest ? gl::kNearest : gl::kLinear);
                     g.TexParameteri(gl::kTexture2D, gl::kTextureWrapS, static_cast<gl::GLint>(m.clampU ? gl::kClampToEdge : gl::kRepeat));
                     g.TexParameteri(gl::kTexture2D, gl::kTextureWrapT, static_cast<gl::GLint>(m.clampV ? gl::kClampToEdge : gl::kRepeat));
                 }
@@ -1329,6 +1473,9 @@ void main()
             }
             g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
         }
+        g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
+        g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+        g.Viewport(0,0,w,h);
         g.Disable(gl::kScissorTest);
         g.BindVertexArray(0);
         if (secondsNow() - m_depthWantedAt.load(std::memory_order_relaxed) < 1.0)

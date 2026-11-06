@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
 
 namespace bozo::libs
 {
@@ -90,6 +93,33 @@ namespace bozo::libs
         // in the reference runs, so their places (17, 19) are the remaining ones.
         for (int i = 0; i < 12; ++i)
             out.pressure[static_cast<size_t>(i)] = (out.buttons & kPadPressureOrder[i]) ? 0xFF : 0x00;
+    }
+
+    void LiveScriptInput::read(uint32_t frame, int player, PadInputState &out)
+    {
+        if (frame != lastFrame_)
+        {
+            lastFrame_ = frame;
+            std::ifstream file(path_, std::ios::binary);
+            if (file)
+            {
+                const std::string text{std::istreambuf_iterator<char>(file), {}};
+                if (text != lastText_)
+                {
+                    ScriptInput candidate;
+                    std::string error;
+                    if (candidate.load(0, text, error))
+                    {
+                        script_ = std::move(candidate);
+                        lastText_ = text;
+                        origin_ = frame;
+                        if (std::getenv("BOZO_TRACE_PAD"))
+                            std::fprintf(stderr, "[pad] live script frame %u: %s\n", frame, text.c_str());
+                    }
+                }
+            }
+        }
+        script_.read(frame - origin_, player, out);
     }
 
     // ---- libpad --------------------------------------------------------------------------------------------------

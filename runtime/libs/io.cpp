@@ -181,7 +181,7 @@ namespace bozo::libs
                     }
                     else
                     {
-                        if (static_cast<uint32_t>(ch) == kGif && drawsPrimitive(l, c))
+                        if (static_cast<uint32_t>(ch) == kGif && !io.completeNativeGraphics && drawsPrimitive(l, c))
                         {
                             c.running = false; // dropped: no completion, no interrupt (the reference's renderer path)
                             c.chcr &= ~0x100u;

@@ -2,3 +2,6 @@
 /build*/
 # Generated code (from a game executable: never committed)
 /gen*/
+
+__pycache__/
+*.py[cod]

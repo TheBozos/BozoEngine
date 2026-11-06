@@ -73,6 +73,18 @@ namespace bozo::libs
         std::map<int, std::vector<Press>> presses_;
     };
 
+    // Hot-reloaded native test input. Each valid file update starts a script at frame zero;
+    // e.g. "0:CROSS/6" presses Cross for six game frames. Invalid partial writes keep the last script.
+    class LiveScriptInput final : public PadInput {
+    public:
+        explicit LiveScriptInput(std::string path) : path_(std::move(path)) {}
+        void read(uint32_t frame,int player,PadInputState &out) override;
+    private:
+        std::string path_,lastText_;
+        ScriptInput script_;
+        uint32_t lastFrame_=UINT32_MAX,origin_=0;
+    };
+
     struct PadState
     {
         PadInput *input = nullptr; // null: the pads in ports 1 and 2 connected and idle, no multitap slot used

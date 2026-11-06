@@ -105,6 +105,7 @@ namespace bozo::libs
 
     uint32_t Heap::allocate(uint32_t bytes)
     {
+        if (bytes > UINT32_MAX - 15u) return 0;
         uint32_t n = (bytes + 15u) & ~15u;
         if (n == 0)
             n = 16;
