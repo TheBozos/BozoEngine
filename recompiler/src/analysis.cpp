@@ -154,6 +154,28 @@ namespace bozo
         stats_.symbolFunctions = static_cast<uint32_t>(functions_.size());
     }
 
+    void Analysis::collectBuiltPointers(const Insn &lui, uint32_t rangeEnd)
+    {
+        const uint32_t reg = lui.rt();
+        const bool saved = (reg >= 16 && reg <= 23) || reg == 28 || reg == 30;
+        bool lastSlot = false;
+        for (uint32_t b = lui.addr + 4; b < lui.addr + 256 && b + 4 <= rangeEnd; b += 4)
+        {
+            const Insn n = decodeAt(program_.read32(b), b);
+            if ((n.op == Op::ADDIU || n.op == Op::ORI) && n.rs() == reg)
+            {
+                const uint32_t v = n.op == Op::ADDIU ? (lui.uimm() << 16) + static_cast<uint32_t>(n.simm())
+                                                     : (lui.uimm() << 16) | n.uimm();
+                if (program_.isCode(v) && (v & 3u) == 0)
+                    codePointers_.insert(v);
+            }
+            if (lastSlot || gprWritten(n) == static_cast<int>(reg))
+                return;
+            // The instruction in the delay slot still sees the register; after a call only a saved one holds.
+            lastSlot = endsFlow(n) || (!saved && (n.op == Op::JAL || n.op == Op::JALR));
+        }
+    }
+
     void Analysis::collectSeeds(std::set<uint32_t> &seeds)
     {
         seeds.insert(program_.entry);
@@ -181,6 +203,11 @@ namespace bozo
                 {
                     // A code address built by lui + addiu/ori in the next few instructions (a function pointer).
                     const uint32_t reg = i.rt();
+                    if (!stats_.symbolDriven)
+                    {
+                        collectBuiltPointers(i, r.end);
+                        continue;
+                    }
                     for (uint32_t b = a + 4; b < a + 40 && b + 4 <= r.end; b += 4)
                     {
                         const Insn n = decodeAt(program_.read32(b), b);

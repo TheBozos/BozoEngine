@@ -81,6 +81,7 @@ namespace bozo
         Function *mutableContaining(uint32_t addr);
         void addSymbolFunctions();
         void collectSeeds(std::set<uint32_t> &seeds);
+        void collectBuiltPointers(const Insn &lui, uint32_t rangeEnd);
         void carveGaps(const std::set<uint32_t> &seeds);
         void findJumpTables(Function &f);
         // Discovery from the code alone (ELFs whose symbols cover little of it).
