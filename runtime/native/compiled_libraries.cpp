@@ -90,8 +90,10 @@ namespace bozo::native::irx
         {
             uint64_t due;
             uint32_t function, a0, a1, gp;
+            bool readyAudio = false;
         };
         std::deque<Event> events;
+        bool readyAudioCompletions = false, deliveringReadyAudio = false;
         struct Sema
         {
             int32_t count = 0;
@@ -120,7 +122,26 @@ namespace bozo::native::irx
         uint32_t iopRamBytes() override { return static_cast<uint32_t>(memory.size()); }
         void interruptCall(uint32_t fn, uint32_t a0, uint32_t a1, uint32_t gp, uint32_t delay) override
         {
-            events.push_back({cycle + delay, fn, a0, a1, gp});
+            // Libsd calls this after its actual byte copy or mixer half consumption.
+            events.push_back({cycle + (readyAudioCompletions ? 0 : delay), fn, a0, a1, gp, readyAudioCompletions});
+        }
+        void deliverReadyAudio()
+        {
+            if (!readyAudioCompletions || deliveringReadyAudio || !exclusions.empty()) return;
+            deliveringReadyAudio = true;
+            struct Scope { bool &active; ~Scope(){active=false;} } scope{deliveringReadyAudio};
+            unsigned count = 0;
+            while (true)
+            {
+                const auto found = std::find_if(events.begin(),events.end(),[&](const auto &event){
+                    return event.readyAudio && event.due <= cycle;
+                });
+                if (found == events.end()) return;
+                if (++count > 1024) throw std::runtime_error("native ready audio completion work limit");
+                const auto event = *found;
+                events.erase(found); // Remove before invoking reentrant native SDK/game code.
+                if (event.function) invoke(event.function,event.gp,event.a0,event.a1);
+            }
         }
         uint32_t physical(uint32_t a, uint32_t n) const
         {
@@ -220,6 +241,7 @@ namespace bozo::native::irx
                             throw std::runtime_error(std::format("no compiled IRX target at 0x{:x}", cpu.pc));
                         ++owner.calls;
                         fn->second(*this);
+                        owner.deliverReadyAudio();
                     }
                     cpu.gpr[0] = 0;
                     if (expired() || (owner.current &&
@@ -1039,11 +1061,19 @@ namespace bozo::native::irx
         p.started[name] = id;
         return id;
     }
+    void CompiledLibraries::useReadyAudioCompletions()
+    {
+        auto &p = *impl_;
+        if (!p.started.empty() || p.invokeDepth || !p.tasks.empty() || p.calls)
+            throw std::runtime_error("native audio completion policy must be installed before execution");
+        p.readyAudioCompletions = true;
+    }
     void CompiledLibraries::reset()
     {
         auto &p = *impl_;
         p.tasks.clear();
         p.events.clear();
+        p.deliveringReadyAudio = false;
         p.interrupts.clear();
         p.timers.clear();
         p.semas.clear();
