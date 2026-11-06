@@ -166,7 +166,21 @@ namespace bozo::libs
         uint8_t bcd(int v) { return static_cast<uint8_t>((v / 10) * 16 + v % 10); }
 
         // sceCdInit(mode), sceCdMmode(media): 1. sceCdDiskReady(mode): 2 (ready). sceFsReset(): 0.
-        void init(Libraries &, Guest &g) { g.ret(1); }
+        void init(Libraries &l, Guest &g) { l.cd.initialized=g.arg(0)!=2;l.cd.error=0;g.ret(1); }
+        void status(Libraries &l, Guest &g)
+        {
+            // Public SDK status values from libcdvd-common.h. These describe
+            // the native file job, not an addressable console device bank.
+            const auto &cd=l.cd;
+            g.ret(!cd.initialized?0:cd.error?0x20:(cd.streaming || l.now(g)<cd.readEnd)?6:0x0a);
+        }
+        void readPosition(Libraries &l, Guest &g)
+        {
+            // The SDK reports a byte offset only while the read command is
+            // active. Our native read copies the complete job before returning;
+            // completion clears its observable position, not the last sector.
+            g.retU(l.now(g)<l.cd.readEnd?l.cd.readBytes:0);
+        }
         void mmode(Libraries &, Guest &g) { g.ret(1); }
         void diskReady(Libraries &, Guest &g) { g.ret(2); }
         void fsReset(Libraries &, Guest &g) { g.ret(0); }
@@ -222,6 +236,7 @@ namespace bozo::libs
             CdState &cd = l.cd;
             const bool ok = sectorsTo(l, g, lbn, n, to);
             cd.error = ok ? 0 : -1;
+            cd.readBytes=ok?n*kSectorBytes:0;
             g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
             cd.readEnd = l.now(g) + g.cycles;
             if(ok && cd.callback)
@@ -408,6 +423,8 @@ namespace bozo::libs
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
         out.push_back({"sceCdInit", kCd, init});
+        out.push_back({"sceCdStatus", kCd, status});
+        out.push_back({"sceCdGetReadPos", kCd, readPosition});
         out.push_back({"sceCdCallback", kCd, callback});
         out.push_back({"sceCdInitEeCB", kCd, initCallback});
         out.push_back({"sceCdMmode", kCd, mmode});

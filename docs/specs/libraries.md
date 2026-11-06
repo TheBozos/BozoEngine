@@ -298,6 +298,16 @@ the card's error codes on the paths TMB tries.
 
 ## 8. The CD and file access (`cd`)
 
+`sceCdStatus` derives its public SDK result from native service lifecycle and jobs: stopped before initialization
+or after exit-mode initialization, read while a native read/stream is active, emergency on a stored read error,
+otherwise paused/ready. Values 0/6/0x20/0x0a follow ps2dev/ps2sdk `libcdvd-common.h`
+(https://github.com/ps2dev/ps2sdk/blob/master/common/include/libcdvd-common.h). There is no SCMD/RPC bind or console
+register backing this API. The CD suite covers each lifecycle/job state; it does not infer physical media motion.
+`sceCdGetReadPos` reports bytes copied by the active native read, and zero outside a read command, following the
+SDK's read-command lifetime check. It never returns a sector number. The current synchronous native copy has all
+job bytes ready before return; it does not synthesize partial drive-counter progress. The actual ISO read fixture
+checks 2048 bytes while pending and zero after completion.
+
 Native callback registration: `sceCdCallback` retains the function and GP per `Libraries` instance, returns the
 previous function, and refuses changes during a pending read. `sceCdInitEeCB(priority, stack, bytes)` validates and
 retains its callback stack once (1 first, 0 repeated, -1 invalid). The supplied priority is validated; callbacks use

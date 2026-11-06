@@ -16,6 +16,8 @@ struct TestHost:ee::Host {
         check(pc==0x300020);
         libs::Guest g(d.runtime(),c);l.find("sceCdRead")->handler(l,g);
         check(c->r[2].sd[0]==1 && callbacks==0);
+        l.find("sceCdGetReadPos")->handler(l,g);
+        check(c->r[2].uw[0]==2048);
         d.setNow(c,d.now(c)+g.cycles);
     }
     void threadEnded(ee::Dispatcher &,ee::Thread &) override {throw Done{};}
@@ -59,6 +61,14 @@ int main() {
         libs::Guest g(d.runtime(),&c);auto *f=host.l.find(name);check(f);f->handler(host.l,g);
         return c.r[2].sw[0];
     };
+    check(call("sceCdStatus",{})==0);
+    check(call("sceCdGetReadPos",{})==0);
+    check(call("sceCdInit",{0})==1 && call("sceCdStatus",{})==0x0a);
+    host.l.cd.readEnd=100;check(call("sceCdStatus",{})==6);
+    host.l.cd.readEnd=0;host.l.cd.streaming=true;check(call("sceCdStatus",{})==6);
+    host.l.cd.streaming=false;host.l.cd.error=-1;check(call("sceCdStatus",{})==0x20);
+    check(call("sceCdInit",{2})==1 && call("sceCdStatus",{})==0);
+    check(call("sceCdInit",{0})==1 && call("sceCdStatus",{})==0x0a);
     check(call("sceCdInitEeCB",{128,0x220000,0x1000})==-1 && !host.l.cd.callbackConfigured);
     check(call("sceCdInitEeCB",{32,0xfffffff0,0x1000})==-1 && !host.l.cd.callbackConfigured);
     check(call("sceCdInitEeCB",{32,0x1fffff0,0x1000})==-1 && !host.l.cd.callbackConfigured);
@@ -77,6 +87,7 @@ int main() {
     d.setFunctions(funcs,2,resumes,2);d.bindLibrary(0x300020);
     try{d.run();check(false);}catch(const Done &){}
     check(host.callbacks==1 && !d.kernel().handlerQueued());
+    check(call("sceCdGetReadPos",{})==0);
     std::puts("native CD callback registration/configuration/isolation and real read completion passed");return 0;
  }catch(const std::exception &e){std::fprintf(stderr,"%s\n",e.what());return 1;}
 }
