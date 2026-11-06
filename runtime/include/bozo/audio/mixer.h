@@ -29,6 +29,8 @@
 
 namespace bozo::audio
 {
+    class PortStream;
+
     class Mixer
     {
     public:
@@ -102,6 +104,8 @@ namespace bozo::audio
         // Clocked: the IOP cycle at which the next input half ends (its half callback), 0 when no input plays.
         uint64_t nextInputHalfCycle() const;
         void setInputHalfCallback(std::function<void(int group, int half)> half);
+        // A port's stream, added to each output sample after the voices (null: none). It outlives its use here.
+        void setPortStream(PortStream *stream);
 
         // Free-running: the audio device asks for frames stereo 16-bit samples and they are mixed then.
         // Clocked (setClocked(true)): render() only takes the samples advanceTo made from a queue (silence when it
@@ -214,6 +218,7 @@ namespace bozo::audio
         std::vector<uint8_t> m_memory = std::vector<uint8_t>(kSoundMemory, 0u);
         Group m_groups[kGroups];
         std::function<void(int group, int half)> m_inputHalf;
+        PortStream *m_portStream = nullptr;
         // takeMixed's digest.
         std::mutex m_digestMutex;
         uint64_t m_digestHash = 0xCBF29CE484222325ull;

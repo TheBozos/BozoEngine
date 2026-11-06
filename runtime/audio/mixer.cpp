@@ -4,6 +4,8 @@
 // The native sound mixer (bozo/audio/mixer.h; behaviour: docs/specs/libraries.md section 15.14).
 #include "bozo/audio/mixer.h"
 
+#include "bozo/audio/port_stream.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -454,6 +456,12 @@ namespace bozo::audio
         std::lock_guard<std::mutex> lock(m_mutex);
         return inputOffsetOf(m_groups[group].input.position);
     }
+    void Mixer::setPortStream(PortStream *stream)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_portStream = stream;
+    }
+
     uint64_t Mixer::nextInputHalfCycle() const
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -815,6 +823,11 @@ namespace bozo::audio
                 if (g == kGroups - 1)
                     for (int side = 0; side < 2; ++side)
                         mixed[side] = mul15(mixed[side], group.master[side].level);
+            }
+            if (int16_t stream[2]; m_portStream && m_portStream->pull(stream))
+            {
+                mixed[0] += stream[0];
+                mixed[1] += stream[1];
             }
             out[frame * 2u] = static_cast<int16_t>(clamp16(mixed[0]));
             out[frame * 2u + 1u] = static_cast<int16_t>(clamp16(mixed[1]));

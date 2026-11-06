@@ -6,6 +6,7 @@
 // clock (a sample per 768 IOP cycles), libsd's entries and batches, and the reference's samples (mixer_scenario.h).
 #include "bozo/audio/libsd.h"
 #include "bozo/audio/mixer.h"
+#include "bozo/audio/port_stream.h"
 #include "mixer_scenario.h"
 
 #include <cstdio>
@@ -292,8 +293,6 @@ namespace
         sd.call(14u, reverse, 0u, r);
         eq("export 14", r, 72 << 8);
         eq("libsd handles 27", Libsd::handles(27u), 1);
-        // The effect: sceSdSetEffectAttr sets everything, sceSdSetEffectMode the mode, delay and feedback (not the
-        // depth), sceSdSetEffectModeParams delay, feedback and depth of the mode in place.
         const auto effect = [&](uint32_t mode, uint16_t left, uint16_t right, uint32_t delay, uint32_t feedback) {
             host.w32(0x90004u, mode);
             host.w16(0x90008u, left);
@@ -309,16 +308,28 @@ namespace
         eq("sceSdSetEffectMode", sd.call(32u, attr, 0u, r) && r == 0u, 1);
         sd.call(24u, read, 0u, r);
         eq("SetEffectMode: the mode", host.r32(0x90104u), 3);
-        eq("SetEffectMode: the delay", host.r32(0x9010Cu), 7);
-        eq("SetEffectMode: the feedback", host.r32(0x90110u), 8);
-        eq("SetEffectMode keeps the depth", ram16(0x90108u), 0x1111);
+        eq("SetEffectMode: delay 0", host.r32(0x9010Cu), 0);
+        eq("SetEffectMode: feedback 0", host.r32(0x90110u), 0);
+        eq("SetEffectMode: depth 0", ram16(0x90108u), 0);
+        effect(10u, 0u, 0u, 0u, 0u);
+        sd.call(32u, attr, 0u, r);
+        eq("SetEffectMode: a bad mode", static_cast<int32_t>(r), -100);
         effect(1u, 0x4444u, 0x5555u, 9u, 10u);
+        sd.call(33u, attr, 0u, r);
+        eq("SetEffectModeParams: another mode", static_cast<int32_t>(r), -100);
+        effect(3u, 0x4444u, 0x5555u, 9u, 10u);
         eq("sceSdSetEffectModeParams", sd.call(33u, attr, 0u, r) && r == 0u, 1);
         sd.call(24u, read, 0u, r);
-        eq("SetEffectModeParams keeps the mode", host.r32(0x90104u), 3);
-        eq("SetEffectModeParams: the delay", host.r32(0x9010Cu), 9);
+        eq("SetEffectModeParams, mode 3: the delay stays", host.r32(0x9010Cu), 0);
         eq("SetEffectModeParams: the depth", ram16(0x90108u), 0x4444);
         eq("SetEffectModeParams: the right depth", ram16(0x9010Au), 0x5555);
+        effect(7u, 0u, 0u, 0u, 0u);
+        sd.call(32u, attr, 0u, r);
+        effect(7u, 0x1000u, 0x1000u, 9u, 10u);
+        sd.call(33u, attr, 0u, r);
+        sd.call(24u, read, 0u, r);
+        eq("SetEffectModeParams, mode 7: the delay", host.r32(0x9010Cu), 9);
+        eq("SetEffectModeParams, mode 7: the feedback", host.r32(0x90110u), 10);
         eq("libsd handles 31 (sceSdCleanEffectWorkArea)", Libsd::handles(31u), 1);
         eq("libsd handles 13", Libsd::handles(13u), 1);
         eq("libsd does not handle 29", Libsd::handles(29u), 0);
@@ -338,8 +349,40 @@ namespace
     }
 }
 
+static void testPortStream()
+{
+    using bozo::audio::PortStream;
+    Mixer m;
+    PortStream stream;
+    m.setPortStream(&stream);
+    m.setClocked(true);
+    m.advanceTo(0);
+    const int16_t frames[6] = {1000, -1000, 2000, -2000, 32000, -32000};
+    eq("pushed", static_cast<long long>(stream.push(frames, 3)), 3);
+    m.advanceTo(2 * Mixer::kIopCyclesPerSample);
+    eq("taken as the clock makes samples", static_cast<long long>(stream.queued()), 1);
+    int16_t out[8] = {};
+    eq("two made", static_cast<long long>(m.take(out, 4)), 2);
+    eq("left", out[0], 1000);
+    eq("right", out[1], -1000);
+    eq("the next", out[2], 2000);
+    m.advanceTo(4 * Mixer::kIopCyclesPerSample);
+    eq("two more", static_cast<long long>(m.take(out, 4)), 2);
+    eq("the last", out[0], 32000);
+    eq("then silence, not a wait", out[2], 0);
+
+    std::vector<int16_t> big(2u * (PortStream::kFrames + 10u), 1);
+    eq("it holds two seconds", static_cast<long long>(stream.push(big.data(), PortStream::kFrames + 10u)),
+       static_cast<long long>(PortStream::kFrames));
+    eq("nothing more", static_cast<long long>(stream.push(big.data(), 1)), 0);
+    stream.clear();
+    eq("cleared", static_cast<long long>(stream.queued()), 0);
+    m.setPortStream(nullptr);
+}
+
 int main()
 {
+    testPortStream();
     testAttack();
     testEnd(false);
     testEnd(true);

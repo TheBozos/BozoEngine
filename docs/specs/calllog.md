@@ -325,7 +325,9 @@ semaphores (`CreateSema`, `DeleteSema`, `SignalSema`, `iSignalSema`, `WaitSema`,
 `AddDmacHandler`, `AddDmacHandler2`, `RemoveDmacHandler`, `EnableIntc`, `DisableIntc`, `EnableDmac`, `DisableDmac` and
 their `i` and `_` forms), alarms (`SetAlarm`, `ReleaseAlarm`), `SetVSyncFlag`, `FlushCache`, `EnableCache`,
 `DisableCache`, `EndOfHeap`, `GetMemorySize`, `GsGetIMR`, `GsPutIMR`, `SetGsCrt`, `ResetEE`,
-`Get/SetOsdConfigParam(2)`, and the raw syscalls (TMB's crt0: 60 `SetupThread`, 61 `SetupHeap`). Their CALL records
+`Get/SetOsdConfigParam(2)`, the newer SDK's `_InitSys` (its syscall-table, alarm, timer, `ExecPS2` and TLB set-up
+is the native kernel's own), and the raw syscalls (TMB's crt0: 60 `SetupThread`, 61 `SetupHeap`; every number:
+`kernel.md` section 2). Their CALL records
 are what to check BozoEngine's results against (context words, memory, and the operations they made, nested at depth
 0 under origin 1).
 

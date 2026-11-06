@@ -86,9 +86,10 @@ as on the IOP) and `CpuEnableIntr` (9) closes it; with nothing open it does noth
 scope open fails as any unbalanced exclusion does. `library_cpu_interrupts` checks them.
 
 Native libsd also answers `sceSdCleanEffectWorkArea` (31), the waiting form of `sceSdClearEffectWorkArea` (25): the
-native clear is immediate. `sceSdSetEffectMode` (32) sets the effect's mode, delay and feedback from the
-`sceSdSetEffectAttr` record (clearing the work area when the mode asks it) without its depth; `sceSdSetEffectModeParams`
-(33) sets delay, feedback and depth of the current mode in place.
+native clear is immediate. `sceSdSetEffectMode` (32) sets the mode, zeroes delay, feedback and depth, and clears the work area when the mode
+asks it (bit 0x100); `sceSdSetEffectModeParams` (33) returns -100 unless its mode is the current one, sets the depth,
+and sets delay and feedback only in modes 7 and 8. Both as the disc's LIBSD.IRX does, read from its code, not observed
+at run time.
 
 IOP alarms (`thbase` 35-38: `SetAlarm`, `iSetAlarm`, `CancelAlarm`, `iCancelAlarm`) are native periodic jobs on the same
 scheduler as the timer handlers: the linked handler gets its common argument and captured GP, its return value is

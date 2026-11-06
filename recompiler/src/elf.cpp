@@ -3,9 +3,12 @@
 #include "elf.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <sstream>
 
 namespace bozo
 {
@@ -32,6 +35,58 @@ namespace bozo
             return fail("cannot open " + path);
         std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         return parse(std::move(bytes));
+    }
+
+    bool ElfFile::loadSymbolMap(const std::string &path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return fail("cannot open symbol map " + path);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        return parseSymbolMap(text, path);
+    }
+
+    bool ElfFile::parseSymbolMap(const std::string &text, const std::string &origin)
+    {
+        std::vector<ElfSymbol> added;
+        std::map<std::string, uint32_t> seen;
+        std::istringstream lines(text);
+        std::string line;
+        for (int number = 1; std::getline(lines, line); ++number)
+        {
+            std::istringstream words(line.substr(0, line.find('#')));
+            std::string name, address, extra;
+            if (!(words >> name))
+                continue;
+            const std::string where = origin + ":" + std::to_string(number) + ": ";
+            if (!(words >> address) || (words >> extra))
+                return fail(where + "expected \"name 0xADDR\"");
+            char *end = nullptr;
+            const unsigned long long value = std::strtoull(address.c_str(), &end, 0);
+            if (address[0] == '-' || *end != '\0' || value == 0 || value > 0xFFFFFFFFull)
+                return fail(where + "bad address " + address);
+            ElfSymbol symbol;
+            symbol.name = name;
+            symbol.value = static_cast<uint32_t>(value);
+            symbol.type = 2;
+            symbol.bind = 1;
+            const bool code = (symbol.value & 3u) == 0 &&
+                (std::any_of(sections_.begin(), sections_.end(), [&](const ElfSection &s) {
+                    return s.executable() && symbol.value >= s.addr && symbol.value - s.addr + 4 <= s.size;
+                }) ||
+                 std::any_of(segments_.begin(), segments_.end(), [&](const ElfSegment &s) {
+                     return (s.flags & 1u) && symbol.value >= s.vaddr && symbol.value - s.vaddr + 4 <= s.fileSize;
+                 }));
+            if (!code)
+                return fail(where + name + " at " + address + " is not an instruction of the ELF's code");
+            auto [known, fresh] = seen.emplace(name, symbol.value);
+            if (!fresh && known->second != symbol.value)
+                return fail(where + name + " has two addresses");
+            if (fresh)
+                added.push_back(std::move(symbol));
+        }
+        symbols_.insert(symbols_.end(), added.begin(), added.end());
+        return true;
     }
 
     bool ElfFile::parse(std::vector<uint8_t> bytes)

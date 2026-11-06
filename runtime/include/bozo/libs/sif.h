@@ -33,6 +33,8 @@ namespace bozo::libs
         bool release(uint32_t address);    // a block's start; false when it is not one in use
         // The block in use that contains `address` (its start), 0 if none.
         uint32_t blockAt(uint32_t address) const;
+        uint32_t largestFree() const;
+        uint32_t totalFree() const;
 
     private:
         std::map<uint32_t, uint32_t> free_; // start -> bytes

@@ -64,6 +64,22 @@ namespace bozo::libs
         return true;
     }
 
+    uint32_t IopHeap::largestFree() const
+    {
+        uint32_t largest = 0;
+        for (const auto &[start, bytes] : free_)
+            largest = std::max(largest, bytes);
+        return largest;
+    }
+
+    uint32_t IopHeap::totalFree() const
+    {
+        uint32_t total = 0;
+        for (const auto &[start, bytes] : free_)
+            total += bytes;
+        return total;
+    }
+
     uint32_t IopHeap::blockAt(uint32_t address) const
     {
         auto it = used_.upper_bound(address);
@@ -205,6 +221,10 @@ namespace bozo::libs
         // sceSifInitIopHeap(): 0. sceSifAllocIopHeap(bytes): the block's IOP address (0 if none). sceSifFreeIopHeap
         // (address): 0.
         void initIopHeap(Libraries &, Guest &g) { g.ret(0); }
+        // sceSifQueryMemSize(), sceSifQueryMaxFreeMemSize(), sceSifQueryTotalFreeMemSize(): the IOP heap's figures.
+        void queryMemSize(Libraries &, Guest &g) { g.retU(IopHeap::kEnd); }
+        void queryMaxFreeMemSize(Libraries &l, Guest &g) { g.retU(l.sif.heap.largestFree()); }
+        void queryTotalFreeMemSize(Libraries &l, Guest &g) { g.retU(l.sif.heap.totalFree()); }
         void allocIopHeap(Libraries &l, Guest &g) { g.retU((l.sif.allocateBuffer ? l.sif.allocateBuffer(g.arg(0)) : l.sif.heap.allocate(g.arg(0)))); }
         void freeIopHeap(Libraries &l, Guest &g)
         {
@@ -284,6 +304,9 @@ namespace bozo::libs
         out.push_back({"sceSifInitIopHeap", kSif, initIopHeap});
         out.push_back({"sceSifAllocIopHeap", kSif, allocIopHeap});
         out.push_back({"sceSifFreeIopHeap", kSif, freeIopHeap});
+        out.push_back({"sceSifQueryMemSize", kSif, queryMemSize});
+        out.push_back({"sceSifQueryMaxFreeMemSize", kSif, queryMaxFreeMemSize});
+        out.push_back({"sceSifQueryTotalFreeMemSize", kSif, queryTotalFreeMemSize});
         out.push_back({"sceSifLoadModule", kSif, loadModule});
         out.push_back({"sceSifRebootIop", kSif, rebootIop});
         out.push_back({"sceSifSyncIop", kSif, syncIop});

@@ -475,15 +475,17 @@ namespace bozo::audio
         core &= 1u;
         const uint32_t mode = r32(attr + 4u);
         if ((mode & 0xFFu) >= 10u)
-            return 0xFFFFFFFFu;
+            return static_cast<uint32_t>(-100);
         auto &effect = m_state.effect[core];
         effect.mode = mode & 0xFFu;
-        effect.delay = r32(attr + 0xCu);
-        effect.feedback = r32(attr + 0x10u);
+        effect.delay = 0u;
+        effect.feedback = 0u;
+        const int group = static_cast<int>(core);
+        m_mixer.setEffectVolume(group, 0, 0u);
+        m_mixer.setEffectVolume(group, 1, 0u);
+        m_mixer.setEffect(group, static_cast<int>(effect.mode), 0u, 0u, m_state.effectEnd[core]);
         if ((mode & 0x100u) != 0u)
             m_mixer.clearEffectArea(static_cast<int>(effect.mode), m_state.effectEnd[core]);
-        m_mixer.setEffect(static_cast<int>(core), static_cast<int>(effect.mode), effect.delay, effect.feedback,
-                          m_state.effectEnd[core]);
         return 0u;
     }
 
@@ -492,10 +494,16 @@ namespace bozo::audio
         sync();
         core &= 1u;
         auto &effect = m_state.effect[core];
-        effect.delay = r32(attr + 0xCu);
-        effect.feedback = r32(attr + 0x10u);
+        const uint32_t mode = r8(attr + 4u);
+        if (mode >= 10u || mode != effect.mode)
+            return static_cast<uint32_t>(-100);
         const int group = static_cast<int>(core);
-        m_mixer.setEffect(group, static_cast<int>(effect.mode), effect.delay, effect.feedback, m_state.effectEnd[core]);
+        if (mode == 7u || mode == 8u)
+        {
+            effect.delay = r32(attr + 0xCu);
+            effect.feedback = r32(attr + 0x10u);
+            m_mixer.setEffect(group, static_cast<int>(mode), effect.delay, effect.feedback, m_state.effectEnd[core]);
+        }
         m_mixer.setEffectVolume(group, 0, r16(attr + 8u));
         m_mixer.setEffectVolume(group, 1, r16(attr + 0xAu));
         return 0u;

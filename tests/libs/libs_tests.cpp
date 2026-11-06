@@ -123,6 +123,8 @@ namespace
         eq("rand 1", m.call("rand", {}), 0);
         eq("rand 2", m.call("rand", {}), 0x5851f42d);
         eq("rand 3", m.call("rand", {}), 0x40b18ccf);
+        m.string(0x100000, "x%d");
+        eq("scePrintf formats as printf", m.call("scePrintf", {0x100000, 42}), 3);
     }
 }
 
@@ -157,6 +159,19 @@ static void sifAndSnd()
     heap.release(0x80290);
     eq("first fit reuses the hole", heap.allocate(0x100), 0x80290);
     eq("block lookup", heap.blockAt(c + 8), c);
+
+    {
+        Machine q;
+        eq("IOP RAM size", q.call("sceSifQueryMemSize", {}), 0x200000);
+        eq("fresh heap's largest block", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60);
+        eq("fresh heap's free total", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60);
+        const uint32_t a = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x10000}));
+        const uint32_t b = static_cast<uint32_t>(q.call("sceSifAllocIopHeap", {0x8000}));
+        q.call("sceSifFreeIopHeap", {a});
+        eq("largest block after a hole", q.call("sceSifQueryMaxFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x18000);
+        eq("free total counts the hole", q.call("sceSifQueryTotalFreeMemSize", {}), 0x200000 - 0x7FE60 - 0x8000);
+        (void)b;
+    }
 
     Machine m;
     m.libs.sndNative = true;
@@ -277,6 +292,26 @@ void liveScriptInput() {
     input.read(114,0,state);eq("partial write cannot hold button forever",state.buttons,0);
     std::filesystem::remove(path);
 }
+void nativeMultitap() {
+    Machine m;
+    eq("sceMtapInit",m.call("sceMtapInit",{}),1);
+    eq("MTAPMAN major version 3",m.call("sceMtapGetModVersion",{})>>8,3);
+    eq("no multitap in port 2",m.call("sceMtapPortOpen",{1}),0);
+    eq("multitap in port 1",m.call("sceMtapPortOpen",{0}),1);
+    eq("libpad sees it",m.libs.pad.multitap,true);
+    eq("port 1 connected",m.call("sceMtapGetConnection",{0}),1);
+    eq("port 2 not connected",m.call("sceMtapGetConnection",{1}),0);
+    eq("four slots behind the multitap",m.call("scePadGetSlotMax",{0}),4);
+    eq("one slot on port 2",m.call("scePadGetSlotMax",{1}),1);
+    eq("close",m.call("sceMtapPortClose",{0}),1);
+    eq("libpad sees it closed",m.libs.pad.multitap,false);
+    eq("one slot without the multitap",m.call("scePadGetSlotMax",{0}),1);
+    eq("scePadPortClose",m.call("scePadPortClose",{0,0}),1);
+    eq("scePadEnd",m.call("scePadEnd",{}),1);
+    m.libs.pad.multitapAttached=false;
+    eq("unplugged multitap does not open",m.call("sceMtapPortOpen",{0}),0);
+    eq("unplugged multitap is not connected",m.call("sceMtapGetConnection",{0}),0);
+}
 void nativeIsoFiles() {
     std::vector<uint8_t> iso(24*2048);
     const auto word=[](uint8_t *at,uint32_t value){for(int i=0;i<4;++i){at[i]=uint8_t(value>>(8*i));at[7-i]=at[i];}};
@@ -307,12 +342,68 @@ void nativeIsoFiles() {
     }
     std::filesystem::remove(path);
 }
+void nativeDualLayerIso() {
+    const auto word=[](uint8_t *at,uint32_t value){for(int i=0;i<4;++i){at[i]=uint8_t(value>>(8*i));at[7-i]=at[i];}};
+    const auto record=[&](uint8_t *at,const std::string &name,uint32_t sector,uint32_t bytes,bool directory){
+        const uint8_t size=uint8_t((33+name.size()+1)&~1u);
+        at[0]=size;word(at+2,sector);word(at+10,bytes);at[25]=directory?2:0;
+        at[28]=1;at[31]=1;at[32]=uint8_t(name.size());std::memcpy(at+33,name.data(),name.size());return size;
+    };
+    const auto volume=[&](uint8_t *base,uint32_t sectors,const std::string &file,uint8_t fill){
+        uint8_t *pvd=base+16*2048;pvd[0]=1;std::memcpy(pvd+1,"CD001",5);pvd[6]=1;word(pvd+80,sectors);
+        record(pvd+156,std::string(1,'\0'),18,2048,true);
+        record(base+18*2048,"LEVELS",19,2048,true);
+        record(base+19*2048,file,20,2048,false);
+        std::memset(base+20*2048,fill,2048);
+    };
+    std::vector<uint8_t> iso((24+16)*2048);
+    volume(iso.data(),24,"A.BIN;1",0xAA);
+    std::vector<uint8_t> second(32*2048);
+    volume(second.data(),32,"B.BIN;1",0xBB);
+    std::memcpy(iso.data()+24*2048,second.data()+16*2048,16*2048);
+    const auto path=std::filesystem::temp_directory_path()/("bozo-dvd9-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".iso");
+    {std::ofstream f(path,std::ios::binary);f.write(reinterpret_cast<const char *>(iso.data()),iso.size());}
+    {
+        Machine m;m.libs.cd.imagePath=path.string();
+        eq("dual-layer info returns",m.call("sceCdReadDvdDualInfo",{0x104000,0x104004}),1);
+        uint32_t dual,start;std::memcpy(&dual,m.rt->memory.ram()+0x104000,4);std::memcpy(&start,m.rt->memory.ram()+0x104004,4);
+        eq("image is dual-layer",dual,1);
+        eq("second layer starts 16 sectors before its descriptor",start,8);
+        m.string(0x101000,"\\LEVELS\\B.BIN;1");
+        eq("layer 1 search",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),1);
+        uint32_t lbn;std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 1 extent is the disc's own sector",lbn,28);
+        eq("layer 0 search does not see layer 1's file",m.call("sceCdSearchFile",{0x102000,0x101000}),0);
+        m.string(0x101000,"\\LEVELS");
+        eq("directory search on layer 1",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),1);
+        std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 1 directory sector",lbn,27);
+        m.string(0x101000,"cdrom0:\\levels\\a.bin;1");
+        eq("layer 0 search through the layer call",m.call("sceCdLayerSearchFile",{0x102000,0x101000,0}),1);
+        std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);eq("layer 0 extent",lbn,20);
+        eq("no third layer",m.call("sceCdLayerSearchFile",{0x102000,0x101000,2}),0);
+    }
+    std::filesystem::remove(path);
+    std::vector<uint8_t> single(24*2048);
+    volume(single.data(),24,"A.BIN;1",0xAA);
+    const auto singlePath=std::filesystem::temp_directory_path()/("bozo-dvd5-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".iso");
+    {std::ofstream f(singlePath,std::ios::binary);f.write(reinterpret_cast<const char *>(single.data()),single.size());}
+    {
+        Machine m;m.libs.cd.imagePath=singlePath.string();
+        {const uint32_t ones=0xFFFFFFFFu;std::memcpy(m.rt->memory.ram()+0x104000,&ones,4);}
+        eq("single-layer info returns",m.call("sceCdReadDvdDualInfo",{0x104000,0x104004}),1);
+        uint32_t dual;std::memcpy(&dual,m.rt->memory.ram()+0x104000,4);eq("single-layer image",dual,0);
+        m.string(0x101000,"\\LEVELS\\A.BIN;1");
+        eq("no layer 1 on a single-layer image",m.call("sceCdLayerSearchFile",{0x102000,0x101000,1}),0);
+    }
+    std::filesystem::remove(singlePath);
+}
 
 int main()
 {
     reentrantAllocator();
     cardSlotAliases();
+    nativeMultitap();
     nativeIsoFiles();
+    nativeDualLayerIso();
     nativeCardDirectories();
     liveScriptInput();
     {
@@ -327,7 +418,7 @@ int main()
         // T0 on a temporary guest context must use that call's clock, including its reset epoch.
         // The thread's own context can still be at an earlier cycle while an override runs the temporary one.
         bozo::libs::Libraries libs;
-        libs.io.t0Mode = 2; // 576 kHz: 512 EE cycles per tick
+        libs.io.timers[0].mode = 2; // 576 kHz: 512 EE cycles per tick
         bozo::libs::ioStore(libs, 0x10000000, 4, 7, 10000);
         uint32_t pending = 0;
         eq("T0 advances from the calling context's reset epoch",
@@ -335,6 +426,55 @@ int main()
         eq("T0 first read is not a poll", pending, 0);
         bozo::libs::ioLoad(libs, 0x10000000, 4, pending, 10000 + 10 * 512);
         eq("T0 repeated read charges one tick", pending, 512);
+    }
+    {
+        // Timers 1-3 and the compare registers, read from the EE clock.
+        for (uint32_t address : {0x10000020u, 0x10000800u, 0x10000810u, 0x10000820u, 0x10001000u, 0x10001010u, 0x10001020u,
+                                 0x10001800u, 0x10001810u, 0x10001820u})
+            eq("a timer register is known", bozo::libs::ioKnown(address, 4, false), 1);
+        eq("Tn_HOLD is not", bozo::libs::ioKnown(0x10000030u, 4, false), 0);
+        eq("a timer register is a word", bozo::libs::ioKnown(0x10001800u, 2, false), 0);
+
+        bozo::libs::Libraries libs;
+        uint32_t pending = 0;
+        constexpr uint64_t line = 4920115ull * 2 / 525;
+        eq("T3's mode as the kernel leaves it", bozo::libs::ioLoad(libs, 0x10001810, 4, pending, 0), 0x83);
+        eq("T3 counts horizontal blanks from boot", bozo::libs::ioLoad(libs, 0x10001800, 4, pending, 5 * line), 5);
+        eq("T3's first read is not a poll", pending, 0);
+        bozo::libs::ioLoad(libs, 0x10001800, 4, pending, 5 * line + 1);
+        eq("T3's repeated read charges a line", pending, line);
+
+        bozo::libs::ioStore(libs, 0x10001010, 4, 0x82, 1000);
+        bozo::libs::ioStore(libs, 0x10001000, 4, 40, 1000);
+        bozo::libs::ioStore(libs, 0x10001020, 4, 77, 1000);
+        pending = 0;
+        eq("T2 counts at the clock its mode names", bozo::libs::ioLoad(libs, 0x10001000, 4, pending, 1000 + 3 * 512), 43);
+        eq("T2's mode reads back", bozo::libs::ioLoad(libs, 0x10001010, 4, pending, 1000), 0x82);
+        eq("T2's compare reads back", bozo::libs::ioLoad(libs, 0x10001020, 4, pending, 1000), 77);
+        eq("the count wraps at 16 bits", bozo::libs::ioLoad(libs, 0x10001000, 4, pending, 1000 + 0x10000ull * 512), 40);
+    }
+    {
+        // A frame-budget calibration: T0 at BUSCLK/256 measured over 256 changes of T3's count, each poll a few cycles.
+        bozo::libs::Libraries libs;
+        uint64_t cycle = 123456;
+        uint32_t pending = 0;
+        const auto poll = [&] {
+            pending = 0;
+            const uint64_t v = bozo::libs::ioLoad(libs, 0x10001800, 4, pending, cycle);
+            cycle += pending + 40;
+            return v;
+        };
+        bozo::libs::ioStore(libs, 0x10000010, 4, 0x82, cycle);
+        for (uint64_t first = poll(); poll() == first;)
+            ;
+        bozo::libs::ioStore(libs, 0x10000000, 4, 0, cycle);
+        for (int i = 0; i < 256; ++i)
+            for (uint64_t last = poll(); poll() == last;)
+                ;
+        pending = 0;
+        const uint64_t ticks = bozo::libs::ioLoad(libs, 0x10000000, 4, pending, cycle);
+        constexpr uint64_t console = 256ull * (4920115ull * 2 / 525) / 512;
+        eq("T0 over 256 lines is the console's, within 1%", ticks >= console - console / 100 && ticks <= console + console / 100, 1);
     }
     sifAndSnd();
     memoryCard();

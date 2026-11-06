@@ -54,7 +54,7 @@ calls, threads) with every record of the log matched.
 
 ## 2. The C library (`libc`)
 
-Native: `memcpy`, `memset`, `strlen`, `strchr`, `strcpy`, `strcmp`, `strncat`, `sprintf`, `printf`, `malloc`, `free`,
+Native: `memcpy`, `memset`, `strlen`, `strchr`, `strcpy`, `strcmp`, `strncat`, `sprintf`, `printf`, `scePrintf`, `malloc`, `free`,
 `srand`, `rand`.
 
 Every one returns at once (0 EE cycles) and leaves `v0` as the reference's library calls do: the result sign-extended
@@ -69,7 +69,7 @@ difference of the bytes (the records show only those three). `strncat` returns i
 `sprintf` and `printf` format as the reference: flags, width, precision (`*` too), `h`/`l`/`ll`, and `d i u x X o c
 s p f e g %`. Arguments come from the argument registers in order, one 64-bit register each, a double in one register
 (the EE's 64-bit GPRs), then 64-bit stack slots. TMB's formats are file names (`\LVL\%s.NGP;1%s`), `MEMORY CARD SLOT %d`
-and three debug `printf`s (`%f` included). `printf` writes the text to the host's stdout and returns its length.
+and three debug `printf`s (`%f` included). `printf` (and the SDK's `scePrintf`, the same function) writes the text to the host's stdout and returns its length.
 
 ### 2.2 The heap
 
@@ -166,7 +166,8 @@ that bind native textures must still run before calling the SDK builder. The `na
 both modes, guarded output buffers and inaccessible native outputs. This change does not replace readback consumers.
 
 Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
-`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`,
+`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`,
+`sceGsSyncVCallback`, `sceGsSyncV`,
 `sceGsExecLoadImage`, `sceGsExecStoreImage`. (The reference had `sceGsSyncV` and `sceGsSetDefLoadImage` as port
 overrides, kind 2 in the logs, the others as library stubs.)
 
@@ -199,6 +200,7 @@ output, native calls do not write valid guarded output buffers, and inaccessible
 | `sceGsSetDefStoreImage(sp, sbp, sbw, spsm, x, y, w, h)` | VIF codes, the GIF tag, BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR 1; returns 0 | the first VIF code is a NOP (libgraph: MSKPATH3); BITBLTBUF has DBW = 1; returns 0 (libgraph: 7) |
 | `sceGsPutDrawEnv(packet)` | returns 0 without reading the packet; the port supplies native materials | |
 | `sceGsSyncPath(mode, timeout)` | 0: nothing is ever in flight | |
+| `sceGsSyncVCallback(func)` | keeps `func`, run at the native frame boundary (`kernel.md` section 2) instead of as an INTC 2 handler; returns the previous one, 0 removes it | |
 | `sceGsSyncV(mode)` | 1 when the frames ended by then (this one included) are odd, else 0 | (settled on all 8 calls of boot and 2,290 of match1p; the vblank count's parity matches only half of them) |
 
 `sceGsSyncV` is where the game's frame ends (the FRAME record inside the call). Its result is the library's; the wait
@@ -222,8 +224,13 @@ Native: `scePadInit`, `scePadPortOpen`, `scePadGetState`, `scePadGetReqState`, `
 `scePadRead`. (The Logitech wheel's `lgDevInit` and `input*Lg*` are the game's own functions over the USB driver, port
 overrides in the reference: they stay with the log.)
 
-The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0. A game's multitap library is its port's
-(TMB's `sceMtap*` overrides open one in port 1 at its first frame, in every reference run: `PadState::multitap`).
+The reference presents two DualShock 2 controllers, on ports 1 and 2, slot 0. libmtap is native: `sceMtapInit` 1,
+`sceMtapPortOpen(port)` 1 and `PadState::multitap` set for port 1 (0) when `PadState::multitapAttached` (default on),
+else 0; `sceMtapPortClose(port)` 1 and the multitap closed for port 1; `sceMtapGetConnection(port)` 1 while port 1's is
+open, else 0; `sceMtapChangeThreadPriority` 1; `sceMtapGetModVersion` 0x0300 (MTAPMAN 3.0, the major version
+`sceMtapInit` checks). `scePadGetSlotMax(port)` is 4 for port 1 while its multitap is open, else 1 (0 past port 2);
+`scePadPortClose` and `scePadEnd` 1. TMB's `sceMtap*` overrides do the same and open one in port 1 at its first frame, in every
+reference run.
 
 Players (`padPlayer`): with the multitap, port 1's slots 0-3 are players 1-4 and port 2 has no player; without it, port 1
 slot 0 is player 1 and port 2 slot 0 player 2. Sockets:
@@ -319,7 +326,13 @@ replacement/unregistration/busy refusal, ownership isolation and actual dispatch
 private generated ISO. It makes no full-game or other CD command callback claim.
 
 Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
-`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
+`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
+`sceCdReadDvdDualInfo` (`bozo/libs/cd.h`, `libs/cd.cpp`).
+
+A dual-layer DVD (Champions of Norrath's DVD9) holds a second ISO 9660 volume on its second layer: its primary volume
+descriptor sits at the sector right after the first layer's volume (the first descriptor's volume size), and its
+directory records count sectors from 16 before that descriptor (`DiscImage::layer1Start`). Sector numbers stay the
+disc's own: a search on the second layer returns its file's extent plus that start, which `sceCdRead` reads as is.
 
 Sectors come from the game's disc image (`DiscImage`: an ISO 9660 image of 2048-byte sectors, checked by its primary
 volume descriptor at sector 16; sectors past its end read as zeros). `bozo-run --iso <image>` (or `BOZO_ISO`) names
@@ -333,6 +346,8 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | Function | Native answer |
 |---|---|
 | `sceCdInit(mode)`, `sceCdMmode(media)` | 1 |
+| `sceCdSearchFile(file, name)`, `sceCdLayerSearchFile(file, name, layer)` | 1 and the sceCdlFILE (sector, bytes, name) of the file or directory on layer 0 (sceCdSearchFile) or the given layer; 0 when it is not there, or for layer 1 of a single-layer image |
+| `sceCdReadDvdDualInfo(onDual, layer1Start)` | 1; `*onDual` 1 and `*layer1Start` the second layer's start on a dual-layer image, else 0 and 0 |
 | `sceCdDiskReady(mode)` | 2 (ready) |
 | `sceFsReset()` | 0 |
 | `sceCdReadClock(clock)` | 1; the 8 bytes stat 0, second, minute, hour, 0, day, month, year in BCD: the reference's deterministic clock, 2001-06-18 12:00:00 (`CdState::hostClock` for the host's time in the real runtime) |
@@ -544,6 +559,11 @@ an out-call), so the image is the hierarchy one until a kick of the 2D chain is 
 model's VIF0 channel); the 2D image's programs (0x278, 0x3b0, 0x438, 0x548, 0x5e0) are not native: a call to one would
 be answered from the log and counted ("calls with no native answer").
 
+**A port's programs.** `Registry::vu0Program(entry, fn)` registers a native program for an entry in VU0's code memory. The
+free host looks there first; a port with any has only those, a VCALLMS at another entry faults, and the TMB table above
+(whose images and entries are TMB's) is not consulted. A program runs inline on the calling context and VU0's data memory:
+it must not block or change pc or ra. Without registrations nothing changes. `bozo-run`'s pinned host stays on the table.
+
 ## 11. Hardware registers (`io`)
 
 Native: the remaining register/status compatibility operations (`bozo/libs/io.h`, `libs/io.cpp`). No DMA, VIF, GIF,
@@ -569,6 +589,12 @@ values are manufactured. Native reset clears SDK jobs/configuration without rese
 field error codes, without programming a controller. `sceGsPutDispEnv` returns without reading its obsolete display
 structure or issuing display-register writes; the native renderer/platform layer already owns presentation.
 
+The four timers are counts read from the EE clock, the one clock every other time here is on. T0 and T3 sharing it is
+what makes SC3's frame budget the console's whatever the host's speed: a poll of T3 that sees the same count charges a
+line, so 256 changes of it take 256 lines of EE time and T0 reads about 9,400. Between reads nothing counts, no compare
+is made and no timer interrupt is raised; the OVFF and EQUF bits of a mode stay as written, so the library code that
+waits on them (libkernel's timer library: `kernel.md` K3) does not work through these registers.
+
 `FreeOptions::profileIo` collects remaining device accesses by guest PC and address in `FreeStats::ioSites`.
 It is off by default. Ports can use it to find callers that still need native adaptation; the existing native
 graphics guard rejects any attempt to access retired graphics devices before the compatibility path runs.
@@ -577,6 +603,8 @@ graphics guard rejects any attempt to access retired graphics devices before the
 |---|---|---|
 | 0x10000000 | T0_COUNT | the count written last plus the periods since (T0_MODE 0x82: BUSCLK/256, a count every 512 EE cycles); a load that reads the same count as the previous one (a poll) leaves the period, 512 cycles, pending (charged at the next checkpoint: `calllog.md` section 2) |
 | 0x10000010 | T0_MODE | kept (0x82) |
+| 0x10000020 | T0_COMP | kept; nothing compares |
+| 0x10000800, 0x10001000, 0x10001800 + 0, 0x10, 0x20 | T1, T2, T3: COUNT, MODE, COMP | as T0, with the clock T`n`_MODE names: BUSCLK, /16, /256, or (3) the horizontal blank, `field x 2 / lines` EE cycles (`kernel.md` section 2). T3's mode is 0x83 from boot: it counts horizontal blanks without the game setting it (SC3's boot calibration measures T0 over 256 of them: 0x12d6c8 on) |
 | (any store) | a port's store patch | a store the port's patch names (`bozo::port::setStorePatch`, by its instruction: the externals' `store` lines) is made as an out-call without its effect (match1p #62516600: TMB's dialog kick, logged, no completion after it) |
 | 0x12001000 | GS CSR (loads) | FIELD (bit 13) the vblank count's parity, nothing else (TMB's vblankHandler reads it inside its override: boot #729700 on). A port's own access (`bozo::port::ioRead32` / `ioWrite32`) is not the game's: a store of its does not complete channel 4's transfer (match1p #14450438); a T0 read of its is a poll as the game's, a T0 write keeps the last read, its (#34736003) and the game's alike (stage-level0 #13062314: the game read 0, wrote 0 and read 0: a poll), and the EE time the port charges (`bozo::port::accountCycles`, TMB's frame end) takes the poll's pending cycles as a checkpoint would (#17538393, #17541951) |
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
@@ -647,7 +675,8 @@ the I/O model follows from the log (section 11), and 989SND's sound lifetimes, h
 ## 14. The SIF layer (`sif`)
 
 Native: `sceSifInitRpc`, `sceSifBindRpc`, `sceSifCallRpc`, `sceSifCheckStatRpc`, `sceSifGetSreg`, `sceSifSetSreg`,
-`sceSifInitIopHeap`, `sceSifAllocIopHeap`, `sceSifFreeIopHeap`, `sceSifLoadModule`, `sceSifRebootIop`, `sceSifSyncIop`,
+`sceSifInitIopHeap`, `sceSifAllocIopHeap`, `sceSifFreeIopHeap`, `sceSifQueryMemSize`, `sceSifQueryMaxFreeMemSize`,
+`sceSifQueryTotalFreeMemSize`, `sceSifLoadModule`, `sceSifRebootIop`, `sceSifSyncIop`,
 and `sceSifSetDma`, `sceSifDmaStat` (`bozo/libs/sif.h`, `libs/sif.cpp`). There is no IOP: an RPC goes to a native
 server (TMB's only one: 989SND, section 15), a module load loads nothing, the IOP heap is a model of the memory the
 reference's IOP allocator handed out. Every call of both logs returns at once (0 EE cycles, no record inside it): the
@@ -664,6 +693,7 @@ reference's IOP answered every RPC inside the call, so nothing is ever in flight
 | `sceSifGetSreg(reg)`, `sceSifSetSreg(reg, value)` | the 32 software registers; Set returns the old value (boot #153, #154; match1p #17536116: GetSreg(8) 0) |
 | `sceSifInitIopHeap()` | 0 |
 | `sceSifAllocIopHeap(bytes)`, `sceSifFreeIopHeap(address)` | a block of the IOP heap (14.2); 0 (match1p: 11 of each, every block at 0x8b6c0) |
+| `sceSifQueryMemSize()`, `sceSifQueryMaxFreeMemSize()`, `sceSifQueryTotalFreeMemSize()` | 2 MB; the IOP heap's largest free block; the sum of its free blocks (Champions of Norrath sizes its sound stream buffers from the largest block) |
 | `sceSifLoadModule(path, argc, argv)` | the module id: 1 for the first since the IOP's reboot, then 2... (boot #119-#127: TMB's nine modules, ids 1-9) |
 | `sceSifRebootIop(image)`, `sceSifSyncIop()` | 1 (`v0` is already 1 in the records: #27, #28) |
 | `sceSifSetDma(transfers, n)`, `sceSifDmaStat(id)` | the transfer's id (1, 2, ...), and the DMAC interrupt of channel 5 (SIF0) raised as it returns (boot #2157635, an OP inside the override's record at SetDma's return address); -1 (finished). TMB calls them only inside a port override (the movie's PCM, traced: boot #2157634 id 1, then 2...), so they are never checked against a record of their own; the native ids follow the traced ones |
@@ -1271,3 +1301,11 @@ address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, Get
 8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
 
 The exports added for modules with no LIBSD image: 13 and 14 are the SDK's equal-temperament arithmetic on two tables computed at start, floor(32768 * 2^(i / 12)) for the 12 semitones and floor(32768 * 2^(i / 1536)) for the 128 fine steps, one after the other. 0x1000 is the center note, and indexes outside both tables (only a center fine plus fine under -127) fail explicitly. Their integer results were compared with Soulcalibur III's LIBSD.IRX exports, statically compiled, on 10,254,800 arguments with no difference. 28 returns the argument given to 26. 30 stops the channel's input (voice transfers are already complete) and returns 0.
+
+**A port's stream.** `audio::PortStream` (`port::audioStream(rt)`, thread-safe) takes a port's PCM, a movie soundtrack: 16-bit
+stereo at 48 kHz, interleaved. The port resamples anything else. Each output sample the mixer makes takes one frame from it
+and adds it after the voices and the master volumes, so the stream is clocked by the same `advanceTo` as the voices, goes
+into `takeMixed`'s digest and to the same device. An empty stream adds silence and nothing waits; a full one (2 s) takes
+what fits and `push` returns the frames taken. The free host attaches it to whichever mixer it takes samples from, at its
+first take. `MovieSoundSink` stays libmpeg's.
+
