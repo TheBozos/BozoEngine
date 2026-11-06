@@ -319,7 +319,13 @@ replacement/unregistration/busy refusal, ownership isolation and actual dispatch
 private generated ISO. It makes no full-game or other CD command callback claim.
 
 Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
-`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
+`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
+`sceCdReadDvdDualInfo` (`bozo/libs/cd.h`, `libs/cd.cpp`).
+
+A dual-layer DVD (Champions of Norrath's DVD9) holds a second ISO 9660 volume on its second layer: its primary volume
+descriptor sits at the sector right after the first layer's volume (the first descriptor's volume size), and its
+directory records count sectors from 16 before that descriptor (`DiscImage::layer1Start`). Sector numbers stay the
+disc's own: a search on the second layer returns its file's extent plus that start, which `sceCdRead` reads as is.
 
 Sectors come from the game's disc image (`DiscImage`: an ISO 9660 image of 2048-byte sectors, checked by its primary
 volume descriptor at sector 16; sectors past its end read as zeros). `bozo-run --iso <image>` (or `BOZO_ISO`) names
@@ -333,6 +339,8 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | Function | Native answer |
 |---|---|
 | `sceCdInit(mode)`, `sceCdMmode(media)` | 1 |
+| `sceCdSearchFile(file, name)`, `sceCdLayerSearchFile(file, name, layer)` | 1 and the sceCdlFILE (sector, bytes, name) of the file or directory on layer 0 (sceCdSearchFile) or the given layer; 0 when it is not there, or for layer 1 of a single-layer image |
+| `sceCdReadDvdDualInfo(onDual, layer1Start)` | 1; `*onDual` 1 and `*layer1Start` the second layer's start on a dual-layer image, else 0 and 0 |
 | `sceCdDiskReady(mode)` | 2 (ready) |
 | `sceFsReset()` | 0 |
 | `sceCdReadClock(clock)` | 1; the 8 bytes stat 0, second, minute, hour, 0, day, month, year in BCD: the reference's deterministic clock, 2001-06-18 12:00:00 (`CdState::hostClock` for the host's time in the real runtime) |
