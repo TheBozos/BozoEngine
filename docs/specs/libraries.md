@@ -298,6 +298,16 @@ the card's error codes on the paths TMB tries.
 
 ## 8. The CD and file access (`cd`)
 
+Native callback registration: `sceCdCallback` retains the function and GP per `Libraries` instance, returns the
+previous function, and refuses changes during a pending read. `sceCdInitEeCB(priority, stack, bytes)` validates and
+retains its callback stack once (1 first, 0 repeated, -1 invalid). The supplied priority is validated; callbacks use
+the native handler queue, not an original SDK worker/private semaphores. This does not claim dedicated-worker
+priority parity. A successful native `sceCdRead` queues exactly one callback with reason 1, the registered GP and
+stack, after the read's existing duration is charged; the copied data is ready before callback execution. Existing
+read/sync timing remains unchanged. The synthetic `cd_callbacks` suite checks setup bounds/repetition,
+replacement/unregistration/busy refusal, ownership isolation and actual dispatcher read/callback ordering on a
+private generated ISO. It makes no full-game or other CD command callback claim.
+
 Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
 `sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
