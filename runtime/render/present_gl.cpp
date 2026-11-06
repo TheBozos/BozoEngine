@@ -56,6 +56,8 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aUv;
 layout(location = 2) in vec4 aCol;
 layout(location = 3) in float aFog;
+layout(location = 4) in float aQ;
+uniform int uUseQ;
 uniform vec4 uM[4];
 uniform vec4 uScreen;
 uniform float uDepthMax;
@@ -63,10 +65,12 @@ uniform vec4 uUvMap;
 out vec2 vUv;
 out vec4 vCol;
 out float vFog;
+noperspective out vec4 vColScreen;
+noperspective out float vFogScreen;
 void main()
 {
     vec4 c = uM[0] * aPos.x + uM[1] * aPos.y + uM[2] * aPos.z + uM[3];
-    float w = c.w;
+    float w = uUseQ != 0 && aQ > 0.0 ? c.w / aQ : c.w;
     vec2 s = c.xy / c.w;
     vec2 ndc = vec2((s.x - uScreen.x) / uScreen.z * 2.0 - 1.0, 1.0 - (s.y - uScreen.y) / uScreen.w * 2.0);
     // GS Z as XYZF2 holds it: past the Z buffer's range it wraps (24 bits kept), as on the GS, rather than clamps.
@@ -77,8 +81,60 @@ void main()
     vUv = vec2(aUv.x * uUvMap.x + uUvMap.y, aUv.y * uUvMap.z + uUvMap.w);
     vCol = aCol;
     vFog = aFog;
+    vColScreen = aCol;
+    vFogScreen = aFog;
 }
 )";
+
+        // (A - B) * C + D on the GPU's blender (a factor per colour). What it has no form for, a colour times 1 + C, saturates the
+        // factor at 1.
+        void applyGsBlend(const gl::Api &g, const Material &m)
+        {
+            const uint32_t a = m.blendA, b = m.blendB, c = m.blendC, d = m.blendD;
+            const gl::GLenum factor = c == 0u ? gl::kSrcAlpha : c == 1u ? gl::kDstAlpha : gl::kConstantAlpha;
+            const gl::GLenum inverse = c == 0u ? gl::kOneMinusSrcAlpha : c == 1u ? gl::kOneMinusDstAlpha : gl::kOneMinusConstantAlpha;
+            g.Enable(gl::kBlend);
+            g.BlendColor(0.0f, 0.0f, 0.0f, std::min(static_cast<float>(m.blendFix) / 128.0f, 1.0f));
+            gl::GLenum src = gl::kZero, dst = gl::kZero, equation = gl::kFuncAdd;
+            const uint32_t form = a == b ? 9u : a * 3u + b;
+            switch (form)
+            {
+            case 9u: // D
+                src = d == 0u ? gl::kOne : gl::kZero;
+                dst = d == 1u ? gl::kOne : gl::kZero;
+                break;
+            case 1u: // (Cs - Cd) * C + D
+                src = factor;
+                dst = d == 1u ? inverse : factor;
+                equation = d == 1u ? gl::kFuncAdd : gl::kFuncSubtract;
+                break;
+            case 2u: // Cs * C + D
+                src = factor;
+                dst = d == 1u ? gl::kOne : gl::kZero;
+                break;
+            case 3u: // (Cd - Cs) * C + D
+                src = d == 0u ? inverse : factor;
+                dst = d == 1u ? gl::kOne : factor;
+                equation = d == 2u ? gl::kFuncReverseSubtract : gl::kFuncAdd;
+                break;
+            case 5u: // Cd * C + D
+                src = d == 0u ? gl::kOne : gl::kZero;
+                dst = d == 1u ? gl::kOne : factor;
+                break;
+            case 6u: // D - Cs * C
+                src = d == 0u ? inverse : d == 1u ? factor : gl::kZero;
+                dst = d == 1u ? gl::kOne : gl::kZero;
+                equation = d == 1u ? gl::kFuncReverseSubtract : gl::kFuncAdd;
+                break;
+            default: // D - Cd * C
+                src = d == 0u ? gl::kOne : gl::kZero;
+                dst = d == 0u ? factor : d == 1u ? inverse : gl::kZero;
+                equation = d == 0u ? gl::kFuncSubtract : gl::kFuncAdd;
+                break;
+            }
+            g.BlendFuncSeparate(src, dst, gl::kOne, gl::kZero);
+            g.BlendEquation(equation);
+        }
 
         // GS modulate: texel * vertex colour, where a vertex colour of 0x80 is 1.0, then fog toward the fog colour (RGB
         // only, before blending). The render target holds premultiplied colour and coverage (opaque draws cover
@@ -88,10 +144,14 @@ void main()
 in vec2 vUv;
 in vec4 vCol;
 in float vFog;
+noperspective in vec4 vColScreen;
+noperspective in float vFogScreen;
+uniform int uUseQ;
 uniform sampler2D uTex;
 uniform int uTextured;
 uniform int uTarget;
 uniform int uAlphaTest;
+uniform int uAlphaFunc;
 uniform float uAlphaRef;
 uniform int uOpaque;
 uniform int uFog;
@@ -99,17 +159,23 @@ uniform vec3 uFogColour;
 out vec4 fragColor;
 void main()
 {
-    vec4 colour = vCol * (255.0 / 128.0);
+    vec4 colour = (uUseQ != 0 ? vColScreen : vCol) * (255.0 / 128.0);
     vec4 texel = uTextured != 0 ? texture(uTex, vUv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
         texel.a = texture(uTex, vUv).a;
     fragColor = clamp(texel * colour, 0.0, 1.0);
-    if (uAlphaTest != 0 && fragColor.a <= uAlphaRef)
-        discard;
+    if (uAlphaTest != 0)
+    {
+        float a = floor(fragColor.a * 128.0 + 0.5), r = floor(uAlphaRef * 128.0 + 0.5);
+        bool pass = uAlphaFunc == 1 || (uAlphaFunc == 2 && a < r) || (uAlphaFunc == 3 && a <= r) || (uAlphaFunc == 4 && a == r) ||
+                    (uAlphaFunc == 5 && a >= r) || (uAlphaFunc == 6 && a > r) || (uAlphaFunc == 7 && a != r);
+        if (!pass)
+            discard;
+    }
     if (uFog != 0)
-        fragColor.rgb = mix(uFogColour, fragColor.rgb, clamp(vFog, 0.0, 1.0));
+        fragColor.rgb = mix(uFogColour, fragColor.rgb, clamp(uUseQ != 0 ? vFogScreen : vFog, 0.0, 1.0));
     if (uOpaque != 0)
         fragColor.a = 1.0;
 }
@@ -230,7 +296,7 @@ void main()
     {
         gl::GLuint shader = 0;
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
-                  locAlphaTest = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locFogColour = -1;
+                  locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locFogColour = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
@@ -365,6 +431,8 @@ void main()
             locTarget = g.GetUniformLocation(shader, "uTarget");
             locAlphaTest = g.GetUniformLocation(shader, "uAlphaTest");
             locAlphaRef = g.GetUniformLocation(shader, "uAlphaRef");
+            locAlphaFunc = g.GetUniformLocation(shader, "uAlphaFunc");
+            locUseQ = g.GetUniformLocation(shader, "uUseQ");
             locOpaque = g.GetUniformLocation(shader, "uOpaque");
             locFog = g.GetUniformLocation(shader, "uFog");
             locFogColour = g.GetUniformLocation(shader, "uFogColour");
@@ -1149,10 +1217,12 @@ void main()
             g.VertexAttribPointer(1, 2, gl::kFloat, gl::kFalse, sizeof(Vertex), reinterpret_cast<const void *>(12));
             g.VertexAttribPointer(2, 4, gl::kUnsignedByte, gl::kTrue, sizeof(Vertex), reinterpret_cast<const void *>(20));
             g.VertexAttribPointer(3, 1, gl::kFloat, gl::kFalse, sizeof(Vertex), reinterpret_cast<const void *>(24));
+            g.VertexAttribPointer(4, 1, gl::kFloat, gl::kFalse, sizeof(Vertex), reinterpret_cast<const void *>(28));
             g.EnableVertexAttribArray(0);
             g.EnableVertexAttribArray(1);
             g.EnableVertexAttribArray(2);
             g.EnableVertexAttribArray(3);
+            g.EnableVertexAttribArray(4);
         }
         if (bytes != 0u)
         {
@@ -1342,9 +1412,12 @@ void main()
             if (clip.y1 < 0)
                 continue;
             const bool alphaOnly=m.blend==Material::Blend::AlphaOnly;
-            g.ColorMask(alphaOnly ? gl::kFalse : gl::kTrue,alphaOnly ? gl::kFalse : gl::kTrue,
-                        alphaOnly ? gl::kFalse : gl::kTrue,gl::kTrue);
-            if (m.blend == Material::Blend::Opaque || alphaOnly)
+            const auto channel = [&](uint32_t bit) { return (m.colourMask >> bit) & 1u ? gl::kTrue : gl::kFalse; };
+            g.ColorMask(alphaOnly ? gl::kFalse : channel(0),alphaOnly ? gl::kFalse : channel(1),
+                        alphaOnly ? gl::kFalse : channel(2),channel(3));
+            if (m.gsBlend)
+                applyGsBlend(g, m);
+            else if (m.blend == Material::Blend::Opaque || alphaOnly)
                 g.Disable(gl::kBlend);
             else
             {
@@ -1360,13 +1433,18 @@ void main()
             // The GS's depth test is GEQUAL (larger nearer): here LEQUAL on 1 - z, so what lies at the far end (a sky at
             // Z 0, a clear) passes against the cleared depth as on the GS; a draw without ZTE is not tested.
             if (m.depthTest)
+            {
                 g.Enable(gl::kDepthTest);
+                g.DepthFunc(m.depthGreater ? gl::kLess : gl::kLequal);
+            }
             else
                 g.Disable(gl::kDepthTest);
             g.Uniform4fv(gpu.locM, 4, matrix);
+            g.Uniform1i(gpu.locUseQ, m.useQ ? 1 : 0);
+            g.Uniform1i(gpu.locAlphaFunc, static_cast<int>(m.alphaFunc));
             const std::shared_ptr<const Texture> &texture = batch.texture;
             const int textured = m.textured && texture ? 1 : 0, alphaTest = m.alphaTest ? 1 : 0;
-            const int opaque = m.blend == Material::Blend::Opaque ? 1 : 0, fog = m.fog ? 1 : 0;
+            const int opaque = !m.gsBlend && m.blend == Material::Blend::Opaque ? 1 : 0, fog = m.fog ? 1 : 0;
             const float fogColour[3] = {static_cast<float>(m.fogColour & 0xffu) / 255.0f, static_cast<float>((m.fogColour >> 8) & 0xffu) / 255.0f,
                                         static_cast<float>((m.fogColour >> 16) & 0xffu) / 255.0f};
             g.Uniform1i(gpu.locOpaque, opaque);

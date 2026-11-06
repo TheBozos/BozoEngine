@@ -39,7 +39,9 @@ namespace bozo::render::gl
     constexpr GLenum kZero = 0, kOne = 1, kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303;
     constexpr GLenum kDstAlpha = 0x0304;
     constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501;
-    constexpr GLenum kFuncAdd = 0x8006;
+    constexpr GLenum kFuncAdd = 0x8006, kFuncSubtract = 0x800A, kFuncReverseSubtract = 0x800B;
+    constexpr GLenum kConstantAlpha = 0x8003, kOneMinusConstantAlpha = 0x8004, kOneMinusDstAlpha = 0x0305;
+    constexpr GLenum kLess = 0x0201;
     constexpr GLenum kCullFace = 0x0B44, kDepthTest = 0x0B71, kBlend = 0x0BE2, kScissorTest = 0x0C11;
     constexpr GLenum kLequal = 0x0203;
     constexpr GLbitfield kDepthBufferBit = 0x0100, kColorBufferBit = 0x4000;
@@ -73,7 +75,8 @@ namespace bozo::render::gl
     X(void, Disable, (GLenum cap))                                                                                     \
     X(void, BlendFunc, (GLenum src, GLenum dst))                                                                       \
     X(void, BlendFuncSeparate, (GLenum srcRgb, GLenum dstRgb, GLenum srcAlpha, GLenum dstAlpha))                       \
-    X(void, BlendEquation, (GLenum mode))                                                                              \
+    X(void, BlendEquation, (GLenum mode))                                                                  \
+    X(void, BlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a))                                                                              \
     X(void, DepthFunc, (GLenum func))                                                                                  \
     X(void, DepthMask, (GLboolean flag))                                                                               \
     X(void, ColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                                           \

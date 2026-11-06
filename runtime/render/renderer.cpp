@@ -136,6 +136,13 @@ namespace bozo::render
                     uint64_t(m.nearest)<<24 | uint64_t(m.frameWidth)<<32 | uint64_t(m.frameHeight)<<48;
                 h=hash::xxh64(&extended,sizeof(extended),h);
             }
+            if (m.useQ || m.gsBlend || m.colourMask != 0xFu || m.alphaFunc != Material::AlphaFunc::Greater || m.depthGreater)
+            {
+                const uint64_t gs = uint64_t(m.useQ) | uint64_t(m.gsBlend) << 1 | uint64_t(m.depthGreater) << 2 | uint64_t(m.alphaFunc) << 8 |
+                                    uint64_t(m.colourMask) << 16 | uint64_t(m.blendA) << 24 | uint64_t(m.blendB) << 32 | uint64_t(m.blendC) << 40 |
+                                    uint64_t(m.blendD) << 48 | uint64_t(m.blendFix) << 56;
+                h = hash::xxh64(&gs, sizeof(gs), h);
+            }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())

@@ -72,6 +72,29 @@ namespace bozo::render
         static constexpr uint8_t kPreviousFrame = 8;
         bool nearest = false;
         uint32_t fogColour = 0; // FOGCOL, R in the low byte
+        // Screen-space vertices with the GS's Q: texture coordinates interpolate in perspective by Vertex::q (u, v as S / Q,
+        // T / Q), colour and fog across the screen, as the GS does. Off: the draw's matrix gives the perspective.
+        bool useQ = false;
+        // The GS's own blend (Cv = (A - B) * C + D, ALPHA's fields) instead of `blend`: A, B, D 0 Cs, 1 Cd, 2 zero; C 0 As, 1 Ad,
+        // 2 fix (0x80 is 1.0). Destination alpha takes the source's, as on the GS.
+        bool gsBlend = false;
+        uint8_t blendA = 0, blendB = 1, blendC = 0, blendD = 1, blendFix = 0;
+        // FRAME.FBMSK for the channels: R, G, B, A in bits 0..3.
+        uint8_t colourMask = 0xFu;
+        // TEST.ATST (with alphaTest): the texel passes when its alpha, 0x80 being 1.0, compares so with alphaRef.
+        enum class AlphaFunc : uint8_t
+        {
+            Never,
+            Always,
+            Less,
+            LessEqual,
+            Equal,
+            GreaterEqual,
+            Greater,
+            NotEqual,
+        } alphaFunc = AlphaFunc::Greater;
+        // TEST.ZTST GREATER (else GEQUAL), with depthTest.
+        bool depthGreater = false;
         // Kept for the draw-list hash's layout (the reference's GS-context batches); a native port never sets it.
         bool fromGsContext = false;
         bool alphaBlend = true;
