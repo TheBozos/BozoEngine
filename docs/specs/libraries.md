@@ -665,10 +665,12 @@ graphics guard rejects any attempt to access retired graphics devices before the
 | 0x1000e010 | D_STAT | bits 0-9 set by completions, written 1 clear them; bits 16-25 written 1 toggle |
 | 0x1000e020 | D_PCR | kept; CPCOND0 (BC0F/BC0T) is every channel it names completed (any channel before the first write: phase 2's rule), the completions counting from the last FlushCache on (phase 4: TMB's hierCheckVifComplete, right after hier__Fi's FlushCache, reads it false although VIF1's last transfer completed: match1p #17540836, every one of its calls) |
 | 0x1000e030-60 | D_SQWC, D_RBSR, D_RBOR, D_STADR | kept |
+| 0x1000d080, 0x1000d480 | D8_SADR, D9_SADR | Read back as stored (Soulcalibur III's scratchpad flush reads D8_SADR, 0x10db18) |
 | 0x1000f520 | D_ENABLER | 0: no transfer is ever suspended (none runs) |
 | 0x10003020, 0x10003800, 0x10003c00 | GIF_STAT, VIF0_STAT, VIF1_STAT | 0: idle, reads only. Soulcalibur III reads GIF_STAT once at its DMA setup and VIF1_STAT in its video mode wait (0x1277ec) |
 | 0x10003010, 0x10003820, 0x10003c20 | GIF_MODE, VIF0_ERR, VIF1_ERR | Stores accepted with no effect: there is no path and no error to mask (Soulcalibur III's main loop stores 7 to both ERRs every frame, 0x12dee8) |
 | 0x12001010 | IMR | Stores accepted with no effect: the mask has no device behind it and nothing raises INTC 0 |
+| 0x12001080 | SIGLBLID | Stores accepted with no effect, for the same reason (Soulcalibur III's frame kick clears it, 0x10f150) |
 | 0x1000f590 | D_ENABLEW | kept |
 | 0x12000000-f0 | obsolete GS display-register stores | acknowledged and discarded; native presentation owns the display, no register bank is retained |
 
