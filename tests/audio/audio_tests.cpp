@@ -247,8 +247,6 @@ namespace
         sd.call(20u, status, 0u, r);
         eq("sceSdBlockTransStatus after 300 samples", r, 0xA0000u + 1024u + 44u * 2u);
         eq("libsd handles 27", Libsd::handles(27u), 1);
-        // The effect: sceSdSetEffectAttr sets everything, sceSdSetEffectMode the mode, delay and feedback (not the
-        // depth), sceSdSetEffectModeParams delay, feedback and depth of the mode in place.
         const auto effect = [&](uint32_t mode, uint16_t left, uint16_t right, uint32_t delay, uint32_t feedback) {
             host.w32(0x90004u, mode);
             host.w16(0x90008u, left);
@@ -264,16 +262,28 @@ namespace
         eq("sceSdSetEffectMode", sd.call(32u, attr, 0u, r) && r == 0u, 1);
         sd.call(24u, read, 0u, r);
         eq("SetEffectMode: the mode", host.r32(0x90104u), 3);
-        eq("SetEffectMode: the delay", host.r32(0x9010Cu), 7);
-        eq("SetEffectMode: the feedback", host.r32(0x90110u), 8);
-        eq("SetEffectMode keeps the depth", ram16(0x90108u), 0x1111);
+        eq("SetEffectMode: delay 0", host.r32(0x9010Cu), 0);
+        eq("SetEffectMode: feedback 0", host.r32(0x90110u), 0);
+        eq("SetEffectMode: depth 0", ram16(0x90108u), 0);
+        effect(10u, 0u, 0u, 0u, 0u);
+        sd.call(32u, attr, 0u, r);
+        eq("SetEffectMode: a bad mode", static_cast<int32_t>(r), -100);
         effect(1u, 0x4444u, 0x5555u, 9u, 10u);
+        sd.call(33u, attr, 0u, r);
+        eq("SetEffectModeParams: another mode", static_cast<int32_t>(r), -100);
+        effect(3u, 0x4444u, 0x5555u, 9u, 10u);
         eq("sceSdSetEffectModeParams", sd.call(33u, attr, 0u, r) && r == 0u, 1);
         sd.call(24u, read, 0u, r);
-        eq("SetEffectModeParams keeps the mode", host.r32(0x90104u), 3);
-        eq("SetEffectModeParams: the delay", host.r32(0x9010Cu), 9);
+        eq("SetEffectModeParams, mode 3: the delay stays", host.r32(0x9010Cu), 0);
         eq("SetEffectModeParams: the depth", ram16(0x90108u), 0x4444);
         eq("SetEffectModeParams: the right depth", ram16(0x9010Au), 0x5555);
+        effect(7u, 0u, 0u, 0u, 0u);
+        sd.call(32u, attr, 0u, r);
+        effect(7u, 0x1000u, 0x1000u, 9u, 10u);
+        sd.call(33u, attr, 0u, r);
+        sd.call(24u, read, 0u, r);
+        eq("SetEffectModeParams, mode 7: the delay", host.r32(0x9010Cu), 9);
+        eq("SetEffectModeParams, mode 7: the feedback", host.r32(0x90110u), 10);
         eq("libsd handles 31 (sceSdCleanEffectWorkArea)", Libsd::handles(31u), 1);
         eq("libsd does not handle 13", Libsd::handles(13u), 0);
     }
