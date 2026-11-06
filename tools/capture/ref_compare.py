@@ -30,7 +30,7 @@ def read(path):
               "elf": text(176)}
     frames = []
     for at in range(header_bytes, len(data) - record_bytes + 1, record_bytes):
-        v = struct.unpack_from("<Ii6Q4I", data, at)
+        v = struct.unpack_from("<Ii7Q4I", data, at)
         frames.append(dict(zip(["frame"] + FIELDS, v)))
     return header, frames
 
