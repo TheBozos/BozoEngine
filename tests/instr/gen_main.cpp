@@ -57,6 +57,20 @@ int main(int argc, char **argv)
     }
     p.data.push_back({kDataBase, dataEnd, "data"});
 
+    std::vector<bozo::InstructionPatch> patches;
+    for (size_t i = 0; i < cases.size(); ++i)
+        for (const auto &[offset, replacement] : cases[i].adaptations)
+        {
+            const uint32_t address = envFor(i).base + offset;
+            patches.push_back({address, p.read32(address), replacement});
+        }
+    std::string patchError;
+    if (!bozo::applyInstructionPatches(p, patches, patchError))
+    {
+        std::fprintf(stderr, "bozo-test-gen: %s\n", patchError.c_str());
+        return 1;
+    }
+
     bozo::Analysis analysis(p);
     analysis.run();
     for (const auto &w : analysis.stats().warnings)

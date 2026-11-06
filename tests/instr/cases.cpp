@@ -371,6 +371,52 @@ namespace itest
         // ---------------------------------------------------------------------------------------------------------
         void branchCases()
         {
+            for (bool likely : {false, true})
+                for (bool taken : {false, true})
+                {
+                    Asm s;
+                    s.branch(likely ? beql(a0, zero) : beq(a0, zero), "done")(lw(v0, 0, a1))
+                        (addiu(v1, zero, 11)).label("done")(nop);
+                    add(std::string("guarded adaptation in ") + (likely ? "likely" : "ordinary") + (taken ? " taken slot" : " untaken slot"),
+                        s.finish(), [taken](Ctx &c, uint8_t *, Runtime &) { set(c, a0, taken ? 0 : 1); set(c, a1, 0x12000000); },
+                        [likely, taken](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                            k.eq("adapted delay result", get(c, v0), likely && !taken ? 0 : 7);
+                            k.eq("fallthrough", get(c, v1), taken ? 0 : 11);
+                            k.eq("returned", c.pc, kReturnSentinel);
+                            k.eq("ra preserved", get(c, ra), kReturnSentinel);
+                            k.events(rt, {});
+                        });
+                    g_cases.back().adaptations = {{4, addiu(v0, zero, 7)}};
+                }
+            {
+                Asm s;
+                s(addiu(a0, zero, 3)).label("loop")(addiu(a0, a0, -1)).branch(bne(a0, zero), "loop")(lw(v0, 0, a1));
+                add("guarded adaptation preserves loop checkpoints", s.finish(),
+                    [](Ctx &c, uint8_t *, Runtime &) { set(c, a1, 0x12000000); },
+                    [](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                        k.eq("adapted loop slots", get(c, v0), 3);
+                        k.eq("cycles", c.cycles, 64);
+                        k.eq("checkpoints", c.checkpoints, 2);
+                        k.eq("returned", c.pc, kReturnSentinel);
+                        k.events(rt, {});
+                    });
+                g_cases.back().adaptations = {{12, addiu(v0, v0, 1)}};
+            }
+            {
+                const Env e = nextEnv();
+                Asm s(e.base);
+                s.jumpTo(2, e.callee + 8)(nop);
+                add("guarded adaptation preserves an interior entry", s.finish(),
+                    [](Ctx &c, uint8_t *, Runtime &) { set(c, a1, 0x12000000); },
+                    [](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
+                        k.eq("skipped callee prefix", get(c, v0) | get(c, v1), 0);
+                        k.eq("adapted interior result", get(c, a0), 9);
+                        k.eq("returned", c.pc, kReturnSentinel);
+                        k.eq("ra preserved", get(c, ra), kReturnSentinel);
+                        k.events(rt, {});
+                    }, {addiu(v0, zero, 1), addiu(v1, zero, 2), lw(a0, 0, a1)});
+                g_cases.back().adaptations = {{kCalleeOffset + 8, addiu(a0, zero, 9)}};
+            }
             {
                 Asm s;
                 s.branch(beq(a0, a1), "t")(addiu(v1, zero, 1)) // delay slot: runs either way

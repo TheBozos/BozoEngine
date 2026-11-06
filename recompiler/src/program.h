@@ -59,4 +59,13 @@ namespace bozo
     // Code: allocated, executable sections, except VU microcode (.vutext and the DVP overlays, which hold VU1/VU0
     // programs, not R5900 instructions). Data: allocated sections with file contents that are not code.
     Program programFromElf(const ElfFile &elf);
+
+    // Compile-time port adaptations, applied to the in-memory analysis image only.
+    // The owner selects the image and supplies its expected word so a mismatched site fails safely.
+    struct InstructionPatch
+    {
+        uint32_t address, expected, replacement;
+    };
+    bool readInstructionPatches(const std::string &path, std::vector<InstructionPatch> &out, std::string &error);
+    bool applyInstructionPatches(Program &program, const std::vector<InstructionPatch> &patches, std::string &error);
 }
