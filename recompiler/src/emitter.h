@@ -27,8 +27,10 @@ namespace bozo
     // Reads an externals file: one address per line, "stub 0x1234" or "override 0x1234"; '#' starts a comment.
     // "store 0x1234" names a store instruction the generated code sets ctx->pc before (a port's patch of its game's
     // register stores tells the stores apart by their instruction: bozo/port.h, setStorePatch).
+    // "native 0x1234" replaces an instruction through bozo_native_instruction (also in delay slots). A BC0 test
+    // queries native completion instead; when unhandled the original instruction/condition runs unchanged.
     bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error,
-                       std::set<uint32_t> *storePcs = nullptr);
+                       std::set<uint32_t> *storePcs = nullptr, std::set<uint32_t> *nativePcs = nullptr);
 
     struct EmitOptions
     {
@@ -44,6 +46,8 @@ namespace bozo
         std::map<uint32_t, ExternalKind> externals;
         // Store instructions that set ctx->pc to their own address first ("store" lines of the externals file).
         std::set<uint32_t> storePcs;
+        // Instructions replaced by a port's native operation ("native 0xADDR"). The original remains for checkers.
+        std::set<uint32_t> nativePcs;
     };
 
     struct EmitStats

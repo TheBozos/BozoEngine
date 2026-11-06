@@ -10,6 +10,11 @@
 #include <cstring>
 #include <stdexcept>
 
+bool bozo_native_instruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
+{
+    return rt->port && rt->port->nativeInstruction(rdram, ctx, rt, pc);
+}
+
 namespace bozo
 {
     GuestMemory::GuestMemory() : flat_(new uint8_t[kFlatBytes]) { std::memset(flat_.get(), 0, kFlatBytes); }

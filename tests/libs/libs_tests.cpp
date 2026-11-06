@@ -304,6 +304,14 @@ int main()
     nativeCardDirectories();
     liveScriptInput();
     {
+        // Native graphics must reject the retired graphics paths without blocking movie input, T0 or VU0 data.
+        for (uint32_t address : {0x10003000u, 0x10003C00u, 0x10008000u, 0x10009030u, 0x1000A000u,
+                                 0x11008000u, 0x12001000u, 0xB2001000u})
+            eq("retired graphics address", bozo::libs::graphicsIo(address), 1);
+        for (uint32_t address : {0x10000000u, 0x10007000u, 0x1000B400u, 0x1000B410u, 0x1000E010u, 0x11004000u})
+            eq("non-graphics service stays available", bozo::libs::graphicsIo(address), 0);
+    }
+    {
         // T0 on a temporary guest context must use that call's clock, including its reset epoch.
         // The thread's own context can still be at an earlier cycle while an override runs the temporary one.
         bozo::libs::Libraries libs;

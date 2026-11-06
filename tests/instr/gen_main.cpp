@@ -65,6 +65,12 @@ int main(int argc, char **argv)
     bozo::EmitOptions options;
     options.prefix = "instr";
     for (size_t i = 0; i < cases.size(); ++i)
+        for (uint32_t offset : cases[i].nativeOffsets)
+        {
+            options.nativePcs.insert(envFor(i).base + offset);
+            options.storePcs.insert(envFor(i).base + offset);
+        }
+    for (size_t i = 0; i < cases.size(); ++i)
         if (cases[i].calleeExternal)
             options.externals[envFor(i).callee] =
                 cases[i].calleeExternal == 1 ? bozo::ExternalKind::Stub : bozo::ExternalKind::Override;

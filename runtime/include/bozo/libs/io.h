@@ -8,6 +8,15 @@
 
 namespace bozo::libs
 {
+    // Retired graphics channels and registers. Movie input (channel 4) and the game timer are independent.
+    inline bool graphicsIo(uint32_t address)
+    {
+        const uint32_t a = address & 0x1FFFFFFFu;
+        return (a >= 0x10003000u && a < 0x10007000u) || // GIF/VIF control and FIFOs; IPU's FIFO is separate
+               (a >= 0x10008000u && a < 0x1000A040u) || // graphics DMA channels
+               (a >= 0x11008000u && a < 0x11010000u) || // VU1 memory
+               (a >= 0x12000000u && a < 0x12002000u);   // GS privileged registers
+    }
     class Libraries;
 
     struct IoState

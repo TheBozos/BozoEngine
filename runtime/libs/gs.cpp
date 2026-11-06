@@ -4,6 +4,7 @@
 #include "bozo/libs/libraries.h"
 
 #include "bozo/ee/dispatcher.h"
+#include "bozo/port.h"
 
 #include <algorithm>
 #include <cstring>
@@ -279,6 +280,12 @@ namespace bozo::libs
         // sceGsPutDrawEnv(packet): the GIF tag's A+D pairs are the environment; kept for the renderer. Returns 0.
         void putDrawEnv(Libraries &l, Guest &g)
         {
+            if (l.dispatcher() && port::nativeGraphics(&l.dispatcher()->runtime()))
+            {
+                // The port submits native materials with its draws. No GIF environment is consumed or mirrored.
+                g.ret(0);
+                return;
+            }
             const uint32_t p = g.arg(0);
             GsState &s = l.gs;
             const uint32_t nloop = std::min<uint32_t>(static_cast<uint32_t>(read64(g, p) & 0x7fff), 32);

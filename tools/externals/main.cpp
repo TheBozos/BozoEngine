@@ -105,7 +105,7 @@ int main(int argc, char **argv)
     }
 
     // The port's overrides and patched stores.
-    std::set<uint32_t> overrides, stores;
+    std::set<uint32_t> overrides, stores, nativePcs;
     for (const std::string &path : overrideFiles)
     {
         std::ifstream in(path);
@@ -129,6 +129,8 @@ int main(int argc, char **argv)
                 overrides.insert(a);
             else if (kind == "store")
                 stores.insert(a);
+            else if (kind == "native")
+                nativePcs.insert(a);
             else
             {
                 std::fprintf(stderr, "%s:%d: expected \"override 0xADDR\" or \"store 0xADDR\"\n", path.c_str(), n);
@@ -151,8 +153,10 @@ int main(int argc, char **argv)
             out << "override 0x" << std::hex << a << std::dec << "\n";
     for (uint32_t a : stores)
         out << "store 0x" << std::hex << a << std::dec << "\n";
-    std::printf("bozo-externals: %zu stubs, %zu overrides, %zu patched stores -> %s\n", stubs.size(), overrides.size(),
-                stores.size(), outPath.c_str());
+    for (uint32_t a : nativePcs)
+        out << "native 0x" << std::hex << a << std::dec << "\n";
+    std::printf("bozo-externals: %zu stubs, %zu overrides, %zu patched stores, %zu native instructions -> %s\n", stubs.size(), overrides.size(),
+                stores.size(), nativePcs.size(), outPath.c_str());
 
 #ifdef BOZO_EXTERNALS_CALLLOG
     for (const std::string &path : checkLogs)

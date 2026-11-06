@@ -86,8 +86,15 @@ uint64_t bozo_io_read(R5900Context *, Runtime *rt, uint32_t address, uint32_t)
     rt->events.push_back(hexEvent("io-read", address));
     return 0;
 }
-void bozo_io_write(R5900Context *, Runtime *rt, uint32_t address, uint32_t, uint64_t)
+bool bozo_native_instruction(uint8_t *, R5900Context *, Runtime *rt, uint32_t pc)
 {
+    ++rt->nativeCalls;
+    rt->lastNativePc = pc;
+    return rt->nativeHandled;
+}
+void bozo_io_write(R5900Context *ctx, Runtime *rt, uint32_t address, uint32_t, uint64_t)
+{
+    rt->lastIoPc = ctx->pc;
     rt->events.push_back(hexEvent("io-write", address));
 }
 void bozo_io_read128(R5900Context *, Runtime *rt, uint32_t address, uint64_t out[2])

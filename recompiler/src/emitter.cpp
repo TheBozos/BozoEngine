@@ -54,7 +54,7 @@ namespace bozo
     }
 
     bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error,
-                       std::set<uint32_t> *storePcs)
+                       std::set<uint32_t> *storePcs, std::set<uint32_t> *nativePcs)
     {
         std::ifstream in(path);
         if (!in)
@@ -85,6 +85,8 @@ namespace bozo
                 out.emplace(static_cast<uint32_t>(address), ExternalKind::Override); // a stub entry wins
             else if (k == "store" && storePcs)
                 storePcs->insert(static_cast<uint32_t>(address));
+            else if (k == "native" && nativePcs)
+                nativePcs->insert(static_cast<uint32_t>(address));
             else
             {
                 error = std::format("{}:{}: unknown kind \"{}\"", path, n, k);
@@ -116,9 +118,12 @@ namespace bozo
     // One instruction that is not a branch or jump. Writes to r0 are dropped (r0 stays zero).
     std::string Emitter::translate(const Insn &i)
     {
+        std::string original = translateBody(i);
         if (opt_.storePcs.count(i.addr))
-            return std::format("ctx->pc = {}; ", hex(i.addr)) + translateBody(i);
-        return translateBody(i);
+            original = std::format("ctx->pc = {}; ", hex(i.addr)) + original;
+        if (opt_.nativePcs.count(i.addr))
+            return std::format("if (!bozo_native_instruction(rdram, ctx, rt, {})) {{ {} }}", hex(i.addr), original);
+        return original;
     }
 
     std::string Emitter::translateBody(const Insn &i)
@@ -756,8 +761,15 @@ namespace bozo
                     break;
                 case Op::BC1F: case Op::BC1FL: cond = "!bozo::fcond(ctx)"; break;
                 case Op::BC1T: case Op::BC1TL: cond = "bozo::fcond(ctx)"; break;
-                case Op::BC0F: case Op::BC0FL: cond = "!bozo_cop0_condition(ctx, rt)"; break;
-                case Op::BC0T: case Op::BC0TL: cond = "bozo_cop0_condition(ctx, rt)"; break;
+                case Op::BC0F: case Op::BC0FL:
+                case Op::BC0T: case Op::BC0TL:
+                    // A synchronous native submission is complete without consulting a DMA register model.
+                    cond = opt_.nativePcs.count(i.addr)
+                        ? std::format("(bozo_native_instruction(rdram, ctx, rt, {}) || bozo_cop0_condition(ctx, rt))", hex(i.addr))
+                        : "bozo_cop0_condition(ctx, rt)";
+                    if (i.op == Op::BC0F || i.op == Op::BC0FL)
+                        cond = "!" + cond;
+                    break;
                 case Op::BC2F: case Op::BC2FL: cond = "true"; break;  // VU0 is never busy (r5900.md "COP2")
                 case Op::BC2T: case Op::BC2TL: cond = "false"; break;
                 default: cond = "false"; break;
@@ -902,6 +914,16 @@ namespace bozo
 
     bool Emitter::emitAll(const std::string &dir, std::string &error)
     {
+        for (uint32_t pc : opt_.nativePcs)
+        {
+            const Op op = decode(a_.program().read32(pc));
+            const bool completion = op == Op::BC0F || op == Op::BC0FL || op == Op::BC0T || op == Op::BC0TL;
+            if ((pc & 3u) || !a_.functionContaining(pc) || (hasDelaySlot(op) && !completion))
+            {
+                error = std::format("native instruction 0x{:x} must name an aligned instruction, or a BC0 completion test, in a function", pc);
+                return false;
+            }
+        }
         namespace fs = std::filesystem;
         std::error_code ec;
         fs::create_directories(dir, ec);
