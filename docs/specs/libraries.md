@@ -117,6 +117,9 @@ current build get), not the PS2's.
 
 Plus 32,169 calls the native state followed in match1p (traced `rand`, `sceMpegCreate`).
 
+**No debugger.** `sceTtyInit` answers 1, `sceTtyWrite(buffer, size)` takes every byte (shown when the game's output is
+printed), `sceTtyRead` and `sceTtyHandler` 0. `sceDeci2*` and `Deci2Call` answer -1. They count as `libc`.
+
 ## 3. The math library (`libm`)
 
 TMB's `sinf` and `cosf` are guest code (the game's newlib), and so is everything that calls them; the reference
@@ -266,10 +269,29 @@ Check: `bozo-run match1p.clg ... --pad-script reference/tmb/scripts/ch1p_frames.
 Results: boot 29,973 calls native (`scePadGetState` 23,960, `scePadRead` 5,968, ...), match1p 161,084
 (`scePadGetState` 127,848, `scePadRead` 31,940, `scePadSetActDirect` 1,251, ...), 0 divergences.
 
+**The rest of libpad.** All from the SDK's interface and SC3's own library code, for a game that calls them; none has a
+call log behind it:
+
+| Function | Native answer |
+|---|---|
+| `scePadInit2` | as `scePadInit` |
+| `scePadGetDmaStr(port, slot)` | the buffer `scePadPortOpen` was given, 0 for a port not open |
+| `scePadGetFrameCount(port, slot)` | the game frames ended, 0 for a port not open |
+| `scePadStateIntToStr(state, out)`, `scePadReqIntToStr(state, out)` | the state's name (the empty string out of range) |
+| `scePadSetReqState(port, slot, state)` | 1; `scePadGetReqState` answers it (0 until then) |
+| `scePadInfoComb` | 0: no combination modes |
+| `scePadSetButtonInfo`, `scePadExitPressMode` | 1, busy like the other mode commands; the second leaves pressure mode |
+| `scePadSetVrefParam` | 1, nothing kept |
+| `scePadGetPortMax` | 2 |
+| `scePadGetModVersion` | 0x400: SC3's `scePadInit` takes 4 in the high byte as the driver it expects |
+| `scePadSetWarningLevel` | 0 |
+
 ## 7. Memory cards (`mc`)
 
 Native: `sceMcInit`, `sceMcGetInfo`, `sceMcGetDir`, `sceMcSync`; and, not checked yet (below), `sceMcMkdir`,
-`sceMcOpen`, `sceMcClose`, `sceMcRead`, `sceMcWrite`.
+`sceMcOpen`, `sceMcClose`, `sceMcRead`, `sceMcWrite`, `sceMcSeek`, `sceMcFlush`, `sceMcDelete`, `sceMcRename`,
+`sceMcSetFileInfo`, `sceMcFormat`, `sceMcUnformat`, `sceMcGetEntSpace`, `sceMcChangeThreadPriority`, `sceMcGetSlotMax`,
+`sceMcEnd`.
 
 Two PS2 memory cards (ports 1 and 2, slot 0), formatted (`McCard`, `bozo/libs/mc.h`), each backed by a host folder
 (`<dir>/mc0`, `<dir>/mc1`: a card's folders and files as host folders and files, loaded at the first card call and
@@ -297,6 +319,21 @@ then `bozo-run save.clg --pinned --ref save.ref`. It will settle what the record
 Open/Read/Write/Close (descriptors, byte counts), the free clusters after files are written (the reference's cluster
 accounting), the attributes and dates of created folders and files, whether `sceMcSync`'s `cmd` is ever written, and
 the card's error codes on the paths TMB tries.
+
+**The rest of libmc.** Finished in the call, the result handed over by `sceMcSync` under the function numbers 4 (seek),
+0xA (flush), 0xE (file info), 0xF (delete), 0x10, 0x11 (format, unformat), 0x12 (entry space), 0x13 (rename) and 0x14
+(thread priority):
+- `sceMcSeek(fd, offset, origin)`: the new position (origin 0 the start, 1 the position, 2 the end), -4 for no such file
+  or a position before the start.
+- `sceMcFlush(fd)`: 0, -4 for no such file; files are written back as they change.
+- `sceMcDelete(port, slot, name)`: 0, -4 no such entry, -5 open, -6 a directory with entries.
+- `sceMcRename(port, slot, name, newName)`: a new name in the same directory. 0, -4 no such entry, -5 open, -8 taken.
+- `sceMcSetFileInfo(port, slot, name, info, valid)`: from an `sceMcTblGetDir` entry, by the valid bits (1 created, 2
+  modified, 4 attributes).
+- `sceMcFormat`, `sceMcUnformat`: every entry goes, in the host folder too, and the card's open files close;
+  `sceMcGetInfo` answers format 0 after an unformat until the next format.
+- `sceMcGetEntSpace(port, slot, path)`: the free clusters, -4 for no such directory.
+- `sceMcChangeThreadPriority`: 0, there is no thread. `sceMcGetSlotMax`: 1. `sceMcEnd`: 0, cards unknown again.
 
 ## 8. The CD and file access (`cd`)
 
@@ -619,6 +656,17 @@ Results: boot 855,098 accesses native (`D_ENABLEW`/`D_ENABLER` 472,180, IPU_TO 2
 17,605,351 (VIF1 7,544,895, `D_STAT`/`D_PCR` 5,020,295, `D_ENABLEW`/`D_ENABLER` 2,631,172, T0_COUNT 927,111 loads, ...);
 0 divergences.
 
+**The rest of libdma.** Answered at the call, with no channel behind it:
+- `sceDmaGetChan(id)`: the channel's handle (0x10008000 for VIF0 ...), 0 for an id past 9. A game may store through
+  the handle: SC3 stores the scratchpad offset at +0x80 of channels 8 and 9.
+- `sceDmaRecvN`, `sceDmaSendN` on channels 8 and 9 (from and to the scratchpad) copy the quadwords in the call, from or to
+  the offset the game stored (`IoState::sprAddress`, wrapping at 16 KiB); the sync after them answers 0. SC3 moves data
+  through the scratchpad like this at 0x3AE058 and 0x3AE130.
+- `sceDmaRecv`, `sceDmaRecvN`, `sceDmaRecvI` on the other channels follow the sends' rules: done at once, nothing
+  written, the channels no native data producer answers fail explicitly. Chain or interleave on channels 8, 9 too.
+- `sceDmaWatch`: 0, nothing is ever still in flight. `sceDmaPause` returns CHCR and clears its start bit,
+  `sceDmaRestart(chan, chcr)` stores CHCR and returns its old start bit. `sceDmaPutStallAddr` returns the old address.
+
 ## 12. Still answered from the log
 
 The 2D image's VU0 programs (never called), and every port override (TMB's own native renderer, sound and the frame
@@ -662,6 +710,14 @@ and `sceSifSetDma`, `sceSifDmaStat` (`bozo/libs/sif.h`, `libs/sif.cpp`). There i
 server (TMB's only one: 989SND, section 15), a module load loads nothing, the IOP heap is a model of the memory the
 reference's IOP allocator handed out. Every call of both logs returns at once (0 EE cycles, no record inside it): the
 reference's IOP answered every RPC inside the call, so nothing is ever in flight.
+
+**No log behind these yet**, from the SDK's interface and SC3's calls:
+- `sceSifExitRpc`, `sceSifExitCmd`, `sceSifLoadFileReset`, `sceSifWriteBackDCache`: 0, nothing to do.
+- `sceSifResetIop`: as `sceSifRebootIop`. `sceSifIsAliveIop`: 1.
+- `sceSifAllocSysMemory(type, size, address)`, `sceSifFreeSysMemory(address)`: the IOP heap, as the `...IopHeap` calls.
+- `sceSifLoadStartModule(path, argc, argp, result)`: as `sceSifLoadModule`, the start result 0 written through `result`.
+- `sceSifLoadModuleBuffer`, `_sceSifLoadModuleBuffer`, `sceSifLoadStartModuleBuffer`: a module from EE memory; nothing is
+  loaded, the next module id. A port's `moduleLoader` works by name, so these do not reach it.
 
 ### 14.1 What each call answers (settled on the records)
 
@@ -1275,3 +1331,43 @@ sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffe
 256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
 address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
 8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
+
+## 16. libkernel's timer library (`timer`)
+
+Native: `DelayThread`, `InitAlarm`, `InitTimer`, `EndTimer`, `GetTimerPreScaleFactor`, `StartTimerSystemTime`,
+`StopTimerSystemTime`, `SetTimerCount`, `TimerBusClock2USec`, `TimerUSec2BusClock`, `TimerBusClock2Freq`,
+`TimerFreq2BusClock`; and with their `i` forms `GetTimerSystemTime`, `AllocTimerCounter`, `FreeTimerCounter`,
+`GetTimerUsedUnusedCounters`, `StartTimerCounter`, `StopTimerCounter`, `GetTimerBaseTime`, `GetTimerCount`,
+`SetTimerHandler`, `SetTimerAlarm`, `ReleaseTimerAlarm` (`bozo/libs/timer.h`, `libs/timer.cpp`). Their shapes, ids and
+error codes are SC3's library code read at 0x440EB8-0x442500 and 0x438018; no call log checks them.
+
+The SDK's library runs on T2's compare and overflow interrupts. Nothing here does: a counter is a start and a count on
+the EE clock, a handler is a kernel deadline (`Kernel::scheduleNative`), no timer register is read or written and
+`_InitSys` (native) never starts the library's own code. The library is initialized from boot, as `_InitSys` leaves it
+(`InitTimer(2)`, system time started), so `InitTimer` first answers 0x80008001.
+
+- **Time.** System time is in bus clocks, half the EE clock; `StopTimerSystemTime` holds it and every deadline.
+  `TimerBusClock2Freq` and `TimerFreq2BusClock` take and return floats, the others 64-bit clocks.
+- **Counters.** 128, with an id of the slot and a serial. `StartTimerCounter` returns 1 when already running, else 0;
+  `StopTimerCounter` 1 when it was running, else 0. A stale id answers 0x80008002 (-1 from the calls returning a count);
+  the counter whose handler is running answers 0x80000010. No counter free: 0x80008005. `EndTimer` with a counter in
+  use: 0x80000010.
+- **Handlers.** `SetTimerHandler(id, compare, handler, arg)`. Due when the count reaches `compare`, queued as an alarm
+  (`kInvokeAlarm`), with the setter's gp: `handler(id, compare, count, arg)`; the fifth argument, the interrupted pc, is
+  0. Two arguments are 64-bit (`QueuedHandler::aHigh`). The result: 0 ends the calls, the counter stays; -1 frees the
+  counter; anything else is added to `compare`, at least 0x3999.
+- **Alarms.** `SetTimerAlarm(clocks, handler, arg)`: at most 64, on a counter of their own, due `clocks` from now, same
+  handler shape with the alarm's id; a result of 0 frees it, -1 too. No handler: 0x80000016; none free: 0x80008005.
+  `ReleaseTimerAlarm`: 0, a stale id 0x80008002.
+- **`DelayThread(microseconds)`.** The thread waits (`kWaitDelay`) until the deadline, with no handler, semaphore or
+  counter behind it, and returns 0. In a handler: 0x80008008 at once.
+
+**The host's clock.** In real time (`TimerState::hostClock`, set by the free host) the EE clock alone does not end a
+delay or fire an alarm, since it runs ahead of the host: each also has a host deadline, and when its EE deadline comes
+first it is put back by what the host has left. While every thread waits, `idleHold` makes the free host sleep for the
+stretch the EE clock jumps, up to the last host deadline pending. Outside real time, the EE clock alone decides.
+
+**SC3.** Its game code calls none of these directly: `DelayThread` is called by `sceCdSync`, `sceCdSyncS` and the
+loadfile retry at 0x43B5EC, `iSetTimerAlarm` by the SIF RPC's bind and data requests, `InitTimer` and
+`StartTimerSystemTime` by `_InitSys`. All of those callers are native, so through SC3 only a library's own code left in
+guest form would reach this. Answering the names keeps that code from arming T2 for interrupts that never come.

@@ -439,8 +439,6 @@ This API does not itself implement any console SDK's SetAlarm or cancellation AB
 **K3.** Not reached by TMB: event flags (the kernel records the operation and has no effect yet for those `calllog.md`
 lists but TMB never makes). Alarms, suspend/resume, `SetVSyncFlag` and the sync-V callback are settled (section 2).
 
-Open for a game that uses it: libkernel's own timer library (newer SDKs: `SetTimerAlarm` and its users, on T2's compare
-and overflow interrupts). T2 reads answer from the clock (`libraries.md` section 11), but no timer interrupt is raised,
-by rule, so an alarm set through that library's code never fires. It needs a native answer at the library's entry
-points. `_InitSys` being native leaves the library uninitialized, so its calls fail with their error code instead of
-hanging.
+libkernel's own timer library (newer SDKs: `SetTimerAlarm` and its users, on T2's compare and overflow interrupts) is
+answered natively at its entry points by name (`libraries.md` section 16), on `scheduleNative`, deadlines that run native
+code. T2 reads answer from the clock (`libraries.md` section 11); no timer interrupt is raised, by rule.
