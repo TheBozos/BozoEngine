@@ -670,6 +670,7 @@ graphics guard rejects any attempt to access retired graphics devices before the
 | 0x10003020, 0x10003800, 0x10003c00 | GIF_STAT, VIF0_STAT, VIF1_STAT | 0: idle, reads only. Soulcalibur III reads GIF_STAT once at its DMA setup and VIF1_STAT in its video mode wait (0x1277ec) |
 | 0x10003010, 0x10003820, 0x10003c20 | GIF_MODE, VIF0_ERR, VIF1_ERR | Stores accepted with no effect: there is no path and no error to mask (Soulcalibur III's main loop stores 7 to both ERRs every frame, 0x12dee8) |
 | 0x12001010 | IMR | Stores accepted with no effect: the mask has no device behind it and nothing raises INTC 0 |
+| 0x10002000-0x10002030 | IPU_CMD, IPU_CTRL, IPU_BP, IPU_TOP | Read 0, a decoder at rest; IPU_CTRL takes stores with no effect, a store to IPU_CMD faults (a decode with no answer). Soulcalibur III saves and restores them around Sofdec's libmpeg use (0x3c2020) |
 | 0x12001080 | SIGLBLID | Stores accepted with no effect, for the same reason (Soulcalibur III's frame kick clears it, 0x10f150) |
 | 0x1000f590 | D_ENABLEW | kept |
 | 0x12000000-f0 | obsolete GS display-register stores | acknowledged and discarded; native presentation owns the display, no register bank is retained |

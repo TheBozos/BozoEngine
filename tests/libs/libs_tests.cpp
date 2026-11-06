@@ -715,6 +715,10 @@ int main()
             eq("a path's mode or error mask is stored", bozo::libs::ioKnown(address, 4, true), 1);
             eq("and not read", bozo::libs::ioKnown(address, 4, false), 0);
         }
+        eq("IPU_CTRL is read", bozo::libs::ioKnown(0x10002010u, 4, false), 1);
+        eq("IPU_CTRL is stored", bozo::libs::ioKnown(0x10002010u, 4, true), 1);
+        eq("IPU_CMD is read", bozo::libs::ioKnown(0x10002000u, 4, false), 1);
+        eq("IPU_CMD is not stored", bozo::libs::ioKnown(0x10002000u, 4, true), 0);
         eq("IMR is stored", bozo::libs::ioKnown(0x12001010u, 8, true), 1);
         eq("IMR is not read", bozo::libs::ioKnown(0x12001010u, 8, false), 0);
         eq("a timer register is a word", bozo::libs::ioKnown(0x10001800u, 2, false), 0);
