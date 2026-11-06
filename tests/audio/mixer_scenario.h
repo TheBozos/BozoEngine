@@ -51,7 +51,8 @@ namespace bozo::audio::test
         for (uint32_t b = 0; b < blocks; ++b)
         {
             uint8_t *p = &data[b * 16u];
-            p[0] = static_cast<uint8_t>((rng.next() % 13u) | ((rng.next() % 5u) << 4u));
+            const uint32_t shift = rng.next() % 13u;
+            p[0] = static_cast<uint8_t>(shift | ((rng.next() % 5u) << 4u));
             p[1] = static_cast<uint8_t>((b == loopAt ? 4u : 0u) | (b + 1u == blocks ? (repeat ? 3u : 1u) : 0u));
             for (int i = 2; i < 16; ++i)
                 p[i] = static_cast<uint8_t>(rng.next());
@@ -102,7 +103,12 @@ namespace bozo::audio::test
             case 2: m.keyOff(g, 1u << v); break;
             case 3: m.clearEnded(g, 0xFFFFFFu); break;
             case 4: m.setPitch(g, v, static_cast<uint16_t>(rng.next() % 0x4000u)); break;
-            default: m.setVolume(g, v, static_cast<int>(rng.next() % 2u), kVolumes[rng.next() % 8u]); break;
+            default:
+            {
+                const auto volume = kVolumes[rng.next() % 8u];
+                m.setVolume(g, v, static_cast<int>(rng.next() % 2u), volume);
+                break;
+            }
             }
         }
         if (step == 40)
