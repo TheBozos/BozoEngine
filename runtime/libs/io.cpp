@@ -82,7 +82,7 @@ namespace bozo::libs
             return size == 4;
         if (a == 0x1000F520u || a == 0x1000F590u)
             return size == 4;
-        if (store && (a == 0x1000D080u || a == 0x1000D480u))
+        if (a == 0x1000D080u || a == 0x1000D480u)
             return size == 4;
         if (store && a >= 0x12000000u && a <= 0x120000F0u && (a & 0xFu) == 0)
             return size == 8;
@@ -138,6 +138,10 @@ namespace bozo::libs
             v = io.stat;
         else if (a == 0x1000E020u)
             v = io.pcr;
+        else if (a == 0x1000D080u)
+            v = io.sprAddress[0];
+        else if (a == 0x1000D480u)
+            v = io.sprAddress[1];
         else if (a == 0x1000F520u)
             v = 0; // D_ENABLER: no transfer is ever suspended (none runs)
         return v;
