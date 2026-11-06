@@ -274,8 +274,13 @@ void nativeMultitap() {
     eq("libpad sees it",m.libs.pad.multitap,true);
     eq("port 1 connected",m.call("sceMtapGetConnection",{0}),1);
     eq("port 2 not connected",m.call("sceMtapGetConnection",{1}),0);
+    eq("four slots behind the multitap",m.call("scePadGetSlotMax",{0}),4);
+    eq("one slot on port 2",m.call("scePadGetSlotMax",{1}),1);
     eq("close",m.call("sceMtapPortClose",{0}),1);
     eq("libpad sees it closed",m.libs.pad.multitap,false);
+    eq("one slot without the multitap",m.call("scePadGetSlotMax",{0}),1);
+    eq("scePadPortClose",m.call("scePadPortClose",{0,0}),1);
+    eq("scePadEnd",m.call("scePadEnd",{}),1);
     m.libs.pad.multitapAttached=false;
     eq("unplugged multitap does not open",m.call("sceMtapPortOpen",{0}),0);
     eq("unplugged multitap is not connected",m.call("sceMtapGetConnection",{0}),0);
