@@ -228,13 +228,9 @@ namespace bozo::libs
             g.ret(1);
         }
 
-        // sceCdRead(lbn, sectors, buffer, mode): the sectors are in the buffer when it returns, after a drive's time;
-        // 1 (0 when the disc cannot be read).
-        void read(Libraries &l, Guest &g)
+        void readEnds(Libraries &l, Guest &g, bool ok, uint32_t n)
         {
-            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
             CdState &cd = l.cd;
-            const bool ok = sectorsTo(l, g, lbn, n, to);
             cd.error = ok ? 0 : -1;
             cd.readBytes=ok?n*kSectorBytes:0;
             g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
@@ -249,6 +245,14 @@ namespace bozo::libs
                 l.queueHandler(h,{});
             }
             g.ret(ok ? 1 : 0);
+        }
+
+        // sceCdRead(lbn, sectors, buffer, mode): the sectors are in the buffer when it returns, after a drive's time;
+        // 1 (0 when the disc cannot be read).
+        void read(Libraries &l, Guest &g)
+        {
+            const uint32_t lbn = g.arg(0), n = g.arg(1), to = g.arg(2);
+            readEnds(l, g, sectorsTo(l, g, lbn, n, to), n);
         }
 
         // sceCdSync(mode): mode 0 waits for the read to finish (a vblank wait, its v0 0), then 0; mode 1: 1 while a
