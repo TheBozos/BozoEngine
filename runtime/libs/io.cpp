@@ -55,6 +55,28 @@ namespace bozo::libs
             }
         }
 
+        constexpr uint32_t kFromScratchpadChannel = 8, kToScratchpadChannel = 9;
+
+        // A scratchpad channel in normal mode: the copy is all the transfer is. The chain modes are not reached.
+        void copyScratchpad(Libraries &l, uint32_t ch, const IoState::Channel &c)
+        {
+            if (!l.dispatcher() || (c.chcr & 0xCu) != 0)
+                return;
+            auto &memory = l.dispatcher()->runtime().memory;
+            uint32_t address = c.madr, at = l.io.sprAddress[ch - kFromScratchpadChannel];
+            for (uint32_t i = 0; i < c.qwc; ++i, address += 16u, at += 16u)
+            {
+                uint8_t *ram = memory.hostPointer(address, 16);
+                uint8_t *scratchpad = memory.hostPointer(0x70000000u | (at & 0x3FF0u), 16);
+                if (!ram || !scratchpad)
+                    throw std::runtime_error("scratchpad transfer outside memory");
+                if (ch == kFromScratchpadChannel)
+                    std::memcpy(ram, scratchpad, 16);
+                else
+                    std::memcpy(scratchpad, ram, 16);
+            }
+        }
+
         // A transfer completes: CHCR's STR clears, its D_STAT bit is set, the DMAC interrupt is raised (the kernel
         // runs the channel's handlers if it is enabled, else keeps it pending).
         void complete(Libraries &l, uint32_t ch)
@@ -194,6 +216,8 @@ namespace bozo::libs
                 {
                     if (ch == 0)
                         l.vu0.kick(v, c.tadr); // VIF0: the microcode image VU0 now holds
+                    if (static_cast<uint32_t>(ch) == kFromScratchpadChannel || static_cast<uint32_t>(ch) == kToScratchpadChannel)
+                        copyScratchpad(l, static_cast<uint32_t>(ch), c);
                     if (static_cast<uint32_t>(ch) == kIpuTo)
                     {
                         c.running = true;

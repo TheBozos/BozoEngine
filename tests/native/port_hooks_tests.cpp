@@ -92,6 +92,25 @@ int main()
 
         expect(!host.cop0Condition(d, &ctx), "by default no completed transfer means BC0T is not taken");
 
+        auto &memory = d.runtime().memory;
+        for (int i = 0; i < 32; ++i)
+            memory.ram()[0x100200 + i] = static_cast<uint8_t>(0x80 + i);
+        const auto store = [&](uint32_t address, uint64_t value)
+        {
+            const uint64_t words[2] = {value, 0};
+            host.ioWrite(d, &ctx, address, 4, words);
+        };
+        store(0x1000D480, 0x70000100);
+        store(0x1000D410, 0x100200);
+        store(0x1000D420, 2);
+        store(0x1000D400, 0x181);
+        expect(memory.scratchpad()[0x100 + 31] == 0x80 + 31, "a store to CHCR copies to the scratchpad");
+        store(0x1000D080, 0x70000100);
+        store(0x1000D010, 0x100300);
+        store(0x1000D020, 2);
+        store(0x1000D000, 0x180);
+        expect(memory.ram()[0x100300 + 31] == 0x80 + 31, "and from it");
+
         bool faulted = false;
         try
         {
