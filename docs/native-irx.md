@@ -66,6 +66,14 @@ same ownership check. Spans cannot cross adjacent blocks, alias opaque module ha
 images, stacks, freed data or devices. Reset invalidates all views. `library_allocation_views` checks
 real writes, interior ranges, adjacent boundaries, invalid/overflow spans, free, reset and two hosts.
 
+Compiled `sifcmd:12/13` user replies call the explicit `sif.receiveCommand` native application provider.
+The reply and optional extra data are snapshotted and bounds-checked before delivery. The provider
+copies them and queues its linked application callback, returning a real job ID. The source header is
+updated only after accepted submission. System commands and absent providers reject. No transport
+descriptor or interrupt processor is run. `library_command_replies` verifies message/header/extra
+bytes, job IDs, provider rejection, reset and independent hosts. Ports must validate the destination
+and own the queued application's data until its callback completes.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services

@@ -989,6 +989,24 @@ namespace bozo::native::irx
         }
         if (lib == "sifcmd")
         {
+            if (n == 12 || n == 13)
+            {
+                if (a2<16 || a2>112) {ret();return;}
+                if (a0&0x80000000u) throw std::runtime_error("native user messages do not process system commands");
+                if (!libraries.sif.receiveCommand) throw std::runtime_error("native EE user-message receiver is not installed");
+                const auto destination=read(c.gpr[29]+16),suppliedExtra=read(c.gpr[29]+20);
+                const uint32_t extraBytes=int32_t(suppliedExtra)>0?suppliedExtra:0;
+                if (extraBytes>0xffffffu || uint64_t(a1)+a2>memory.size() ||
+                    (extraBytes && uint64_t(a3)+extraBytes>memory.size()))
+                    throw std::runtime_error("native outgoing user-message data is outside owned storage");
+                std::vector<uint8_t> data(memory.begin()+a1,memory.begin()+a1+a2),extra;
+                if(extraBytes)extra.assign(memory.begin()+a3,memory.begin()+a3+extraBytes);
+                const uint32_t header[3]={a2|(extraBytes<<8),extraBytes?destination:0,a0};
+                std::memcpy(data.data(),header,sizeof(header));
+                const auto job=libraries.sif.receiveCommand(a0,data,extraBytes?destination:0,extra);
+                if(job)copy(a1,data.data(),a2);
+                ret(job);return;
+            }
             if (n == 8)
             {
                 if (a1 > memory.size()/8 || (!a0 && a1) || uint64_t(a0)+uint64_t(a1)*8>memory.size())
