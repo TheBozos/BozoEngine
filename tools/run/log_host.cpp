@@ -129,6 +129,8 @@ namespace bozo::run
         libs_.sndNative = (opt_.native & libs::kSnd) != 0;
         names_ = log_.names();
         uint32_t kernel = 0;
+        for (const Options::NativeCall &call : opt_.nativeCalls)
+            d.bindLibrary(call.address);
         for (const auto &[address, info] : names_)
         {
             traceIds_[address] = reference::CallList::stubId(info.name);
@@ -480,6 +482,38 @@ namespace bozo::run
             d_->stop(ctx, pc);
     }
 
+    void LogHost::runNativeCall(R5900Context *ctx, const Options::NativeCall &call)
+    {
+        const ee::KernelCall kernelCall = ee::kernelCallByName(call.name);
+        if (kernelCall == ee::KernelCall::None)
+            endRun(std::format("--native-call {}: no native kernel call has this name", call.name));
+        std::string err;
+        uint64_t cycle = d_->now(ctx);
+        while (const Record *p = log_.peek())
+        {
+            if (p->index >= call.until)
+                break;
+            const Record r = *p;
+            cycle = r.cycle;
+            ++nativeCallRecords_;
+            if (r.type == kOp)
+            {
+                Op o;
+                if (!parse(r, o, err))
+                    endRun(err);
+                if (o.depth == 0)
+                {
+                    replayingNativeCall_ = true;
+                    d_->kernel().replay(r.sub, o.args.data(), static_cast<uint32_t>(o.args.size()), o.wide);
+                    replayingNativeCall_ = false;
+                }
+            }
+            log_.advance();
+        }
+        d_->setNow(ctx, cycle);
+        ctx->r[2].ud[0] = 0;
+    }
+
     void LogHost::libraryCall(ee::Dispatcher &, R5900Context *ctx, uint32_t target)
     {
         if (insideDepth_)
@@ -487,6 +521,12 @@ namespace bozo::run
             innerLibraryCall(ctx, target);
             return;
         }
+        for (const Options::NativeCall &call : opt_.nativeCalls)
+            if (call.address == target)
+            {
+                runNativeCall(ctx, call);
+                return;
+            }
         Call c;
         const Record r = takeCall(kStub, target, ctx, c);
         for (int k = 0; k < 4; ++k)
@@ -1738,6 +1778,8 @@ namespace bozo::run
 
     void LogHost::op(const ee::OpEvent &e)
     {
+        if (replayingNativeCall_)
+            return;
         const Record &r = next("OP");
         auto mine = [&] {
             std::string s = std::format("{} origin {} depth {} call {}:", ee::opName(e.op), e.origin, e.depth,
