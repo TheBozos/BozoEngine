@@ -75,6 +75,20 @@ endif()
 add_test(NAME kernel_services COMMAND bozo-kernel-services-tests)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME explicit_entries COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py $<TARGET_FILE:bozo-recomp>)
+set(entry_gen "${CMAKE_CURRENT_BINARY_DIR}/explicit_entry_gen")
+add_custom_command(
+  OUTPUT "${entry_gen}/entries_000.cpp" "${entry_gen}/entries_table.cpp" "${entry_gen}/entries_functions.h"
+  COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py" --emit "${entry_gen}"
+  COMMAND $<TARGET_FILE:bozo-recomp> "${entry_gen}/fixture.elf" "${entry_gen}" --prefix entries --files 1
+    --entries "${entry_gen}/entries.txt" --patches "${entry_gen}/patches.txt" --no-comments
+  DEPENDS bozo-recomp "${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py")
+add_executable(bozo-entry-tests instr/entries_run.cpp "${entry_gen}/entries_000.cpp" "${entry_gen}/entries_table.cpp")
+target_include_directories(bozo-entry-tests PRIVATE "${entry_gen}")
+target_link_libraries(bozo-entry-tests PRIVATE bozo_runtime_core)
+if(MINGW)
+  target_link_options(bozo-entry-tests PRIVATE -static)
+endif()
+add_test(NAME explicit_entries_adaptations COMMAND bozo-entry-tests "${entry_gen}/fixture.elf")
 add_test(NAME strict_irx_generation COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_irx.py)
 
 if(BOZO_APP)

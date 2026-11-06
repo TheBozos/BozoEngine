@@ -63,4 +63,11 @@ class EntriesTests(unittest.TestCase):
                 self.assertFalse((root/f'partial{code_size}').exists())
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    if TOOL == '--emit':
+        root=pathlib.Path(sys.argv[1]); root.mkdir(parents=True,exist_ok=True)
+        (root/'fixture.elf').write_bytes(image())
+        (root/'entries.txt').write_text('0x10000c\n')
+        (root/'patches.txt').write_text('0x10000c 24420001 24420003\n')
+    else:
+        unittest.main()
