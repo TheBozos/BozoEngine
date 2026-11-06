@@ -346,15 +346,62 @@ namespace bozo::ee
     }
     void Dispatcher::eret(uint8_t *, R5900Context *ctx, Runtime *)
     {
-        host_.fault(*this, ctx, std::format("eret at 0x{:x}", ctx->pc));
+        uint32_t &status = rt_.cop0Status;
+        if (status & kStatusERL)
+        {
+            status &= ~kStatusERL;
+            ctx->pc = errorEpc_;
+        }
+        else if (status & kStatusEXL)
+        {
+            status &= ~kStatusEXL;
+            ctx->pc = epc_;
+        }
+        else
+            host_.fault(*this, ctx, std::format("eret at 0x{:x} outside an exception level", ctx->pc));
+    }
+    uint32_t Dispatcher::perfCounter(const R5900Context *ctx, int counter) const
+    {
+        const uint64_t running = pccr_ & kPccrCountEnable ? now(ctx) - perfSince_ : 0;
+        return pcr_[counter] + static_cast<uint32_t>(running);
     }
     uint32_t Dispatcher::cop0Read(R5900Context *ctx, Runtime *, uint32_t reg)
     {
+        switch (reg)
+        {
+        case kCop0Pccr: return pccr_;
+        case kCop0Pcr0: return perfCounter(ctx, 0);
+        case kCop0Pcr1: return perfCounter(ctx, 1);
+        case kCop0Epc: return epc_;
+        case kCop0ErrorEpc: return errorEpc_;
+        default: break;
+        }
         host_.fault(*this, ctx, std::format("mfc0 {} at 0x{:x}", reg, ctx->pc));
         return 0;
     }
-    void Dispatcher::cop0Write(R5900Context *ctx, Runtime *, uint32_t reg, uint32_t)
+    void Dispatcher::cop0Write(R5900Context *ctx, Runtime *, uint32_t reg, uint32_t value)
     {
+        switch (reg)
+        {
+        case kCop0Pccr:
+            pcr_[0] = perfCounter(ctx, 0);
+            pcr_[1] = perfCounter(ctx, 1);
+            perfSince_ = now(ctx);
+            pccr_ = value;
+            return;
+        case kCop0Pcr0:
+        case kCop0Pcr1:
+        {
+            const int written = reg == kCop0Pcr0 ? 0 : 1;
+            pcr_[1 - written] = perfCounter(ctx, 1 - written);
+            pcr_[written] = value;
+            perfSince_ = now(ctx);
+            return;
+        }
+        case kCop0Epc: epc_ = value; return;
+        case kCop0ErrorEpc: errorEpc_ = value; return;
+        default: break;
+        }
         host_.fault(*this, ctx, std::format("mtc0 {} at 0x{:x}", reg, ctx->pc));
     }
     uint32_t Dispatcher::vu0ControlRead(R5900Context *ctx, Runtime *, uint32_t reg)

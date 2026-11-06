@@ -218,6 +218,7 @@ namespace bozo::ee
         uint64_t dispatches = 0, stops = 0, handlersRun = 0, jumps = 0;
 
     private:
+        uint32_t perfCounter(const R5900Context *ctx, int counter) const;
         static void kernelEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         static void libraryEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         // Runs the native kernel call; returns true when the caller must stop (it blocked or gave way).
@@ -241,6 +242,11 @@ namespace bozo::ee
         Kernel kernel_;
         std::map<uint32_t, KernelCall> kernelCalls_;
         uint64_t cycle_ = 0;
+        uint32_t pccr_ = 0;
+        uint32_t pcr_[2] = {0, 0};
+        uint64_t perfSince_ = 0;
+        uint32_t epc_ = 0;
+        uint32_t errorEpc_ = 0;
         uint32_t heapStart_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
