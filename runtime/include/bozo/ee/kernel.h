@@ -60,6 +60,8 @@ namespace bozo::ee
         kOpFieldRate,
         kOpThreadSetup,
         kOpTransfer,
+        kOpDeadlineSet,
+        kOpDeadlineCancel,
         kOpCount
     };
     const char *opName(uint32_t op);
@@ -304,7 +306,12 @@ namespace bozo::ee
         uint64_t nextVblankEnd() const { return nextEnd_; }
         uint64_t field() const { return fieldCycles_; } // a field's length in EE cycles
         // The next scheduler event's cycle.
-        uint64_t nextEvent() const { return nextStart_ < nextEnd_ ? nextStart_ : nextEnd_; }
+        uint64_t nextEvent() const;
+        // Native callbacks in the scheduler clock domain. A key owns at most
+        // one pending deadline; setting it replaces that pending invocation.
+        // Cancellation does not retract callbacks already placed on the queue.
+        void scheduleDeadline(uint32_t key, uint64_t cycle, const QueuedHandler &handler);
+        bool cancelDeadline(uint32_t key);
         // Processes every event due at or before `cycle`, in order (origin: events).
         void processEvents(uint64_t cycle);
         // Processes the next event whatever its cycle (pinned mode: the host says when; kernel.md section 4).
@@ -357,5 +364,7 @@ namespace bozo::ee
         uint32_t vblankCount_ = 0;
         uint64_t fieldCycles_ = 0;
         uint64_t nextStart_ = 0, nextEnd_ = 0;
+        struct Deadline { uint64_t cycle; QueuedHandler handler; };
+        std::map<uint32_t, Deadline> deadlines_;
     };
 }
