@@ -4,6 +4,7 @@
 #include "bozo/libs/libraries.h"
 #include "bozo/native/compiled_irx.h"
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 namespace bozo::native::irx
@@ -32,6 +33,10 @@ namespace bozo::native::irx
         explicit CompiledLibraries(libs::Libraries &libraries, uint32_t heapStart);
         ~CompiledLibraries();
         void addImage(Image image);
+        // Replace a linked game routine with a per-host native algorithm.
+        // Only entries belonging to an admitted image may be bound, before it starts.
+        // Captured application state is owned by the caller and must outlive this host.
+        void bindNative(uint32_t address, std::function<void(Env &)> function);
         int32_t startImage(const std::string &name);
         void reset();
         audio::Mixer *advanceTo(uint64_t eeCycle);
