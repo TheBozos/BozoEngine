@@ -30,6 +30,7 @@ bozo-recomp <elf> --census
   functions, split at about `--max-file-bytes` each so they compile in parallel; with `--files n`, exactly n files of
   about the same size, so a build system can list them in advance). A file is rewritten only when its contents change
   (unchanged files keep their date and are not recompiled); other `<prefix>_*` files in the directory are removed.
+- `--symbols file`: a symbol map, names for an ELF without symbols, read like the ELF's own (`docs/specs/symbol-map.md`).
 - `--externals file`: guest addresses the runtime answers instead of the guest code there, one per line,
   `stub 0xADDR` (a native library or kernel function: every transfer to it goes through `bozo_call_indirect`) or
   `override 0xADDR` (a port function: calls go through `bozo_call_indirect`, a direct jump runs the guest code).
