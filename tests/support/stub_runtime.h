@@ -20,6 +20,7 @@ struct Runtime
     std::vector<uint32_t> indirect; // every bozo_call_indirect target, in order
     uint32_t yields = 0;
     uint32_t cop0[32] = {};
+    uint32_t cop0Last = 0;
     bool interruptsEnabled = true;
     bool cop0Condition = true;
     bool nativeHandled = false;

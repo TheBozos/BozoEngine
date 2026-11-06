@@ -144,6 +144,18 @@ namespace bozo
     };
 
     constexpr uint32_t kCop0Status = 12;
+    constexpr uint32_t kCop0Epc = 14;
+    constexpr uint32_t kCop0ErrorEpc = 30;
+    // Register 25 is three registers: the instruction's low bits select PCCR (0), PCR0 (1) or PCR1 (3). The recompiler
+    // passes them above the register number; every other register passes its number alone.
+    constexpr uint32_t kCop0Perf = 25;
+    constexpr uint32_t kCop0PerfSelectShift = 8;
+    constexpr uint32_t kCop0Pccr = kCop0Perf;
+    constexpr uint32_t kCop0Pcr0 = kCop0Perf | (1u << kCop0PerfSelectShift);
+    constexpr uint32_t kCop0Pcr1 = kCop0Perf | (3u << kCop0PerfSelectShift);
+    constexpr uint32_t kPccrCountEnable = 1u << 31;
+    constexpr uint32_t kStatusEXL = 1u << 1;
+    constexpr uint32_t kStatusERL = 1u << 2;
     constexpr uint32_t kStatusEIE = 1u << 16; // the EE's master interrupt enable (ei sets it, di clears it)
 }
 

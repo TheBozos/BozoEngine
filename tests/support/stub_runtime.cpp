@@ -53,8 +53,8 @@ void bozo_unimplemented(uint8_t *, R5900Context *, Runtime *rt, uint32_t word)
     rt->events.push_back(hexEvent("unimplemented", word));
 }
 
-uint32_t bozo_cop0_read(R5900Context *, Runtime *rt, uint32_t reg) { return rt->cop0[reg & 31u]; }
-void bozo_cop0_write(R5900Context *, Runtime *rt, uint32_t reg, uint32_t value) { rt->cop0[reg & 31u] = value; }
+uint32_t bozo_cop0_read(R5900Context *, Runtime *rt, uint32_t reg) { rt->cop0Last = reg; return rt->cop0[reg & 31u]; }
+void bozo_cop0_write(R5900Context *, Runtime *rt, uint32_t reg, uint32_t value) { rt->cop0Last = reg; rt->cop0[reg & 31u] = value; }
 void bozo_set_interrupts(uint8_t *, R5900Context *, Runtime *rt, bool enabled) { rt->interruptsEnabled = enabled; }
 bool bozo_cop0_condition(R5900Context *, Runtime *rt) { return rt->cop0Condition; }
 void bozo_eret(uint8_t *, R5900Context *, Runtime *rt) { rt->events.push_back("eret"); }

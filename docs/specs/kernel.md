@@ -16,7 +16,7 @@ still the native kernel's and dispatcher's.
 
 | Piece | Where | What |
 |---|---|---|
-| Kernel | `runtime/ee/kernel.cpp` | threads, ready queues, semaphores, INTC/DMAC handlers and their queue, the vblank, the operations of `calllog.md` 4.8 |
+| Kernel | `runtime/ee/kernel.cpp` | threads, ready queues, semaphores, INTC/DMAC handlers and their queue, alarms, the vblank, the operations of `calllog.md` 4.8 |
 | Dispatcher | `runtime/ee/dispatcher.cpp` | a `RuntimeServices`: runs guest code on the kernel's contexts, stops and resumes threads, charges EE time, processes events at checkpoints, answers the kernel calls and syscalls natively |
 | Host | `ee::Host` | everything else: library calls and port overrides, VU0 microprograms, I/O, CPCOND0, the libraries' continuations |
 | Generated code | `recompiler/src/emitter.cpp` | the checkpoints and resume entries the dispatcher relies on (section 3) |
@@ -78,8 +78,63 @@ vblank count goes up, the threads waiting for a count below it are woken in thre
 #1315977: not in the order they blocked), with their fixed result or, for -1, the inverted parity of the count; then
 INTC 2 is raised. The end raises INTC 3. Events due by the same cycle are processed in due order.
 
-**Syscalls.** 60 (SetupThread): returns stack + size. 61 (SetupHeap): returns the start rounded up to 16. A syscall
-is known by its return address (the log's target).
+**Syscalls.** A `syscall` with v1 = N reaches the native service for N, so a stripped ELF's libkernel wrappers
+(`li v1, N; syscall; jr ra`) work with no symbol (Soulcalibur III has none). A syscall is known by its return address
+(the log's target). Numbers are as the SDK's wrappers load them, negative for the interrupt-safe entries; each one was
+checked against the named wrappers of Champions of Norrath's ELF (143 of them), and -47 against SC3's libkernel, which
+calls it to compare a target with the current thread:
+
+| Numbers | Service |
+|---|---|
+| 1, 2 | ResetEE, SetGsCrt |
+| 16-19 | Add/RemoveIntcHandler, Add/RemoveDmacHandler |
+| 20-23, -26 to -29 | Enable/DisableIntc, Enable/DisableDmac and their i variants |
+| 32-37, -38 | Create/Delete/Start/Exit/ExitDelete/TerminateThread, iTerminateThread |
+| 41, -42, 43, -44, 45, -46 | Change priority, rotate the ready queue, release a wait, and their i variants |
+| 47, -47, 48, -49 | GetThreadId (both), Refer/iReferThreadStatus |
+| 50, 51, -52, 53, -54 | SleepThread, Wakeup/iWakeupThread, Cancel/iCancelWakeupThread |
+| 55, -56, 57, -58 | Suspend/iSuspendThread, Resume/iResumeThread |
+| 60 | SetupThread: returns stack + size |
+| 61 | SetupHeap: returns the start rounded up to 16 |
+| 62 | EndOfHeap |
+| 64-66, -67, 68, 69, -70, 71, -72 | the semaphores |
+| 74, 75, 110, 111 | Set/GetOsdConfigParam, Set/GetOsdConfigParam2 |
+| 97, 98, 100, -104, 127 | EnableCache, DisableCache, FlushCache, iFlushCache, GetMemorySize |
+| 112, -112, 113, -113, 115 | GsGetIMR, GsPutIMR and their i variants, SetVSyncFlag |
+| 118, -118, 119, -119 | sceSifDmaStat, sceSifSetDma: the host's native library functions (`Host::librarySyscall`) |
+| 252, 253, -254, -255 | SetAlarm, ReleaseAlarm, iSetAlarm, iReleaseAlarm |
+
+A number outside the table faults with the number. So does a listed call with no answer yet (45, -46, 71, -72, 1).
+A call that blocks or gives way goes on after the syscall, at the return address when the next instruction is the
+wrapper's `jr ra`. Left out on purpose: what the SDK's `_InitSys` uses to patch the console's kernel (90 Copy, 91, 116,
+131 FindAddress, 85-89, 130, 13, 14). There is no kernel memory to patch. No-op answers would be wrong as well, since
+its installer loops until FindAddress returns two matching addresses. `_InitSys` itself is the native call
+(`KernelCall::InitSys`, by name or through a symbol map); a stripped ELF without that name faults at 116.
+
+**Suspend and resume.** `SuspendThread` takes a ready thread out of its queue (`Suspended`) and marks a waiting one
+(`WaitSuspended`); `ResumeThread` puts them back, a resumed ready thread at the tail of its queue. Both return the id,
+-406 for 0 or the running thread, -407 for an unknown thread; suspending a dormant one returns -413, resuming a thread
+that is not suspended -415. The interrupt-safe entries do the same without giving way.
+
+**The heap's end.** `EndOfHeap` returns SetupHeap's start plus its size; a negative size runs up to the main thread's
+stack as SetupThread set it.
+
+**State with no device behind it.** `GsPutIMR` stores a mask and returns the old one, `GsGetIMR` reads it (0x7F00, all
+masked, at boot); nothing raises a GS interrupt. `SetGsCrt` answers 0: the renderer owns the display. `GetOsdConfigParam`
+and `SetOsdConfigParam` read and write one word held by the dispatcher (`Dispatcher::osdConfig`, English, 4:3, version 2
+at boot), `...Param2` a zeroed 256-byte block (address, size, offset; out of range faults).
+
+**Alarms.** `SetAlarm(time, handler, arg)` is a deadline (`scheduleDeadline`) `time` horizontal blanks from now, one
+key per alarm id. The handler is queued as `handler(id, the horizontal blank count at due, arg)`, kind alarm, with the
+caller's gp. Ids are the lowest free of 64; none free returns -1. `ReleaseAlarm(id)` returns 0 while the alarm is
+pending, else -1. A horizontal blank is `field x 2 / lines` EE cycles, 525 lines at the NTSC rate, 625 at PAL, so an
+alarm follows the EE clock like every deadline. No timer register or compare is behind it. SC3 links these wrappers
+and never calls them: its delays go through libkernel's own timer library (below, K3).
+
+**The native frame boundary.** `SetVSyncFlag(flag, csr)` keeps two addresses. Where a game frame ends
+(`Dispatcher::frameCompleted`, from `FreeHost::endFrame`) the kernel writes 1 to the flag word and the frame count's
+parity, as FIELD (bit 13), to the 64-bit CSR word, then queues the callback `sceGsSyncVCallback` set (kind GS callback,
+a0 2, the caller's gp). Neither follows the field clock: a game on the PC's clock gets them once per frame it makes.
 
 **Results.** A kernel call's result is written to v0 as a whole 128-bit register, its upper half cleared (boot frame
 1615, FlushCache).
@@ -289,6 +344,12 @@ not checked:
 - eeCycle, BozoEngine's clock at the frame's end. Out-calls set the clock to the log's, so this is the clock at the
   frame's out-call plus how far it was from the log's there.
 
+**COP0 registers a game writes.** A game's profiling code sets the performance counters with Status.ERL set and
+leaves through `eret` (Soulcalibur III's 0x427420). The dispatcher keeps PCCR as written, EPC and ErrorEPC for `eret`,
+and answers PCR0 and PCR1 from the EE clock: each counts EE cycles from its last written value while PCCR's bit 31 is
+set, whatever event the game selected, and holds its value while the bit is clear. Nothing else is modelled: no event
+selection, no overflow interrupt.
+
 **SWITCH reasons.** Start for the first; handler-end after a handler returned; handler-start for a handler stacked on
 the thread that ran; else from the state of the thread that ran last: blocked (with its wait), preempted (ready),
 ended (dormant), suspended, deleted.
@@ -381,6 +442,11 @@ hardware counter, compare register, polling or SDK-specific alarm record is mode
 covers replacement/cancellation, ordering, payload/ownership isolation, and actual running/idle dispatcher routes.
 This API does not itself implement any console SDK's SetAlarm or cancellation ABI.
 
-**K3.** Not reached by TMB: alarms, event flags,
-suspend/resume, `SetVSyncFlag` and the GS vsync callback (the kernel records the
-operation and has no effect yet for those `calllog.md` lists but TMB never makes).
+**K3.** Not reached by TMB: event flags (the kernel records the operation and has no effect yet for those `calllog.md`
+lists but TMB never makes). Alarms, suspend/resume, `SetVSyncFlag` and the sync-V callback are settled (section 2).
+
+Open for a game that uses it: libkernel's own timer library (newer SDKs: `SetTimerAlarm` and its users, on T2's compare
+and overflow interrupts). T2 reads answer from the clock (`libraries.md` section 11), but no timer interrupt is raised,
+by rule, so an alarm set through that library's code never fires. It needs a native answer at the library's entry
+points. `_InitSys` being native leaves the library uninitialized, so its calls fail with their error code instead of
+hanging.

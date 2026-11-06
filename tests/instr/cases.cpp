@@ -691,6 +691,8 @@ namespace itest
         {
             add("syscall goes to the runtime (number in v1)", {addiu(v1, zero, 0x3c), syscall()}, none,
                 [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"syscall 0x3c"}); });
+            add("an interrupt-safe syscall's number is negative in v1", {addiu(v1, zero, -0x43), syscall()}, none,
+                [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"syscall 0xffffffbd"}); });
             add("break goes to the runtime with its code", {brk(7)}, none,
                 [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.events(rt, {"break 0x7"}); });
             {
@@ -708,6 +710,9 @@ namespace itest
                     k.eq("v0", get(c, v0), 1);
                     k.events(rt, {});
                 });
+            add("mfc0 25 and mtc0 25 pass the performance counter's select", {mtc0(a0, 25) | 3u, mfc0(v0, 25) | 1u},
+                [](Ctx &, uint8_t *, Runtime &) {},
+                [](Checker &k, Ctx &, uint8_t *, Runtime &rt) { k.eq("register", rt.cop0Last, 25u | (1u << 8)); });
             add("mfc0/mtc0 and ei/di go to the runtime", {mfc0(v0, 12), mtc0(a0, 12), di, ei, di},
                 [](Ctx &c, uint8_t *, Runtime &rt) { rt.cop0[12] = 0x70030C13u; set(c, a0, 0x1234); },
                 [](Checker &k, Ctx &c, uint8_t *, Runtime &rt) {
