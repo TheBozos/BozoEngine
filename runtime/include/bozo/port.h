@@ -52,11 +52,16 @@ namespace bozo::port
         // the built-in table entirely; a later one for an entry replaces it. Runs inline: must not block or change pc/ra.
         void vu0Program(uint32_t entry, Function fn);
         const std::vector<BozoFunctionEntry> &vu0Programs() const { return vu0Programs_; }
+        // A port with no transfer left in flight whatever the game's registers say: BC0F and BC0T answer "done" in free
+        // mode, also after a FlushCache and with no channel in D_PCR, where the condition's TMB rule says "not done".
+        void transfersAlwaysDone() { transfersAlwaysDone_ = true; }
+        bool transfersAreAlwaysDone() const { return transfersAlwaysDone_; }
 
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
         std::vector<BozoFunctionEntry> vu0Programs_;
         InstructionHandler instructionHandler_ = nullptr;
+        bool transfersAlwaysDone_ = false;
     };
 
     // A port: its game and how to install it. One per executable (BOZO_PORT).

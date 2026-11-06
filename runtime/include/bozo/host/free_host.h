@@ -123,6 +123,7 @@ namespace bozo::host
 
     private:
         port::InstructionHandler instructionHandler_ = nullptr;
+        bool transfersAlwaysDone_ = false;
         std::vector<BozoFunctionEntry> vu0Programs_;
         void runOverride(R5900Context *ctx, uint32_t target, port::Function fn);
         // Ends the run when no frame ended for opt_.stallFields fields (a wait that never ends), saying where.

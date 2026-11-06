@@ -605,6 +605,8 @@ an out-call), so the image is the hierarchy one until a kick of the 2D chain is 
 model's VIF0 channel); the 2D image's programs (0x278, 0x3b0, 0x438, 0x548, 0x5e0) are not native: a call to one would
 be answered from the log and counted ("calls with no native answer").
 
+**A port's transfers.** `Registry::transfersAlwaysDone()`: nothing runs behind the DMA registers, so a port whose game waits on CPCOND0 at many sites answers them all as done (free mode only). The default rule, with its FlushCache reset, stays the one TMB's records settled (section 11). Soulcalibur III needs it: its scratchpad helpers wait on BC0F after a FlushCache (0x10cf10).
+
 **A port's programs.** `Registry::vu0Program(entry, fn)` registers a native program for an entry in VU0's code memory. The
 free host looks there first; a port with any has only those, a VCALLMS at another entry faults, and the TMB table above
 (whose images and entries are TMB's) is not consulted. A program runs inline on the calling context and VU0's data memory:
