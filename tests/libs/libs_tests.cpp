@@ -586,6 +586,13 @@ static void dmaCalls()
     eq("receive from the scratchpad", m.call("sceDmaRecvN", {0x1000D000, 0x100100, 2}), 0);
     eq("in memory", m.rt->memory.ram()[0x100100 + 31], 32);
     eq("the store is known", bozo::libs::ioKnown(0x1000D080, 4, true), 1);
+    eq("the load is known", bozo::libs::ioKnown(0x1000D080, 4, false), 1);
+    {
+        uint32_t pending = 0;
+        eq("and reads the store back", static_cast<uint32_t>(bozo::libs::ioLoad(m.libs, 0x1000D080, 4, pending, 0)), 0x20);
+    }
+    eq("SIGLBLID is stored", bozo::libs::ioKnown(0x12001080u, 8, true), 1);
+    eq("SIGLBLID is not read", bozo::libs::ioKnown(0x12001080u, 8, false), 0);
 
     eq("no watch left", m.call("sceDmaWatch", {0x10009000, 0x100000, 1, 0}), 0);
     eq("old stall address", m.call("sceDmaPutStallAddr", {0x100000}), 0);
