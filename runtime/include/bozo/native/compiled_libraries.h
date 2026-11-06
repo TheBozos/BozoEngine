@@ -5,6 +5,7 @@
 #include "bozo/native/compiled_irx.h"
 #include <memory>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 namespace bozo::native::irx
@@ -44,6 +45,9 @@ namespace bozo::native::irx
         // Opt in before execution; no display interrupt or frame period is generated.
         void useNativeFrameCallbacks();
         void notifyFrameCompleted();
+        // Submit a copied user message to a registered linked native command handler.
+        // No system command, transport packet processor or interrupt is executed.
+        uint32_t submitCommand(uint32_t command,std::span<const uint8_t> data);
         int32_t startImage(const std::string &name);
         void reset();
         audio::Mixer *advanceTo(uint64_t eeCycle);

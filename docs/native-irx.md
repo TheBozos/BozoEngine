@@ -50,6 +50,16 @@ and legacy VBlank waits remain unsupported: this API creates no display timing o
 `library_frame_listeners` checks actual-frame-only delivery, ordering, cancellation, exclusion, reset
 and separate hosts. Declarations/error values were checked against PS2SDK's vblank/kerr headers.
 
+User command exports `sifcmd:8/10/11` own a checked native handler table and linked callbacks. They
+retain the application's function/argument records and GP; invalid IDs, system IDs, unlinked functions
+and out-of-range tables reject. `submitCommand(id,data)` copies 16..112 bytes into owned native storage,
+returns an owned monotonic job ID and queues actual callback delivery with exclusion. Storage is
+released after delivery, including failure; reset drops pending jobs and registrations. No SIF system
+command or transport/interrupt processor is present. `library_user_commands` verifies records,
+registration/removal, copied bytes, GP, once-only delivery, bounds, exclusion, reset and independent
+hosts. ABI checked against PS2SDK's sifcmd/common declarations. This API does not yet connect EE
+`sceSifSendCmd` or extra-buffer copies; ports must provide a native producer before those paths work.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services
