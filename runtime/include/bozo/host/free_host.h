@@ -27,6 +27,7 @@ namespace bozo::host
     struct FreeOptions
     {
         std::string elf;     // the game's executable (its symbols bind the libraries)
+        std::string symbolMap; // names for an executable without symbols (docs/specs/symbol-map.md), empty: none
         std::string iso;     // the disc image (the CD library reads it; 989SND's banks)
         uint32_t frames = 0; // stop after this many game frames (0: never)
         std::string padScript; // a frame-keyed pad script for player 1 (libraries.md section 6), empty: no input
