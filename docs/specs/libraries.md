@@ -426,6 +426,14 @@ Results: boot 378 calls native (`sceCdStRead` 281, `sceCdSync` 40, `sceCdRead` 3
 match1p 587 (`sceCdStRead` 338, `sceCdSync` 87, `sceCdRead` 65, `sceCdGetError` 52, ...) and 33 continuations; 0
 divergences.
 
+**Drive calls.** From the SDK's interface; SC3's game code reaches none directly (`sceCdNcmdDiskReady` and `sceCdSyncS`
+come from its library's own `sceCdRead` and `sceCdInit`, both native):
+- `sceCdSeek(lbn)`: 1. A hundred milliseconds of the EE clock (`kSeekCycles`, a fixed time, not a head model), charged
+  like a read's, with the callback (function 4) when one is set.
+- `sceCdBreak`: 1. A command in progress ends now with error 1 (aborted); with none, nothing changes.
+- `sceCdNcmdDiskReady`: 6 while a read or seek is in progress, else 2. `sceCdSyncS`: 0, S commands finish in their call.
+- `sceCdGetDiskType`: 0x14 (a PS2 DVD) with an image set, else 0 (no disc).
+
 ## 9. libmpeg (`mpeg`)
 
 Native: `sceMpegInit`, `sceMpegCreate`, `sceMpegDelete`, `sceMpegReset`, `sceMpegAddCallback`, `sceMpegAddStrCallback`,
