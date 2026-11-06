@@ -44,7 +44,7 @@ namespace bozo::audio
         Libsd(const Libsd &) = delete;
         Libsd &operator=(const Libsd &) = delete;
 
-        // libsd's export numbers this class answers (4 sceSdInit ... 27 sceSdSetSpu2IntrHandler).
+        // libsd's export numbers this class answers (2, 4 sceSdInit ... 28 sceSdGetTransIntrHandlerArgument, 30 sceSdStopTrans).
         static bool handles(uint32_t ordinal);
         // One export by its number: args are its arguments (a0-a3, then the stack's), gp the caller's; the result is
         // v0. False when the number is not one handles() takes.
@@ -83,6 +83,13 @@ namespace bozo::audio
         uint32_t setEffectMode(uint32_t core, uint32_t attr);       // 32: mode, delay, feedback (not the depth)
         uint32_t setEffectModeParams(uint32_t core, uint32_t attr); // 33: delay, feedback, depth of the current mode
         uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25, and 31 (Clean: waits for it)
+        uint32_t transIntrHandlerArgument(uint32_t channel);                         // 28
+        uint32_t stopTrans(uint32_t channel);                                        // 30
+
+        // 13, 14: libsd's equal-temperament conversions (pitch 0x1000 plays at the sample's rate; a note's fine part is
+        // 1/128 semitone), the same integer results as the SDK's.
+        static uint32_t note2Pitch(uint32_t centerNote, uint32_t centerFine, uint32_t note, uint32_t fine);
+        static uint32_t pitch2Note(uint32_t centerNote, uint32_t centerFine, uint32_t pitch);
 
         // The transfer-end delay (IOP cycles) after a transfer or an input half.
         static constexpr uint32_t kTransferDelay = 2000u;

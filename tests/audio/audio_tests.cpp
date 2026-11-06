@@ -275,7 +275,8 @@ namespace
         eq("SetEffectModeParams: the depth", ram16(0x90108u), 0x4444);
         eq("SetEffectModeParams: the right depth", ram16(0x9010Au), 0x5555);
         eq("libsd handles 31 (sceSdCleanEffectWorkArea)", Libsd::handles(31u), 1);
-        eq("libsd does not handle 13", Libsd::handles(13u), 0);
+        eq("libsd handles 13", Libsd::handles(13u), 1);
+        eq("libsd does not handle 29", Libsd::handles(29u), 0);
     }
 
     void testReference()

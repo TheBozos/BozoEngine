@@ -592,16 +592,7 @@ namespace bozo::native::irx
                 std::fprintf(stderr, "[libsd] voiceTrans(%x,%x,%x,%x,%x) sp=%x\n", a0, a1, a2, a3, args[4], c.gpr[29]);
             uint32_t result = 0;
             if (!libsd.call(n, args, c.gpr[28], result))
-            {
-                // SDK note/pitch conversions are pure arithmetic in the statically compiled library.
-                const auto found = exports.find({lib, n});
-                if ((n == 13 || n == 14) && found != exports.end())
-                {
-                    env.call(found->second, c.gpr[31]);
-                    return;
-                }
                 throw std::runtime_error(std::format("no native libsd export {}", n));
-            }
             ret(result);
             return;
         }

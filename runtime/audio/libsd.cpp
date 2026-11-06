@@ -4,6 +4,9 @@
 // libsd at its API on the native mixer (bozo/audio/libsd.h; behaviour: docs/specs/libraries.md section 15.14).
 #include "bozo/audio/libsd.h"
 
+#include <array>
+#include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace bozo::audio
@@ -31,6 +34,24 @@ namespace bozo::audio
         int voiceOf(uint32_t entry)
         {
             return static_cast<int>((entry >> 1u) & 0x1Fu) % Mixer::kVoices;
+        }
+
+        // 32768 * 2^(i / 12) for the 12 semitones, then 32768 * 2^(i / 1536) for the 128 fine steps, rounded down: the
+        // SDK's two tables, one after the other.
+        uint32_t pitchStep(int32_t index)
+        {
+            static const std::array<uint16_t, 140> table = []
+            {
+                std::array<uint16_t, 140> t{};
+                for (int i = 0; i < 12; ++i)
+                    t[i] = static_cast<uint16_t>(std::floor(32768.0 * std::exp2(i / 12.0)));
+                for (int i = 0; i < 128; ++i)
+                    t[12 + i] = static_cast<uint16_t>(std::floor(32768.0 * std::exp2(i / 1536.0)));
+                return t;
+            }();
+            if (index < 0 || index >= static_cast<int32_t>(table.size()))
+                throw std::runtime_error("libsd note conversion outside its pitch tables");
+            return table[static_cast<size_t>(index)];
         }
     }
 
@@ -502,9 +523,80 @@ namespace bozo::audio
         return 0u;
     }
 
+    uint32_t Libsd::transIntrHandlerArgument(uint32_t channel)
+    {
+        return m_state.transHandler[channel & 1u].argument;
+    }
+
+    uint32_t Libsd::stopTrans(uint32_t channel)
+    {
+        sync();
+        channel &= 1u;
+        m_mixer.stopInput(static_cast<int>(channel));
+        m_state.halvesPending[channel] = 0u;
+        return 0u;
+    }
+
+    uint32_t Libsd::note2Pitch(uint32_t centerNote, uint32_t centerFine, uint32_t note, uint32_t fineArgument)
+    {
+        const int32_t fine = static_cast<int16_t>(fineArgument) + static_cast<int32_t>(centerFine & 0xFFFFu);
+        const int32_t carry = (fine < 0 ? fine + 127 : fine) >> 7;
+        const int32_t semitones = static_cast<int16_t>(note + static_cast<uint32_t>(carry) - centerNote);
+        const int32_t octave = semitones / 12;
+        int32_t shift = octave - 2, index = semitones - octave * 12, fineIndex = fine - carry * 128;
+        if (index < 0 || (index == 0 && fineIndex < 0))
+        {
+            index += 12;
+            shift = octave - 3;
+        }
+        if (fineIndex < 0)
+        {
+            index += carry - 1;
+            fineIndex += (carry + 1) * 128;
+        }
+        const uint32_t product = pitchStep(static_cast<int16_t>(index)) * pitchStep(12 + fineIndex);
+        uint32_t pitch = static_cast<uint32_t>(static_cast<int32_t>(product) >> 16);
+        if (static_cast<int16_t>(shift) < 0)
+        {
+            const uint32_t down = static_cast<uint32_t>(-static_cast<int16_t>(shift));
+            pitch = (pitch + (1u << ((down - 1u) & 31u))) >> (down & 31u);
+        }
+        return pitch & 0xFFFFu;
+    }
+
+    uint32_t Libsd::pitch2Note(uint32_t centerNote, uint32_t centerFine, uint32_t pitch)
+    {
+        uint32_t p = pitch & 0xFFFFu;
+        if (p >= 0x4000u)
+            p = 0x3FFFu;
+        int32_t top = 0;
+        for (int32_t bit = 0; bit < 14; ++bit)
+            if (((p >> bit) & 1u) != 0u)
+                top = bit;
+        const uint32_t normal = (p << (15 - top)) & 0xFFFFu;
+        int32_t semitone = 0;
+        for (int32_t k = 11; k >= 0; --k)
+            if (normal >= pitchStep(k))
+            {
+                semitone = k;
+                break;
+            }
+        const uint32_t ratio = ((normal << 15u) / pitchStep(semitone)) & 0xFFFFu;
+        int32_t step = 0;
+        for (int32_t k = 127; k >= 0; --k)
+            if (ratio >= pitchStep(12 + k))
+            {
+                step = k;
+                break;
+            }
+        const uint32_t fine = centerFine + static_cast<uint32_t>(step + 1);
+        const uint32_t result = centerNote + static_cast<uint32_t>((top - 12) * 12 + semitone) + ((fine & 0xFFFFu) >> 7u);
+        return ((result << 8u) + (fine & 0x7Eu)) & 0xFFFEu;
+    }
+
     bool Libsd::handles(uint32_t ordinal)
     {
-        return ordinal == 2u || (ordinal >= 4u && ordinal <= 12u) || (ordinal >= 15u && ordinal <= 27u) || (ordinal >= 31u && ordinal <= 33u);
+        return ordinal == 2u || (ordinal >= 4u && ordinal <= 28u) || (ordinal >= 30u && ordinal <= 33u);
     }
 
     bool Libsd::call(uint32_t ordinal, const uint32_t a[5], uint32_t gp, uint32_t &result)
@@ -538,6 +630,10 @@ namespace bozo::audio
         case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
         case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
+        case 13u: result = note2Pitch(a[0], a[1], a[2], a[3]); return true;
+        case 14u: result = pitch2Note(a[0], a[1], a[2]); return true;
+        case 28u: result = transIntrHandlerArgument(a[0]); return true;
+        case 30u: result = stopTrans(a[0]); return true;
         default: return false;
         }
     }
