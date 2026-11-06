@@ -172,6 +172,7 @@ namespace bozo::libs
         case kMpeg: return "mpeg";
         case kSif: return "sif";
         case kSnd: return "snd";
+        case kTimer: return "timer";
         default: return "?";
         }
     }
@@ -221,6 +222,7 @@ namespace bozo::libs
         addCd(functions_);
         addMpeg(functions_);
         addSif(functions_);
+        addTimer(functions_);
         for (size_t i = 0; i < functions_.size(); ++i)
             byName_[functions_[i].name] = i;
     }

@@ -48,6 +48,12 @@ namespace bozo::host
         libs_.snd.timing = libs::snd989::Timing::freeRun(0);
         // In real time the sound is played as it is made: the IOP's clock follows the host's (15.13e).
         libs_.snd.realTimeClock = !libs_.audioProvider && opt_.realTime && opt_.sound;
+        if (opt_.realTime)
+            libs_.timers.hostClock = [] {
+                return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now().time_since_epoch())
+                                                .count());
+            };
         libs_.cd.imagePath = opt_.iso;
         libs_.mc.hostDirectory = opt_.cardDir;
         for (int player = 0; player < 4; ++player)
@@ -361,6 +367,13 @@ namespace bozo::host
     {
         if (nativeGraphics() && cause < 3) return libs_.io.nativeCompleted[cause];
         return cause < 10 && (libs_.io.stat & (1u << cause)) != 0;
+    }
+
+    void FreeHost::idle(ee::Dispatcher &, uint64_t from, uint64_t to)
+    {
+        watchdog(nullptr);
+        if (const int64_t hold = libs_.timers.idleHold(from, to))
+            std::this_thread::sleep_for(std::chrono::nanoseconds(hold));
     }
 
     void FreeHost::waitCompleted(ee::Dispatcher &, ee::Thread &t)
