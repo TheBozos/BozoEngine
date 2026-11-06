@@ -41,7 +41,9 @@ namespace bozo::render::gl
     constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501;
     constexpr GLenum kFuncAdd = 0x8006, kFuncSubtract = 0x800A, kFuncReverseSubtract = 0x800B;
     constexpr GLenum kConstantAlpha = 0x8003, kOneMinusConstantAlpha = 0x8004, kOneMinusDstAlpha = 0x0305;
-    constexpr GLenum kLess = 0x0201;
+    constexpr GLenum kLess = 0x0201, kNotEqual = 0x0205, kAlways = 0x0207;
+    constexpr GLenum kStencilTest = 0x0B90, kKeep = 0x1E00, kIncrWrap = 0x8507, kDecrWrap = 0x8508;
+    constexpr GLbitfield kStencilBufferBit = 0x00000400;
     constexpr GLenum kCullFace = 0x0B44, kDepthTest = 0x0B71, kBlend = 0x0BE2, kScissorTest = 0x0C11;
     constexpr GLenum kLequal = 0x0203;
     constexpr GLbitfield kDepthBufferBit = 0x0100, kColorBufferBit = 0x4000;
@@ -76,7 +78,9 @@ namespace bozo::render::gl
     X(void, BlendFunc, (GLenum src, GLenum dst))                                                                       \
     X(void, BlendFuncSeparate, (GLenum srcRgb, GLenum dstRgb, GLenum srcAlpha, GLenum dstAlpha))                       \
     X(void, BlendEquation, (GLenum mode))                                                                  \
-    X(void, BlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a))                                                                              \
+    X(void, BlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a))                                      \
+    X(void, StencilFunc, (GLenum func, GLint ref, GLuint mask))                                            \
+    X(void, StencilOp, (GLenum fail, GLenum zfail, GLenum zpass))                                                                              \
     X(void, DepthFunc, (GLenum func))                                                                                  \
     X(void, DepthMask, (GLboolean flag))                                                                               \
     X(void, ColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                                           \

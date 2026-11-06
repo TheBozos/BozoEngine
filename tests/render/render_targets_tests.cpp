@@ -228,6 +228,26 @@ int main()
     present();
     pixel("depth GREATER: an equal Z fails", 8, {255, 0, 0});
 
+    // The stencil: a volume counted up and down marks where the counts differ; a draw then lands only there.
+    renderer.beginFrame(screen);
+    quad(flat, 0x80000000);
+    {
+        Material volume = flat;
+        volume.colourMask = 0u;
+        volume.stencilClear = true;
+        volume.stencilOp = Material::StencilOp::IncrementWrap;
+        quad(volume, 0x80808080);
+        volume.stencilClear = false;
+        volume.stencilOp = Material::StencilOp::DecrementWrap;
+        quad(volume, 0x80808080, 0, 8);
+        Material marked = flat;
+        marked.stencilNotZero = true;
+        quad(marked, 0x80008000);
+    }
+    present();
+    pixel("stencil 0: not drawn", 24, {0, 0, 0});
+    pixel("stencil not 0: drawn", 8, {0, 255, 0});
+
     // Q: a screen-space triangle's texture coordinates in perspective, its colour across the screen.
     {
         auto checker = std::make_shared<Texture>();

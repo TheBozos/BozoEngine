@@ -143,6 +143,11 @@ namespace bozo::render
                                     uint64_t(m.blendD) << 48 | uint64_t(m.blendFix) << 56;
                 h = hash::xxh64(&gs, sizeof(gs), h);
             }
+            if (m.stencilOp != Material::StencilOp::None || m.stencilNotZero || m.stencilClear)
+            {
+                const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9;
+                h = hash::xxh64(&stencil, sizeof(stencil), h);
+            }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())
