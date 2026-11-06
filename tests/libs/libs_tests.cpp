@@ -296,8 +296,238 @@ void nativeIsoFiles() {
     std::filesystem::remove(path);
 }
 
+static void padCalls()
+{
+    Machine m;
+    m.call("scePadInit", {0});
+    eq("no buffer before PortOpen", m.call("scePadGetDmaStr", {0, 0}), 0);
+    m.call("scePadPortOpen", {0, 0, 0x100000});
+    eq("the port's buffer", m.call("scePadGetDmaStr", {0, 0}), 0x100000);
+    m.libs.framesEnded = 7;
+    eq("frames counted while open", m.call("scePadGetFrameCount", {0, 0}), 7);
+    eq("no count when closed", m.call("scePadGetFrameCount", {1, 0}), 0);
+    eq("two ports", m.call("scePadGetPortMax", {}), 2);
+    eq("the padman version libpad asks for", m.call("scePadGetModVersion", {}) >> 8, 4);
+    eq("no combinations", m.call("scePadInfoComb", {0, 0, 0xFFFFFFFFu, 0}), 0);
+    eq("warning level", m.call("scePadSetWarningLevel", {1}), 0);
+    eq("vref", m.call("scePadSetVrefParam", {0, 0, 0x100100}), 1);
+    eq("second init", m.call("scePadInit2", {0}), 1);
+
+    eq("req state set", m.call("scePadSetReqState", {0, 0, 2}), 1);
+    eq("req state read", m.call("scePadGetReqState", {0, 0}), 2);
+    eq("another port's unchanged", m.call("scePadGetReqState", {1, 0}), 0);
+
+    m.call("scePadSetMainMode", {0, 0, 1, 3});
+    m.call("scePadEnterPressMode", {0, 0});
+    m.libs.framesEnded = 10;
+    m.call("scePadRead", {0, 0, 0x100200});
+    eq("pressure mode", m.rt->memory.ram()[0x100201], 0x79);
+    eq("exit press", m.call("scePadExitPressMode", {0, 0}), 1);
+    eq("busy after a command", m.call("scePadGetState", {0, 0}), 5);
+    m.libs.framesEnded = 12;
+    m.call("scePadRead", {0, 0, 0x100200});
+    eq("analog, not pressure", m.rt->memory.ram()[0x100201], 0x73);
+    eq("button info", m.call("scePadSetButtonInfo", {0, 0, 0xFFF}), 1);
+    eq("busy after button info", m.call("scePadGetState", {0, 0}), 5);
+
+    m.call("scePadStateIntToStr", {6, 0x100300});
+    eq("state name", std::strcmp(reinterpret_cast<const char *>(m.rt->memory.ram() + 0x100300), "STABLE"), 0);
+    m.call("scePadStateIntToStr", {99, 0x100300});
+    eq("no state name", m.rt->memory.ram()[0x100300], 0);
+    m.call("scePadReqIntToStr", {2, 0x100300});
+    eq("req name", std::strcmp(reinterpret_cast<const char *>(m.rt->memory.ram() + 0x100300), "BUSY"), 0);
+}
+
+static void cardCalls()
+{
+    Machine m;
+    auto put = [&](uint32_t at, const char *s) { std::strcpy(reinterpret_cast<char *>(m.rt->memory.ram() + at), s); };
+    put(0x100400, "DIR");
+    put(0x100440, "DIR/FILE");
+    put(0x100480, "NEW");
+    put(0x1004C0, "DIR/NEW");
+    eq("one slot", m.call("sceMcGetSlotMax", {0}), 1);
+    m.call("sceMcMkdir", {0, 0, 0x100400});
+    eq("mkdir", m.result(), 0);
+    m.call("sceMcOpen", {0, 0, 0x100440, 0x203});
+    const int32_t fd = m.result();
+    m.call("sceMcWrite", {uint32_t(fd), 0x100000, 100});
+    eq("wrote", m.result(), 100);
+
+    m.call("sceMcSeek", {uint32_t(fd), 10, 0});
+    eq("seek from the start", m.result(), 10);
+    m.call("sceMcSeek", {uint32_t(fd), 5, 1});
+    eq("seek from here", m.result(), 15);
+    m.call("sceMcSeek", {uint32_t(fd), 0xFFFFFFFEu, 2});
+    eq("seek from the end", m.result(), 98);
+    m.call("sceMcSeek", {uint32_t(fd), 0xFFFFFF00u, 0});
+    eq("before the start", m.result(), -4);
+    m.call("sceMcSeek", {999, 0, 0});
+    eq("seek on no file", m.result(), -4);
+    m.call("sceMcFlush", {uint32_t(fd)});
+    eq("flush", m.result(), 0);
+    m.call("sceMcFlush", {999});
+    eq("flush of no file", m.result(), -4);
+
+    m.call("sceMcDelete", {0, 0, 0x100440});
+    eq("an open file stays", m.result(), -5);
+    m.call("sceMcRename", {0, 0, 0x100440, 0x100480});
+    eq("an open file keeps its name", m.result(), -5);
+    m.call("sceMcClose", {uint32_t(fd)});
+    m.result();
+
+    uint8_t info[64] = {};
+    info[5] = 11;
+    info[8 + 5] = 12;
+    info[20] = 0x27;
+    std::memcpy(m.rt->memory.ram() + 0x100500, info, 64);
+    m.call("sceMcSetFileInfo", {0, 0, 0x100440, 0x100500, 6});
+    eq("set info", m.result(), 0);
+    const auto *entry = m.libs.mc.card(0).find("DIR/FILE");
+    eq("created kept", entry->created.month, 6);
+    eq("modified set", entry->modified.month, 12);
+    eq("attributes set", entry->attributes, 0x27);
+    m.call("sceMcSetFileInfo", {0, 0, 0x100480, 0x100500, 6});
+    eq("info of nothing", m.result(), -4);
+
+    m.call("sceMcGetEntSpace", {0, 0, 0x100400});
+    eq("entries free", m.result() > 0, 1);
+    m.call("sceMcGetEntSpace", {0, 0, 0x100480});
+    eq("no such directory", m.result(), -4);
+
+    m.call("sceMcRename", {0, 0, 0x100440, 0x100480});
+    eq("rename", m.result(), 0);
+    eq("under the new name", m.libs.mc.card(0).exists("DIR/NEW"), 1);
+    eq("not the old", m.libs.mc.card(0).exists("DIR/FILE"), 0);
+    m.call("sceMcRename", {0, 0, 0x100440, 0x100480});
+    eq("rename of nothing", m.result(), -4);
+    m.call("sceMcDelete", {0, 0, 0x100400});
+    eq("a directory with entries", m.result(), -6);
+    m.call("sceMcDelete", {0, 0, 0x1004C0});
+    eq("delete", m.result(), 0);
+    m.call("sceMcDelete", {0, 0, 0x100400});
+    eq("the empty directory", m.result(), 0);
+    m.call("sceMcDelete", {0, 0, 0x100400});
+    eq("deleted", m.result(), -4);
+
+    m.call("sceMcMkdir", {0, 0, 0x100400});
+    m.result();
+    m.call("sceMcUnformat", {0, 0});
+    eq("unformat", m.result(), 0);
+    eq("empty", m.libs.mc.card(0).exists("DIR"), 0);
+    m.call("sceMcGetInfo", {0, 0, 0, 0, 0x100600});
+    m.result();
+    uint32_t format = 1;
+    std::memcpy(&format, m.rt->memory.ram() + 0x100600, 4);
+    eq("not formatted", format, 0);
+    m.call("sceMcFormat", {0, 0});
+    eq("format", m.result(), 0);
+    m.call("sceMcGetInfo", {0, 0, 0, 0, 0x100600});
+    m.result();
+    std::memcpy(&format, m.rt->memory.ram() + 0x100600, 4);
+    eq("formatted", format, 1);
+
+    m.call("sceMcChangeThreadPriority", {0x20});
+    eq("priority", m.result(), 0);
+    eq("end", m.call("sceMcEnd", {}), 0);
+
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("bozo-mc-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Machine host;
+    host.libs.mc.hostDirectory = dir.string();
+    auto hostPut = [&](uint32_t at, const char *s) { std::strcpy(reinterpret_cast<char *>(host.rt->memory.ram() + at), s); };
+    hostPut(0x100400, "DIR");
+    hostPut(0x100440, "DIR/FILE");
+    hostPut(0x100480, "NEW");
+    host.call("sceMcMkdir", {0, 0, 0x100400});
+    host.result();
+    host.call("sceMcOpen", {0, 0, 0x100440, 0x203});
+    const int32_t hostFd = host.result();
+    host.call("sceMcClose", {uint32_t(hostFd)});
+    host.result();
+    eq("on the host", std::filesystem::exists(dir / "mc0" / "DIR" / "FILE"), 1);
+    host.call("sceMcRename", {0, 0, 0x100440, 0x100480});
+    host.result();
+    eq("renamed on the host", std::filesystem::exists(dir / "mc0" / "DIR" / "NEW"), 1);
+    eq("old name gone on the host", std::filesystem::exists(dir / "mc0" / "DIR" / "FILE"), 0);
+    host.call("sceMcFormat", {0, 0});
+    host.result();
+    eq("formatted on the host", std::filesystem::exists(dir / "mc0" / "DIR"), 0);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+static void dmaCalls()
+{
+    Machine m;
+    eq("VIF0's handle", m.call("sceDmaGetChan", {0}), 0x10008000);
+    eq("from scratchpad", m.call("sceDmaGetChan", {8}), 0x1000D000);
+    eq("to scratchpad", m.call("sceDmaGetChan", {9}), 0x1000D400);
+    eq("no such channel", m.call("sceDmaGetChan", {10}), 0);
+
+    for (uint32_t i = 0; i < 32; ++i)
+        m.rt->memory.ram()[0x100000 + i] = static_cast<uint8_t>(i + 1);
+    bozo::libs::ioStore(m.libs, 0x1000D480, 4, 0x20, 0);
+    eq("send to the scratchpad", m.call("sceDmaSendN", {0x1000D400, 0x100000, 2}), 0);
+    eq("in the scratchpad", m.rt->memory.scratchpad()[0x20 + 17], 18);
+    eq("sync of a copy", m.call("sceDmaSync", {0x1000D400, 1, 30}), 0);
+    bozo::libs::ioStore(m.libs, 0x1000D080, 4, 0x20, 0);
+    eq("receive from the scratchpad", m.call("sceDmaRecvN", {0x1000D000, 0x100100, 2}), 0);
+    eq("in memory", m.rt->memory.ram()[0x100100 + 31], 32);
+    eq("the store is known", bozo::libs::ioKnown(0x1000D080, 4, true), 1);
+
+    eq("no watch left", m.call("sceDmaWatch", {0x10009000, 0x100000, 1, 0}), 0);
+    eq("old stall address", m.call("sceDmaPutStallAddr", {0x100000}), 0);
+    eq("new stall address", m.call("sceDmaPutStallAddr", {0}), 0x100000);
+    m.libs.io.channels[1].chcr = 0x145;
+    eq("pause gives the old CHCR", m.call("sceDmaPause", {0x10009000}), 0x145);
+    eq("restart tells it was stopped", m.call("sceDmaRestart", {0x10009000, 0x145}), 0);
+    eq("restart tells it was started", m.call("sceDmaRestart", {0x10009000, 0x45}), 1);
+}
+
+static void sifCalls()
+{
+    Machine m;
+    for (const char *name : {"sceSifExitRpc", "sceSifExitCmd", "sceSifLoadFileReset"})
+        eq(name, m.call(name, {}), 0);
+    eq("write back", m.call("sceSifWriteBackDCache", {0x100000, 64}), 0);
+    eq("alive", m.call("sceSifIsAliveIop", {}), 1);
+    const int32_t block = m.call("sceSifAllocSysMemory", {0, 0x100, 0});
+    eq("a block", block != 0, 1);
+    eq("freed", m.call("sceSifFreeSysMemory", {uint32_t(block)}), 0);
+    eq("freed once", m.call("sceSifFreeSysMemory", {uint32_t(block)}), -1);
+    std::strcpy(reinterpret_cast<char *>(m.rt->memory.ram() + 0x100400), "cdrom0:\\M.IRX;1");
+    eq("module 1", m.call("sceSifLoadStartModule", {0x100400, 0, 0, 0x100500}), 1);
+    uint32_t result = 1;
+    std::memcpy(&result, m.rt->memory.ram() + 0x100500, 4);
+    eq("resident", result, 0);
+    eq("buffer", m.call("sceSifLoadModuleBuffer", {0x100000, 0, 0}), 2);
+    eq("inner buffer", m.call("_sceSifLoadModuleBuffer", {0x100000, 0, 0}), 3);
+    eq("start buffer", m.call("sceSifLoadStartModuleBuffer", {0x100000, 0, 0, 0}), 4);
+    m.libs.sndNative = false;
+    eq("reset", m.call("sceSifResetIop", {0, 0}), 1);
+    eq("modules gone", m.call("sceSifLoadModuleBuffer", {0x100000, 0, 0}), 1);
+}
+
+static void debugCalls()
+{
+    Machine m;
+    eq("tty up", m.call("sceTtyInit", {}), 1);
+    eq("every byte taken", m.call("sceTtyWrite", {0x100000, 16}), 16);
+    eq("nothing to read", m.call("sceTtyRead", {0x100000, 16}), 0);
+    for (const char *name : {"sceDeci2Open", "sceDeci2GrpOpen", "sceDeci2ReqSend", "sceDeci2Poll", "sceDeci2ExRecv",
+                             "sceDeci2ExSend", "sceDeci2ExReqSend", "sceDeci2ExLock", "sceDeci2ExUnLock",
+                             "sceDeci2Close", "sceDeci2GrpClose", "Deci2Call"})
+        eq(name, m.call(name, {}), -1);
+}
+
 int main()
 {
+    padCalls();
+    cardCalls();
+    dmaCalls();
+    sifCalls();
+    debugCalls();
     reentrantAllocator();
     cardSlotAliases();
     nativeIsoFiles();
