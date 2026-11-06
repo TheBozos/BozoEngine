@@ -29,6 +29,7 @@ namespace bozo::native::irx
             return entries;
         }
         constexpr uint32_t kReturn = 0xfffffff0u;
+        constexpr uint32_t kCpuDisableScope = 0xffffffffu;
     } // namespace
     Registration::Registration(const char *name, uint64_t hash, uint32_t base, uint32_t size, const Entry *entries,
                                size_t count)
@@ -957,10 +958,25 @@ namespace bozo::native::irx
                 ret();
                 return;
             }
+            if (n == 8)
+            {
+                if (!exclusions.empty())
+                {
+                    ret(uint32_t(-102));
+                    return;
+                }
+                exclusions.push_back({logicalTask(), kCpuDisableScope});
+                ret();
+                return;
+            }
             if (n == 9)
             {
                 if (!exclusions.empty())
-                    throw std::runtime_error("native CpuEnableIntr cannot replace a scoped callback release");
+                {
+                    if (exclusions.back().token != kCpuDisableScope || exclusions.back().owner != logicalTask())
+                        throw std::runtime_error("native CpuEnableIntr cannot replace a scoped callback release");
+                    exclusions.pop_back();
+                }
                 ret();
                 return;
             } // native callbacks are only delivered at safe points
