@@ -1346,7 +1346,7 @@ void main()
             g.ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         g.ClearDepth(1.0);
         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
-        g.Clear(gl::kColorBufferBit | gl::kDepthBufferBit);
+        g.Clear(gl::kColorBufferBit | gl::kDepthBufferBit | gl::kStencilBufferBit);
         const float screenRect[4] = {screen.originX, screen.originY, screen.width, screen.height};
         g.Disable(gl::kCullFace);
         g.DepthFunc(gl::kLequal);
@@ -1439,6 +1439,22 @@ void main()
             }
             else
                 g.Disable(gl::kDepthTest);
+            if (m.stencilClear)
+                g.Clear(gl::kStencilBufferBit);
+            if (m.stencilOp != Material::StencilOp::None)
+            {
+                g.Enable(gl::kStencilTest);
+                g.StencilFunc(gl::kAlways, 0, 0xFFu);
+                g.StencilOp(gl::kKeep, gl::kKeep, m.stencilOp == Material::StencilOp::IncrementWrap ? gl::kIncrWrap : gl::kDecrWrap);
+            }
+            else if (m.stencilNotZero)
+            {
+                g.Enable(gl::kStencilTest);
+                g.StencilFunc(gl::kNotEqual, 0, 0xFFu);
+                g.StencilOp(gl::kKeep, gl::kKeep, gl::kKeep);
+            }
+            else
+                g.Disable(gl::kStencilTest);
             g.Uniform4fv(gpu.locM, 4, matrix);
             g.Uniform1i(gpu.locUseQ, m.useQ ? 1 : 0);
             g.Uniform1i(gpu.locAlphaFunc, static_cast<int>(m.alphaFunc));
@@ -1551,6 +1567,7 @@ void main()
             }
             g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
         }
+        g.Disable(gl::kStencilTest);
         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
         g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
         g.Viewport(0,0,w,h);

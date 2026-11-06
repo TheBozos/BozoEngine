@@ -95,6 +95,16 @@ namespace bozo::render
         } alphaFunc = AlphaFunc::Greater;
         // TEST.ZTST GREATER (else GEQUAL), with depthTest.
         bool depthGreater = false;
+        // The target's stencil (a port's shadow volumes): a fragment passing the depth test counts up or down, wrapping, in the
+        // stencil; stencilNotZero draws only where the count is not 0; stencilClear empties it first (the frame starts empty).
+        enum class StencilOp : uint8_t
+        {
+            None,
+            IncrementWrap,
+            DecrementWrap,
+        } stencilOp = StencilOp::None;
+        bool stencilNotZero = false;
+        bool stencilClear = false;
         // Kept for the draw-list hash's layout (the reference's GS-context batches); a native port never sets it.
         bool fromGsContext = false;
         bool alphaBlend = true;
