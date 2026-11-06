@@ -51,6 +51,7 @@ namespace bozo::libs
         // The drive: the last read (sceCdRead) and its error (sceCdGetError).
         int32_t error = 0;
         uint64_t readEnd = 0; // the EE cycle the last read finished
+        uint32_t readBytes = 0; // bytes actually copied by the current native read
         // Native SDK completion registration; no private SDK worker/semaphores.
         uint32_t callback = 0, callbackGp = 0, callbackStack = 0;
         bool callbackConfigured = false;
