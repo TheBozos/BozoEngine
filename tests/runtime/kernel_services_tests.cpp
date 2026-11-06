@@ -69,5 +69,7 @@ int main()
         return 7;
     if (bozo::ee::kernelCallByName("iInvalidDCache") != bozo::ee::KernelCall::iFlushCache)
         return 8;
+    if (bozo::ee::kernelCallByName("_InitSys") != bozo::ee::KernelCall::InitSys)
+        return 9;
     return 0;
 }
