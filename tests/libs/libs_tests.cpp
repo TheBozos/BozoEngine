@@ -563,6 +563,30 @@ static void sifCalls()
     eq("modules gone", m.call("sceSifLoadModuleBuffer", {0x100000, 0, 0}), 1);
 }
 
+static void driveCalls()
+{
+    Machine m;
+    bozo::libs::CdState &cd = m.libs.cd;
+    eq("no disc", m.call("sceCdGetDiskType", {}), 0);
+    cd.imagePath = "game.iso";
+    eq("a DVD", m.call("sceCdGetDiskType", {}), 0x14);
+    eq("ready", m.call("sceCdNcmdDiskReady", {}), 2);
+    eq("no S command pending", m.call("sceCdSyncS", {1}), 0);
+    eq("a break with nothing to break", m.call("sceCdBreak", {}), 1);
+    eq("no error from it", m.call("sceCdGetError", {}), 0);
+
+    eq("seek accepted", m.call("sceCdSeek", {1000}), 1);
+    eq("the seek takes time", static_cast<long long>(cd.readEnd), static_cast<long long>(bozo::libs::kSeekCycles));
+    eq("busy", m.call("sceCdNcmdDiskReady", {}), 6);
+    eq("sync sees it busy", m.call("sceCdSync", {1}), 1);
+    eq("break", m.call("sceCdBreak", {}), 1);
+    eq("no longer busy", m.call("sceCdSync", {1}), 0);
+    eq("aborted", m.call("sceCdGetError", {}), 1);
+    eq("ready again", m.call("sceCdNcmdDiskReady", {}), 2);
+    m.call("sceCdSeek", {1000});
+    eq("a new command clears the error", m.call("sceCdGetError", {}), 0);
+}
+
 static void debugCalls()
 {
     Machine m;
@@ -582,6 +606,7 @@ int main()
     dmaCalls();
     sifCalls();
     debugCalls();
+    driveCalls();
     reentrantAllocator();
     cardSlotAliases();
     nativeIsoFiles();
