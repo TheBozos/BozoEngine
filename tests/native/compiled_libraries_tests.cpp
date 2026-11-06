@@ -61,6 +61,42 @@ namespace
             throw std::runtime_error("callback overwrote suspended task stack");
         e.cpu.pc = e.cpu.gpr[31];
     }
+    int timerCallbacks = 0;
+    uint32_t sdkCall(Env &e, uint32_t function, uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0)
+    {
+        e.cpu.gpr[4] = a0;
+        e.cpu.gpr[5] = a1;
+        e.cpu.gpr[6] = a2;
+        e.cpu.gpr[7] = a3;
+        e.cpu.gpr[31] = 0x4004;
+        if (!e.call(function, 0x4004))
+            throw std::runtime_error("fixture SDK call blocked");
+        return e.cpu.gpr[2];
+    }
+    void installTimers(Env &e)
+    {
+        const uint32_t caller = e.cpu.gpr[31];
+        for (unsigned i = 0; i < 2; ++i)
+        {
+            const uint32_t id = sdkCall(e, 0x4100, 0, 0, 1);
+            e.w32(0x4080 + i * 4, id);
+            sdkCall(e, 0x4110, 16 + id, 0, 0x4040, id);
+            sdkCall(e, 0x4118, 16 + id);
+            sdkCall(e, 0x4120, id, 100);
+            sdkCall(e, 0x4128, id, 1);
+        }
+        e.cpu.pc = caller;
+    }
+    void cancelTimers(Env &e)
+    {
+        const uint32_t caller = e.cpu.gpr[31];
+        ++timerCallbacks;
+        sdkCall(e, 0x4108, e.r32(0x4080)); // cancel this callback's own timer
+        sdkCall(e, 0x4108, e.r32(0x4084)); // cancel another callback due at the same time
+        e.cpu.pc = caller;
+    }
+    const Entry timerEntries[] = {{0x4000, installTimers}, {0x4040, cancelTimers}};
+    const Registration timerRegistration("timer.irx", 0xabcd, 0x4000, 0x200, timerEntries, 2);
     const Entry threadEntries[] = {{0x3000, threadStatus}};
     const Registration threadRegistration("thread.irx", 0x6789, 0x3000, 0x200, threadEntries, 1);
     const Entry probeEntries[] = {{0x3400, stackProbe}};
@@ -157,6 +193,30 @@ int main()
         Image probe{"probe.irx", 0x9876, 0x3400, 0x3400, 0x4000, std::vector<uint8_t>(0x100), {}, {}, false};
         host.addImage(std::move(probe));
         check(host.startImage("probe.irx") == 2, "callback stack isolated from native tasks");
+    }
+    {
+        bozo::libs::Libraries l;
+        CompiledLibraries host(l, 0x10000);
+        Image image{"timer.irx",
+                    0xabcd,
+                    0x4000,
+                    0x4000,
+                    0x5000,
+                    std::vector<uint8_t>(0x200),
+                    {{0x4100, "timrman", 4},
+                     {0x4108, "timrman", 6},
+                     {0x4110, "intrman", 4},
+                     {0x4118, "intrman", 6},
+                     {0x4120, "timrman", 11},
+                     {0x4128, "timrman", 7}},
+                    {},
+                    false};
+        host.addImage(std::move(image));
+        check(host.startImage("timer.irx") == 1, "native timers start");
+        host.advanceTo(0);
+        host.advanceTo(8000);
+        host.advanceTo(16000);
+        check(timerCallbacks == 1, "callback can cancel itself and another due timer without stale dispatch");
     }
     return failures ? 1 : 0;
 }

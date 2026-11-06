@@ -337,17 +337,26 @@ namespace bozo::native::irx
                     throw std::runtime_error(std::format(
                         "native library event queue exceeded work limit at {}, target {}, timers {}, events {}", cycle,
                         target, timers.size(), events.size()));
-                for (auto &[id, t] : timers)
+                // Native callbacks may cancel themselves or another due timer. Never keep an
+                // iterator/reference into the timer registry across a callback.
+                std::vector<uint32_t> readyTimers;
+                for (const auto &[id, t] : timers)
                     if (t.mode && t.compare && t.due <= cycle)
+                        readyTimers.push_back(id);
+                for (const uint32_t id : readyTimers)
+                {
+                    const auto timer = timers.find(id);
+                    if (timer == timers.end() || !timer->second.mode || !timer->second.compare ||
+                        timer->second.due > cycle)
+                        continue;
+                    timer->second.due = cycle + timer->second.period();
+                    const auto irq = interrupts.find(timer->second.cause);
+                    if (irq != interrupts.end() && irq->second.enabled && irq->second.function)
                     {
-                        t.due = cycle + t.period();
-                        const auto irq = interrupts.find(t.cause);
-                        if (irq != interrupts.end() && irq->second.enabled && irq->second.function)
-                        {
-                            const auto &h = irq->second;
-                            invoke(h.function, h.gp, h.argument);
-                        }
+                        const auto handler = irq->second;
+                        invoke(handler.function, handler.gp, handler.argument);
                     }
+                }
                 while (true)
                 {
                     const auto it = std::find_if(events.begin(), events.end(),
