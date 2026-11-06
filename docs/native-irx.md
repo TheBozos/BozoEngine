@@ -28,6 +28,14 @@ Native tasks are cooperative and callbacks execute at safe points. The SDK's log
 
 ## Other reusable port services
 
+The native library host supports FIFO `thsemap` creation/deletion, signal/iSignal, wait and poll using per-host
+counts and cooperative task wait queues. SDK descriptor fields are attr/option/initial/max; non-FIFO attributes
+and invalid counts reject explicitly. Unknown/poll-empty/overflow/delete-wakeup results use SDK errors
+-408/-419/-420/-425. An empty wait from a root call returns illegal-context (-100); native tasks block/resume.
+WakeupThread credits do not release semaphore or RPC waits. The synthetic `library_semaphores` suite covers
+real native task stop/resume, mixed sleep credits, deletion wakeup, reset and two-host isolation. ABI declarations
+were checked against https://ps2dev.github.io/ps2sdk/thsemap_8h_source.html; no SDK implementation was copied.
+
 - Recompiler `--symbol-prefix` isolates independently compiled images; `FunctionTable::addModule` guards overlapping image tables by resident identity, including resume entries. Unsupported or unloaded slots cannot dispatch another image's code.
 - `McState::slotMask` controls accepted card slots. Native memory-card operations support current directories, relative paths, parent traversal within the card root, paginated listings and operation IDs returned through Sync.
 - Native ISO9660 lookup handles directory paths, filename versions and sector-crossing reads. Reentrant libc allocation shares the normal heap.

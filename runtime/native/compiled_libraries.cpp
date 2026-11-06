@@ -56,6 +56,8 @@ namespace bozo::native::irx
             bool waiting = false, done = false, started = false;
             uint32_t attr = 0, option = 0, entry = 0, stack = 0, stackBytes = 0, initialPriority = 0, priority = 0;
             int32_t wakeups = 0;
+            int32_t waitingSema = 0;
+            bool sleeping = false;
             uint64_t due = 0;
         };
         std::map<int32_t, Task> tasks;
@@ -87,6 +89,8 @@ namespace bozo::native::irx
         struct Sema
         {
             int32_t count = 0;
+            int32_t initial = 0, max = 0;
+            uint32_t attr = 0, option = 0;
             std::deque<int32_t> waiting;
         };
         std::map<int32_t, Sema> semas;
@@ -474,6 +478,47 @@ namespace bozo::native::irx
                 return;
             }
         }
+        if (lib == "thsemap")
+        {
+            if(n==4)
+            {
+                const auto attr=read(a0),option=read(a0+4);
+                const auto initial=static_cast<int32_t>(read(a0+8)),max=static_cast<int32_t>(read(a0+12));
+                if(attr!=0)throw std::runtime_error("native library semaphore supports FIFO attributes only");
+                if(initial<0 || max<=0 || initial>max)
+                    throw std::runtime_error("invalid native library semaphore counts");
+                const int32_t id=nextSema++;
+                Sema s;s.attr=attr;s.option=option;s.initial=s.count=initial;s.max=max;
+                semas.emplace(id,std::move(s));ret(static_cast<uint32_t>(id));return;
+            }
+            const auto found=semas.find(static_cast<int32_t>(a0));
+            if(found==semas.end()){ret(static_cast<uint32_t>(-408));return;}
+            auto &s=found->second;
+            const auto wake=[&](int32_t id,int32_t result) {
+                auto &t=tasks.at(id);t.waiting=false;t.waitingSema=0;
+                t.cpu.gpr[2]=static_cast<uint32_t>(result);
+            };
+            if(n==5)
+            {
+                for(const auto id:s.waiting)wake(id,-425);
+                semas.erase(found);ret();return;
+            }
+            if(n==6 || n==7)
+            {
+                if(!s.waiting.empty()) {const auto id=s.waiting.front();s.waiting.pop_front();wake(id,0);}
+                else if(s.count==s.max){ret(static_cast<uint32_t>(-420));return;}
+                else ++s.count;
+                ret();return;
+            }
+            if(n==8 || n==9)
+            {
+                if(s.count>0){--s.count;ret();return;}
+                if(n==9){ret(static_cast<uint32_t>(-419));return;}
+                if(!current){ret(static_cast<uint32_t>(-100));return;}
+                auto &t=tasks.at(current);t.waiting=true;t.waitingSema=static_cast<int32_t>(a0);t.sleeping=false;
+                s.waiting.push_back(current);ret();return;
+            }
+        }
         if (lib == "thbase")
         {
             if (n == 4)
@@ -565,15 +610,21 @@ namespace bozo::native::irx
                 if (t.wakeups > 0)
                     --t.wakeups;
                 else
+                {
                     t.waiting = true;
+                    t.sleeping = true;
+                }
                 ret();
                 return;
             }
             if (n == 25 || n == 26)
             {
                 auto &t = tasks.at(int32_t(a0));
-                if (t.waiting)
+                if (t.waiting && t.sleeping)
+                {
                     t.waiting = false;
+                    t.sleeping = false;
+                }
                 else
                     ++t.wakeups;
                 ret();
@@ -883,6 +934,7 @@ namespace bozo::native::irx
         p.nextStack = 0x1fe000;
         p.invokeDepth = 0;
         p.nextTask = 1;
+        p.nextSema = 1;
         p.nextTimer = 1;
         p.current = 0;
         p.cycle = 0;
