@@ -323,6 +323,7 @@ namespace bozo::host
         if (nativeGraphics())
             fault(*d_, ctx, "native graphics reached the retired DMA completion condition");
         watchdog(ctx);
+        if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, kCop0ConditionSite}][0];
         return transfersAlwaysDone_ || libs_.io.cpcond0();
     }
 
