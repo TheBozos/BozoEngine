@@ -50,12 +50,15 @@ namespace bozo::host
         uint64_t framePeriodCycles = 0;
     };
 
+    inline constexpr uint32_t kCop0ConditionSite = 0xFFFFFFFFu;
+
     struct FreeStats
     {
         uint64_t libraryCalls = 0, kernelCalls = 0, overrideCalls = 0, vu0Calls = 0, ioAccesses = 0, ioUnknown = 0;
         uint64_t frames = 0;
         std::map<std::string, uint64_t> unanswered; // calls with no native answer (by name), which end the run
-        // (guest PC, device address) -> {reads, writes}; populated only when profileIo is enabled.
+        // (guest PC, device address) -> {reads, writes}; populated only when profileIo is enabled. BC0F and BC0T count as
+        // reads of kCop0ConditionSite.
         std::map<std::pair<uint32_t, uint32_t>, std::array<uint64_t, 2>> ioSites;
     };
 
