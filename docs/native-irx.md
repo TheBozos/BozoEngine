@@ -41,6 +41,15 @@ self-stop/free, clock/divisor conversion, reset and isolation. ABI declarations 
 [PS2SDK xtimrman](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/timrman/include/xtimrman.h);
 the implementation schedules native jobs and contains no timer-register backend.
 
+`useNativeFrameCallbacks()` opts into mapping start-frame listener registration/release (vblank 8/9)
+to actual native game frames. The port calls `notifyFrameCompleted()` after completing a game frame.
+Clock advancement alone never invokes these listeners. Priorities and FIFO ties, captured GP/argument,
+zero-return removal, release of queued listeners, callback exclusion and reset are retained. Deferred
+frames are bounded, and listeners registered later do not consume old frame events. Display-end phases
+and legacy VBlank waits remain unsupported: this API creates no display timing or interrupt source.
+`library_frame_listeners` checks actual-frame-only delivery, ordering, cancellation, exclusion, reset
+and separate hosts. Declarations/error values were checked against PS2SDK's vblank/kerr headers.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services
