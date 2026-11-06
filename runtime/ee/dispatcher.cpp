@@ -350,6 +350,8 @@ namespace bozo::ee
     }
     uint32_t Dispatcher::cop0Read(R5900Context *ctx, Runtime *, uint32_t reg)
     {
+        if (reg == 9)
+            return static_cast<uint32_t>(now(ctx));
         host_.fault(*this, ctx, std::format("mfc0 {} at 0x{:x}", reg, ctx->pc));
         return 0;
     }
