@@ -4,12 +4,14 @@
 
 The Bozos' own toolchain for native PC ports of PlayStation 2 games: a static recompiler for the game's EE code, and a
 runtime that answers the game's calls with native PC code. **No PS2 hardware at any level**: no GS, no VU, no VIF/GIF,
-no DMA controller, no IOP, no SPU2. What the game draws goes to a native renderer; what it plays goes to a native
+no DMA controller, no IOP machine backend, no SPU2. What the game draws goes to a native renderer; what it plays goes to a native
 mixer; what it reads, saves and polls comes from native implementations of the libraries it calls.
 
 Status: **Twisted Metal: Black runs on it**, in a window (SDL3, OpenGL 3.3) at 60 fps, with pads for 1 to 4 players
 and sound, from the boot through the menus, matches and the story. Its menus and settings panel are being finished;
 the release moves to BozoEngine once the comparison with the current build is clean. See [docs/PLAN.md](docs/PLAN.md).
+
+Ports can also statically compile disc libraries into native C++ and bind their SDK imports to reusable host services. This has no interpreter or device fallback; see [native library and port services](docs/native-irx.md).
 
 ## Why
 
@@ -27,6 +29,7 @@ the release moves to BozoEngine once the comparison with the current build is cl
 | `recompiler/` | `bozo-recomp`: ELF loader, function discovery, R5900 (EE) to C++ translation |
 | `runtime/ee/` | The EE kernel (threads, semaphores, interrupt handlers) and the dispatcher |
 | `runtime/libs/` | Native Sony libraries: libc/libm, pad (multitap), memory card, CD/DVD, libmpeg (FFmpeg), GS library, VU0 programs, SIF, the 989SND sound driver |
+| `runtime/native/`, `tools/native_irx/` | Strict offline library translation and native SDK host services |
 | `runtime/render/`, `runtime/audio/` | The native renderer (OpenGL 3.3) and mixer |
 | `runtime/app/`, `runtime/host/`, `runtime/port/` | Window, input and settings (SDL3); the real-time host; the API a port's own code uses |
 | `tools/` | The checkers (`run`, `replay`), the pack writers (`native_pack`), `externals`, capture and IRX readers, `branding` |

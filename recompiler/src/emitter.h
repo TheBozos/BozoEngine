@@ -33,6 +33,7 @@ namespace bozo
     struct EmitOptions
     {
         std::string prefix = "bozo";          // file names: <prefix>_functions.h, <prefix>_table.cpp, <prefix>_NNN.cpp
+        std::string symbolPrefix;            // isolate function symbols of separately compiled overlay images
         size_t maxBytesPerFile = 1u << 20;    // start a new .cpp past this size (parallel builds, compiler memory)
         bool comments = true;                 // a comment with each instruction's address and disassembly
         // When non-zero: exactly this many <prefix>_NNN.cpp files, the functions spread evenly by size (a build system
@@ -73,6 +74,7 @@ namespace bozo
         const EmitStats &stats() const { return stats_; }
 
     private:
+        std::string symbolName(const std::string &name, uint32_t address) const;
         std::string translate(const Insn &i);
         std::string translateBody(const Insn &i);
         // A transfer to `target` leaving the function: a C++ call of its entry, or the runtime for an external address

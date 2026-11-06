@@ -77,6 +77,10 @@ namespace bozo::ee
             {"iEnableDmac", KernelCall::iEnableDmac},
             {"iDisableDmac", KernelCall::iDisableDmac},
             {"FlushCache", KernelCall::FlushCache},
+            {"SyncDCache", KernelCall::FlushCache},
+            {"iSyncDCache", KernelCall::iFlushCache},
+            {"InvalidDCache", KernelCall::FlushCache},
+            {"iInvalidDCache", KernelCall::iFlushCache},
             {"iFlushCache", KernelCall::iFlushCache},
             {"EnableCache", KernelCall::EnableCache},
             {"DisableCache", KernelCall::DisableCache},
@@ -749,6 +753,30 @@ namespace bozo::ee
             return k.transfer(false);
         case KernelCall::iRotateThreadReadyQueue: ret(ctx, k.rotateReadyQueue(arg(ctx, 0), true)); return false;
         case KernelCall::GetThreadId: ret(ctx, k.running()); return false;
+        case KernelCall::ReferThreadStatus:
+        case KernelCall::iReferThreadStatus:
+        {
+            const Thread *thread = k.thread(a0 == 0 ? k.running() : a0);
+            if (!thread)
+            {
+                ret(ctx, -1);
+                return false;
+            }
+            constexpr uint32_t states[] = {0x10, 0x02, 0x01, 0x04, 0x08, 0x0c};
+            const uint32_t words[] = {states[static_cast<unsigned>(thread->state)], thread->entry,
+                thread->stack, thread->stackSize, thread->gp, thread->initPriority, thread->priority,
+                thread->attr, thread->option, thread->waitReason, thread->waitObject,
+                static_cast<uint32_t>(thread->wakeupCount)};
+            uint8_t *out = rt_.memory.hostPointer(arg(ctx, 1), sizeof(words));
+            if (!out)
+            {
+                host_.fault(*this, ctx, "ReferThreadStatus: status buffer outside guest memory");
+                return false;
+            }
+            std::memcpy(out, words, sizeof(words));
+            ret(ctx, thread->id);
+            return false;
+        }
         case KernelCall::CreateSema:
         {
             // ee_sema_t: count, max_count, init_count, wait_threads, attr, option.

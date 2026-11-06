@@ -48,9 +48,9 @@ namespace bozo
     std::string Emitter::entryName(const Function &f, uint32_t addr) const
     {
         if (addr == f.start)
-            return cppName(f.symbol, addr);
+            return symbolName(f.symbol, addr);
         auto it = f.entrySymbols.find(addr);
-        return cppName(it != f.entrySymbols.end() ? it->second : std::string(), addr);
+        return symbolName(it != f.entrySymbols.end() ? it->second : std::string(), addr);
     }
 
     bool readExternals(const std::string &path, std::map<uint32_t, ExternalKind> &out, std::string &error,
@@ -687,7 +687,7 @@ namespace bozo
             return std::format("{{ const uint32_t target = BZ_W({}); {} {}ctx->pc = target; return; }}", reg, delay, inner);
         };
 
-        const std::string name = cppName(f.symbol, f.start);
+        const std::string name = symbolName(f.symbol, f.start);
         out += std::format("// {} [0x{:x}, 0x{:x})\n", f.symbol.empty() ? "(no symbol)" : f.symbol, f.start, f.end);
         // Every function can be entered at any of its labels (`entry`, 0 for its start): its extra entries, and the
         // points where a stopped thread resumes (abi.md section 3; the dispatcher's resume table).
@@ -837,10 +837,15 @@ namespace bozo
             out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) {{ body_0x{:x}(rdram, ctx, rt, {}); }}\n",
                                entryName(f, e), f.start, hex(e));
         // The dispatcher's way in at any resume point: ctx->pc.
-        out += std::format("void resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) "
+        out += std::format("void {}resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt) "
                            "{{ body_0x{:x}(rdram, ctx, rt, ctx->pc == {} ? 0 : ctx->pc); }}\n",
-                           f.start, f.start, hex(f.start));
+                           opt_.symbolPrefix, f.start, f.start, hex(f.start));
         out += "\n";
+    }
+
+    std::string Emitter::symbolName(const std::string &name, uint32_t address) const
+    {
+        return opt_.symbolPrefix + cppName(name, address);
     }
 
     void Emitter::emitHeader(std::string &out) const
@@ -849,10 +854,10 @@ namespace bozo
                "#include \"bozo/recomp.h\"\n\n#include <cstddef>\n\n";
         for (const Function &f : a_.functions())
         {
-            out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", cppName(f.symbol, f.start));
+            out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", symbolName(f.symbol, f.start));
             for (uint32_t e : f.extraEntries)
                 out += std::format("void {}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", entryName(f, e));
-            out += std::format("void resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", f.start);
+            out += std::format("void {}resume_0x{:x}(uint8_t *rdram, R5900Context *ctx, Runtime *rt);\n", opt_.symbolPrefix, f.start);
         }
         out += std::format("\n// Every function and extra entry by address, sorted.\nextern const BozoFunctionEntry {0}_function_table[];\n"
                            "extern const size_t {0}_function_count;\n"
@@ -870,7 +875,7 @@ namespace bozo
         std::vector<std::pair<uint32_t, std::string>> entries;
         for (const Function &f : a_.functions())
         {
-            entries.emplace_back(f.start, cppName(f.symbol, f.start));
+            entries.emplace_back(f.start, symbolName(f.symbol, f.start));
             for (uint32_t e : f.extraEntries)
                 entries.emplace_back(e, entryName(f, e));
         }
@@ -882,7 +887,7 @@ namespace bozo
         out += std::format("}};\nconst size_t {0}_function_count = sizeof({0}_function_table) / sizeof({0}_function_table[0]);\n", opt_.prefix);
         out += std::format("\nconst BozoResumeEntry {}_resume_table[] = {{\n", opt_.prefix);
         for (const Function &f : a_.functions())
-            out += std::format("    {{0x{:x}u, 0x{:x}u, resume_0x{:x}}},\n", f.start, f.end, f.start);
+            out += std::format("    {{0x{:x}u, 0x{:x}u, {}resume_0x{:x}}},\n", f.start, f.end, opt_.symbolPrefix, f.start);
         out += std::format("}};\nconst size_t {0}_resume_count = sizeof({0}_resume_table) / sizeof({0}_resume_table[0]);\n", opt_.prefix);
         // The externals (a port checks its overrides against them at startup: bozo/port.h). An empty array is not
         // valid C++: a zero entry then, not counted.

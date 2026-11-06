@@ -82,6 +82,25 @@ int main()
     eq("override sees its address in pc", g_overridePc, 0x100100u);
     eq("unknown target to the services", services.unknown, 0x100200u);
 
+    // Two statically compiled modules share a slot. Only the resident image may execute or resume.
+    const BozoFunctionEntry modA[] = {{0x200000u, fnA}};
+    const BozoFunctionEntry modB[] = {{0x200000u, fnB}};
+    const BozoResumeEntry resumeA[] = {{0x200000u, 0x200100u, fnA}};
+    const BozoResumeEntry resumeB[] = {{0x200000u, 0x200100u, fnB}};
+    uint8_t resident[] = {1, 2};
+    rt->functions.addModule(0x200000, 0x200100, resident, {1, 2}, modA, 1, resumeA, 1);
+    rt->functions.addModule(0x200000, 0x200100, resident, {3, 4}, modB, 1, resumeB, 1);
+    eq("resident module A", rt->functions.generated(0x200000) == fnA, true);
+    eq("resume module A", rt->functions.resumeEntry(0x200040) == &resumeA[0], true);
+    resident[0] = 3; resident[1] = 4;
+    eq("resident module B", rt->functions.generated(0x200000) == fnB, true);
+    eq("resume module B", rt->functions.resumeEntry(0x200040) == &resumeB[0], true);
+    resident[0] = 0;
+    eq("unloaded module cannot execute", rt->functions.generated(0x200000) == nullptr, true);
+    eq("unloaded module cannot resume", rt->functions.resumeEntry(0x200040) == nullptr, true);
+    eq("module does not mask resident code", rt->functions.generated(0x100000) == fnA, true);
+    rt->functions.clearModules();
+
     // ei / di toggle Status.EIE; mfc0 12 reads Status.
     bozo_set_interrupts(rt->memory.ram(), &ctx, rt.get(), true);
     eq("ei", bozo_cop0_read(&ctx, rt.get(), 12), 0x10000);

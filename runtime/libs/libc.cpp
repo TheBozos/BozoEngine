@@ -105,6 +105,17 @@ namespace bozo::libs
         // ---- the heap ----
 
         void malloc_(Libraries &l, Guest &g) { g.retU(l.gameHeap().allocate(g.arg(0))); }
+        // Newlib's reentrant entry points share the same native allocator as malloc/free.
+        void mallocR(Libraries &l, Guest &g) { g.retU(l.gameHeap().allocate(g.arg(1))); }
+        void freeR(Libraries &l, Guest &g) { if(g.arg(1))l.gameHeap().release(g.arg(1)); }
+        void callocR(Libraries &l, Guest &g) {
+            const uint64_t bytes=uint64_t(g.arg(1))*g.arg(2);
+            if(bytes>UINT32_MAX) {g.ret(0);return;}
+            const uint32_t address=l.gameHeap().allocate(uint32_t(bytes));
+            if(address && bytes)g.fill(address,0,uint32_t(bytes));
+            g.retU(address);
+        }
+
 
         void free_(Libraries &l, Guest &g)
         {
@@ -239,6 +250,9 @@ namespace bozo::libs
         out.push_back({"strncat", kLibc, strncat_});
         out.push_back({"sprintf", kLibc, sprintf_});
         out.push_back({"printf", kLibc, printf_});
+        out.push_back({"_malloc_r", kLibc, mallocR});
+        out.push_back({"_free_r", kLibc, freeR});
+        out.push_back({"_calloc_r", kLibc, callocR});
         out.push_back({"malloc", kLibc, malloc_});
         out.push_back({"free", kLibc, free_});
         out.push_back({"srand", kLibc, srand_});

@@ -20,6 +20,7 @@ target_compile_options(bozo_audio PRIVATE -Wall -Wextra -ffp-contract=off)
 
 # The native libraries (bozo/libs/, docs/specs/libraries.md): the game's library calls answered natively.
 add_library(bozo_libs STATIC
+  native/compiled_libraries.cpp
   libs/libraries.cpp
   libs/libc.cpp
   libs/libm.cpp
@@ -129,6 +130,7 @@ endif()
 # libmpeg's video decoder (libraries.md section 9): FFmpeg's libavcodec (mpeg2video) and libavutil, optional. Found in
 # BOZO_FFMPEG_ROOT (a folder with include/ and lib/: the TMB build kit's static FFmpeg 9.0.2), else through pkg-config.
 # Without it libmpeg stays answered from a log.
+option(BOZO_REQUIRE_FFMPEG "Fail configuration without native movie decoding" OFF)
 set(BOZO_FFMPEG_ROOT "" CACHE PATH "FFmpeg folder (include/, lib/) for libmpeg's decoder")
 set(BOZO_FFMPEG_FOUND OFF)
 if(BOZO_FFMPEG_ROOT)
@@ -155,5 +157,8 @@ if(BOZO_FFMPEG_FOUND)
   set_source_files_properties(libs/mpeg_ffmpeg.cpp PROPERTIES COMPILE_DEFINITIONS BOZO_HAVE_FFMPEG)
   message(STATUS "libmpeg: FFmpeg found (native movies)")
 else()
+  if(BOZO_REQUIRE_FFMPEG)
+    message(FATAL_ERROR "Native libmpeg needs FFmpeg: set BOZO_FFMPEG_ROOT or install libavcodec/libavutil for pkg-config")
+  endif()
   message(STATUS "libmpeg: no FFmpeg (movies answered from a log)")
 endif()

@@ -6,6 +6,9 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
 
 namespace
 {
@@ -193,8 +196,113 @@ static void sifAndSnd()
     eq("server data: the function", fno, 0x4A);
 }
 
+void reentrantAllocator() {
+    Machine m;
+    m.libs.heap.reset(0x100000,0x200000);
+    eq("malloc uses shared heap",m.call("malloc",{64}),0x100000);
+    std::memset(m.rt->memory.ram()+0x100040,0xaa,32);
+    eq("reentrant calloc follows malloc",m.call("_calloc_r",{0x800,2,16}),0x100040);
+    eq("calloc zeroes",m.rt->memory.ram()[0x100040],0);
+    m.call("_free_r",{0x800,0x100000});
+    eq("reentrant free shares malloc allocator",m.call("_malloc_r",{0x800,64}),0x100000);
+    const size_t blocks=m.libs.heap.blocks();
+    eq("calloc overflow",m.call("_calloc_r",{0x800,0xffffffff,2}),0);
+    eq("malloc alignment overflow",m.call("malloc",{0xfffffff8}),0);
+    eq("overflow keeps allocator unchanged",m.libs.heap.blocks(),blocks);
+}
+void cardSlotAliases() {
+    Machine m;
+    m.call("sceMcGetInfo",{0,1,0x100010,0x100014,0x100018});
+    eq("default card slot policy",m.result(),-4);
+    m.libs.mc.slotMask=3;
+    m.call("sceMcGetInfo",{0,1,0x100010,0x100014,0x100018});
+    eq("configured alias detects card",m.result(),-1);
+    uint32_t command;std::memcpy(&command,m.rt->memory.ram()+0x100000,4);
+    eq("sync reports completed command",command,1);
+    eq("sync without a pending operation",m.call("sceMcSync",{0,0,0}),-1);
+}
+void nativeCardDirectories() {
+    Machine m;
+    m.call("sceMcInit",{});
+    m.call("sceMcGetInfo",{0,0,0,0,0});m.result();
+    m.libs.mc.card(0).create("SAVE",true,m.libs.mc.date);
+    m.libs.mc.card(0).create("SAVE/one",false,m.libs.mc.date);
+    m.libs.mc.card(0).create("SAVE/two",false,m.libs.mc.date);
+    m.string(0x110000,"/SAVE");
+    m.call("sceMcChdir",{0,0,0x110000,0x110100});
+    eq("change directory completes",m.result(),0);
+    eq("chdir returns old root",std::strcmp(reinterpret_cast<char *>(m.rt->memory.ram()+0x110100),"/"),0);
+    m.string(0x110000,"one");
+    m.call("sceMcOpen",{0,0,0x110000,1});
+    const int32_t fd=m.result();
+    eq("open relative to current directory",fd>0,1);
+    m.call("sceMcClose",{uint32_t(fd)});m.result();
+    m.string(0x110000,"*");
+    m.call("sceMcGetDir",{0,0,0x110000,0,2,0x120000});
+    eq("first listing page includes dot entries",m.result(),2);
+    m.call("sceMcGetDir",{0,0,0x110000,1,2,0x120000});
+    eq("continued listing returns remaining files",m.result(),2);
+    eq("continued page starts with one",std::strcmp(reinterpret_cast<char *>(m.rt->memory.ram()+0x120000+32),"one"),0);
+    m.call("sceMcGetDir",{0,0,0x110000,1,2,0x120000});
+    eq("listing terminates",m.result(),0);
+    m.string(0x110000,"..");
+    m.call("sceMcChdir",{0,0,0x110000,0});eq("parent directory",m.result(),0);
+    eq("parent restored root",m.libs.mc.currentDirectory[0].empty(),1);
+}
+void liveScriptInput() {
+    const auto path=std::filesystem::temp_directory_path()/
+        ("bozo-live-pad-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto write=[&](const char *text){std::ofstream out(path);out<<text;};
+    bozo::libs::LiveScriptInput input(path.string());
+    bozo::libs::PadInputState state;
+    write("0:CROSS/2");input.read(100,0,state);
+    eq("live script starts relative to update",state.buttons,bozo::libs::kPadCross);
+    input.read(102,0,state);eq("live script releases",state.buttons,0);
+    write("0:START/4");input.read(110,0,state);
+    eq("changed live script restarts",state.buttons,bozo::libs::kPadStart);
+    write("0:");input.read(111,0,state);
+    eq("partial write keeps last valid input",state.buttons,bozo::libs::kPadStart);
+    input.read(114,0,state);eq("partial write cannot hold button forever",state.buttons,0);
+    std::filesystem::remove(path);
+}
+void nativeIsoFiles() {
+    std::vector<uint8_t> iso(24*2048);
+    const auto word=[](uint8_t *at,uint32_t value){for(int i=0;i<4;++i){at[i]=uint8_t(value>>(8*i));at[7-i]=at[i];}};
+    const auto record=[&](uint8_t *at,const std::string &name,uint32_t sector,uint32_t bytes,bool directory){
+        const uint8_t size=uint8_t((33+name.size()+1)&~1u);
+        at[0]=size;word(at+2,sector);word(at+10,bytes);at[25]=directory?2:0;
+        at[28]=1;at[31]=1;at[32]=uint8_t(name.size());std::memcpy(at+33,name.data(),name.size());return size;
+    };
+    uint8_t *pvd=iso.data()+16*2048;pvd[0]=1;std::memcpy(pvd+1,"CD001",5);pvd[6]=1;
+    record(pvd+156,std::string(1,'\0'),20,2048,true);
+    record(iso.data()+20*2048,"ASSET",21,2048,true);
+    record(iso.data()+21*2048,"DATA.BIN;1",22,3000,false);
+    std::memset(iso.data()+22*2048,0x22,2048);std::memset(iso.data()+23*2048,0x33,2048);
+    const auto path=std::filesystem::temp_directory_path()/("bozo-iso-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".iso");
+    {std::ofstream f(path,std::ios::binary);f.write(reinterpret_cast<const char *>(iso.data()),iso.size());}
+    {
+        Machine m;m.libs.cd.imagePath=path.string();
+        m.string(0x101000,"cdrom0:\\asset\\data.bin;1");
+        eq("native ISO file search",m.call("sceCdSearchFile",{0x102000,0x101000}),1);
+        uint32_t size;std::memcpy(&size,m.rt->memory.ram()+0x102004,4);eq("ISO byte size",size,3000);
+        const auto fd=m.call("sceOpen",{0x101000,1});eq("native file descriptor",fd,3);
+        eq("native file seek",m.call("sceLseek",{uint32_t(fd),2040,0}),2040);
+        eq("unaligned sector-spanning file read",m.call("sceRead",{uint32_t(fd),0x103000,32}),32);
+        eq("read first sector tail",m.rt->memory.ram()[0x103007],0x22);
+        eq("read next sector head",m.rt->memory.ram()[0x103008],0x33);
+        eq("native file close",m.call("sceClose",{uint32_t(fd)}),0);
+        eq("closed descriptor cannot read",m.call("sceRead",{uint32_t(fd),0x103000,1}),-1);
+    }
+    std::filesystem::remove(path);
+}
+
 int main()
 {
+    reentrantAllocator();
+    cardSlotAliases();
+    nativeIsoFiles();
+    nativeCardDirectories();
+    liveScriptInput();
     {
         // T0 on a temporary guest context must use that call's clock, including its reset epoch.
         // The thread's own context can still be at an earlier cycle while an override runs the temporary one.

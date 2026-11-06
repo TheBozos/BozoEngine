@@ -594,6 +594,11 @@ namespace bozo::ee
     uint32_t Kernel::threadSetup(uint32_t stack, uint32_t stackSize, uint32_t gp)
     {
         emit(kOpThreadSetup, {stack, stackSize, gp});
+        if (Thread *self = thread(running_)) {
+            self->stack = stack;
+            self->stackSize = stackSize;
+            self->gp = gp;
+        }
         return stack + stackSize;
     }
 

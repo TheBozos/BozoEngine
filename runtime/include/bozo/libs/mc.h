@@ -52,6 +52,7 @@ namespace bozo::libs
     {
         std::array<McCard, 2> cards;
         bool formatted = false;
+        uint32_t slotMask = 1; // accepted slot identifiers; the port selects any library-specific aliases
         McDate date; // the date new entries get (the deterministic one; the host's clock in the real runtime)
         std::string hostDirectory; // where cards live: <dir>/mc0, <dir>/mc1 (empty: in memory)
 
@@ -73,6 +74,7 @@ namespace bozo::libs
         std::map<int32_t, Open> files;
         int32_t nextDescriptor = 1;
         std::string currentDirectory[2];
+        uint32_t directoryCursor[2] = {};
 
         McCard &card(int port);
     };

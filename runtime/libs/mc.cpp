@@ -29,6 +29,21 @@ namespace bozo::libs
             return n;
         }
 
+        std::string resolve(McState &state,int port,const std::string &path) {
+            std::string input=path;std::replace(input.begin(),input.end(),'\\','/');
+            const bool absolute=!input.empty() && input.front()=='/';
+            if(!absolute && port>=0 && port<2 && !state.currentDirectory[port].empty())
+                input=state.currentDirectory[port]+"/"+input;
+            std::vector<std::string> parts;
+            for(size_t at=0;at<input.size();) {
+                const auto end=input.find('/',at);const auto part=input.substr(at,end==std::string::npos?end:end-at);
+                if(part=="..") {if(!parts.empty())parts.pop_back();}
+                else if(!part.empty() && part!=".")parts.push_back(part);
+                if(end==std::string::npos)break;at=end+1;
+            }
+            std::string out;for(const auto &part:parts){if(!out.empty())out+='/';out+=part;}return out;
+        }
+
         std::string parentOf(const std::string &path)
         {
             const size_t slash = path.rfind('/');
@@ -80,9 +95,14 @@ namespace bozo::libs
 
         void finish(Libraries &l, int32_t function, int32_t result)
         {
+            if(std::getenv("BOZO_TRACE_MC"))std::fprintf(stderr,"[mc] complete function=%d result=%d\n",function,result);
             l.mc.pending = true;
             l.mc.function = function;
             l.mc.result = result;
+        }
+
+        bool validSlot(const Libraries &l,uint32_t slot) {
+            return slot<32 && (l.mc.slotMask & (1u<<slot));
         }
 
         bool ready(Libraries &l, int port)
@@ -102,7 +122,7 @@ namespace bozo::libs
         // libmc's function numbers (what sceMcSync's cmd would report).
         enum : int32_t
         {
-            kFnGetInfo = 1, kFnOpen = 2, kFnClose = 3, kFnRead = 5, kFnWrite = 6, kFnMkdir = 0xB, kFnGetDir = 0xD,
+            kFnGetInfo = 1, kFnOpen = 2, kFnClose = 3, kFnRead = 5, kFnWrite = 6, kFnMkdir = 0xB, kFnChdir = 0xC, kFnGetDir = 0xD,
         };
 
         void init(Libraries &l, Guest &g)
@@ -116,12 +136,12 @@ namespace bozo::libs
         void getInfo(Libraries &l, Guest &g)
         {
             const int port = static_cast<int>(g.arg(0));
-            if (!ready(l, port) || g.arg(1) != 0)
+            if (!ready(l, port) || !validSlot(l,g.arg(1)))
             {
                 // A multitap slot (slot 1-3: no multitap on the card ports): no card there, its type, free clusters and
                 // format 0, the result -4 (match4p #228107-#228109: TMB looks at slots 1-3 once its pads' multitap is
                 // open).
-                const bool slot = g.arg(1) != 0;
+                const bool slot = !validSlot(l,g.arg(1));
                 if (slot)
                     for (uint32_t k = 2; k <= 4; ++k)
                         if (g.arg(k))
@@ -136,6 +156,7 @@ namespace bozo::libs
                 g.write32(g.arg(3), l.mc.card(port).freeClusters());
             if (g.arg(4))
                 g.write32(g.arg(4), 1);
+            if (std::getenv("BOZO_TRACE_MC")) std::fprintf(stderr,"[mc] info port=%d slot=%u free=%u out=%x,%x,%x\n",port,g.arg(1),l.mc.card(port).freeClusters(),g.arg(2),g.arg(3),g.arg(4));
             finish(l, kFnGetInfo, l.mc.known[static_cast<size_t>(port)] ? 0 : -1);
             l.mc.known[static_cast<size_t>(port)] = true;
             g.ret(0);
@@ -146,10 +167,11 @@ namespace bozo::libs
         void getDir(Libraries &l, Guest &g)
         {
             const int port = static_cast<int>(g.arg(0));
-            const std::string name = normalize(g.string(g.arg(2)));
+            const std::string name = resolve(l.mc,port,g.string(g.arg(2)));
             const int32_t maxent = static_cast<int32_t>(g.arg(4));
+            if(std::getenv("BOZO_TRACE_MC"))std::fprintf(stderr,"[mc] dir port=%d slot=%u path=%s mode=%u max=%d\n",port,g.arg(1),name.c_str(),g.arg(3),maxent);
             const uint32_t table = g.arg(5);
-            if (!ready(l, port))
+            if (!ready(l, port) || !validSlot(l,g.arg(1)))
             {
                 finish(l, kFnGetDir, -4);
                 g.ret(0);
@@ -178,21 +200,28 @@ namespace bozo::libs
             else if (!wildcard)
                 if (const McCard::Entry *e = card.find(name))
                     found.emplace_back(baseOf(name), *e);
+            if(g.arg(3)==0)l.mc.directoryCursor[port]=0;
+            uint32_t index=0;
             int32_t n = 0;
             for (const auto &[entryName, e] : found)
             {
+                if(index++<l.mc.directoryCursor[port])continue;
                 if (n >= maxent)
                     break;
                 putEntry(g, table + 64u * static_cast<uint32_t>(n), entryName, e);
                 ++n;
             }
-            finish(l, kFnGetDir, n ? n : -4);
+            l.mc.directoryCursor[port]+=uint32_t(n);
+            finish(l, kFnGetDir, n ? n : wildcard ? 0 : -4);
             g.ret(0);
         }
 
         // sceMcSync(mode, cmd, result): the operation finished in its call; its result handed over. Returns 1.
         void sync(Libraries &l, Guest &g)
         {
+            if(std::getenv("BOZO_TRACE_MC"))std::fprintf(stderr,"[mc] sync pending=%d fn=%d result=%d cmd=%x out=%x ra=%x\n",l.mc.pending,l.mc.function,l.mc.result,g.arg(1),g.arg(2),g.context()->r[31].uw[0]);
+            if (!l.mc.pending) { g.ret(-1); return; }
+            if (g.arg(1)) g.write32(g.arg(1), static_cast<uint32_t>(l.mc.function));
             if (g.arg(2))
                 g.write32(g.arg(2), static_cast<uint32_t>(l.mc.result));
             l.mc.pending = false;
@@ -201,13 +230,28 @@ namespace bozo::libs
 
         // ---- What the save run needs (no call log of it yet: not checked) ----
 
+        void chdir(Libraries &l, Guest &g) {
+            const int port=static_cast<int>(g.arg(0));
+            const auto path=resolve(l.mc,port,g.string(g.arg(2)));
+            int32_t result=-4;
+            if(ready(l,port) && validSlot(l,g.arg(1))) {
+                const auto *entry=l.mc.card(port).find(path);
+                if(path.empty() || (entry && entry->directory)) {
+                    const std::string old="/"+l.mc.currentDirectory[port];
+                    if(g.arg(3))g.write(g.arg(3),old.c_str(),uint32_t(old.size()+1));
+                    l.mc.currentDirectory[port]=path;result=0;
+                }
+            }
+            finish(l,kFnChdir,result);g.ret(0);
+        }
+
         // sceMcMkdir(port, slot, name): 0, or -4 when the parent is missing, -8 when it exists.
         void mkdir(Libraries &l, Guest &g)
         {
             const int port = static_cast<int>(g.arg(0));
-            const std::string name = normalize(g.string(g.arg(2)));
+            const std::string name = resolve(l.mc,port,g.string(g.arg(2)));
             int32_t r = -4;
-            if (ready(l, port))
+            if (ready(l, port) && validSlot(l,g.arg(1)))
             {
                 McCard &card = l.mc.card(port);
                 const std::string parent = parentOf(name);
@@ -229,14 +273,15 @@ namespace bozo::libs
         void open(Libraries &l, Guest &g)
         {
             const int port = static_cast<int>(g.arg(0));
-            const std::string name = normalize(g.string(g.arg(2)));
+            const std::string name = resolve(l.mc,port,g.string(g.arg(2)));
             const int32_t mode = static_cast<int32_t>(g.arg(3));
+            if (std::getenv("BOZO_TRACE_MC")) std::fprintf(stderr,"[mc] open port=%d name=%s mode=%x\n",port,name.c_str(),mode);
             int32_t r = -4;
-            if (ready(l, port))
+            if (ready(l, port) && validSlot(l,g.arg(1)))
             {
                 McCard &card = l.mc.card(port);
                 McCard::Entry *e = card.find(name);
-                if (!e && (mode & 0x200) && card.exists(parentOf(name)))
+                if (!e && (mode & 0x200) && (parentOf(name).empty() || card.exists(parentOf(name))))
                 {
                     e = &card.create(name, false, l.mc.date);
                     e->attributes = kAttrFile;
@@ -397,6 +442,7 @@ namespace bozo::libs
         out.push_back({"sceMcGetDir", kMc, getDir});
         out.push_back({"sceMcSync", kMc, sync});
         out.push_back({"sceMcMkdir", kMc, mkdir});
+        out.push_back({"sceMcChdir", kMc, chdir});
         out.push_back({"sceMcOpen", kMc, open});
         out.push_back({"sceMcClose", kMc, close});
         out.push_back({"sceMcRead", kMc, read});
