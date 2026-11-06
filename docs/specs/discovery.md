@@ -60,6 +60,9 @@ a data or code pointer, or `--entries`. If not, the runtime's unknown target fau
 As on the other path, a transfer from another function, a call into a body and a code pointer become entries of the
 function holding them. A data word counts as a pointer only if it is aligned, in the code, on a word that decodes and is
 not zero, and not in the delay slot of the word before it. A table's own words are labels, not entries.
+A pointer built in the code counts under the same test: every `addiu` or `ori` off a `lui`'s register, up to 63 instructions
+on while the register holds it, through conditional branches, up to the delay slot of a jump, and past a call for a saved
+register only. `lui; jal f; addiu a0, a0, lo` passes a function pointer in a delay slot.
 
 ## 5. The report and measuring it
 
@@ -83,7 +86,7 @@ read as code once their symbols are hidden; a start the score calls false there 
 | Section | Symbols | Found | Precision | Recall |
 |---|---|---|---|---|
 | `.text` | 5390 | 5395 | 0.9985 | 0.9994 |
-| `.srs` | 8980 | 10324 | 0.8532 | 0.9808 |
+| `.srs` | 8980 | 10377 | 0.8491 | 0.9812 |
 
 Tables: 347 of the 348 the symbol path finds, all 337 inside a symbol with every target in it, 10 of them with more
 targets than on the symbol path. The one missed is listed as `unresolved`.
