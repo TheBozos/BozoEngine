@@ -80,6 +80,10 @@ clock goes on to the next task deadline, timer or event until the handler return
 call completes with the reply. A failing handler leaves the task parked. Requests made while a compiled routine runs
 (nested) keep the root call. `library_rpc_blocking` checks a handler that delays.
 
+`CpuDisableIntr` (`intrman` 8) opens a callback-exclusion scope of the calling task (-102 when one is already open,
+as on the IOP) and `CpuEnableIntr` (9) closes it; with nothing open it does nothing. A routine that returns with the
+scope open fails as any unbalanced exclusion does. `library_cpu_interrupts` checks them.
+
 IOP alarms (`thbase` 35-38: `SetAlarm`, `iSetAlarm`, `CancelAlarm`, `iCancelAlarm`) are native periodic jobs on the same
 scheduler as the timer handlers: the linked handler gets its common argument and captured GP, its return value is
 the next interval in 36.864 MHz clocks, zero ends the alarm. A second `SetAlarm` of an active handler/common pair
