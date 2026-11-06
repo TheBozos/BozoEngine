@@ -250,6 +250,7 @@ namespace bozo::libs
         out.push_back({"strncat", kLibc, strncat_});
         out.push_back({"sprintf", kLibc, sprintf_});
         out.push_back({"printf", kLibc, printf_});
+        out.push_back({"scePrintf", kLibc, printf_});
         out.push_back({"_malloc_r", kLibc, mallocR});
         out.push_back({"_free_r", kLibc, freeR});
         out.push_back({"_calloc_r", kLibc, callocR});
