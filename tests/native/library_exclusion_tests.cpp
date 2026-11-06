@@ -26,7 +26,7 @@ struct Fixture {
             check(call(e,0xa300,0xa200)==0 && e.r32(0xa200)==1);
             if(mode==2){e.cpu.pc=caller;return;}
             check(int32_t(call(e,0xa300,0xa204))==-102 && e.r32(0xa204)==0);
-            if(mode==3){call(e,0xa308,1);return;}
+            if(mode==3){call(e,0xa308,1);e.cpu.pc=caller;return;}
             check(call(e,0xa310,0,0,1)==1);call(e,0xa318,17,0,0xa010,0);
             call(e,0xa320,17);call(e,0xa328,1,100);call(e,0xa330,1,1);
             host.advanceTo(0);host.advanceTo(80000);check(callbacks==0);
@@ -39,7 +39,8 @@ struct Fixture {
 }
 int main(){try{
     Fixture first,second;first.run();check(second.callbacks==0);second.run();
-    for(unsigned mode:{1u,2u,3u}){
+    first.host.reset();first.mode=3;first.callbacks=0;check(first.host.startImage("exclusion")==1);
+    for(unsigned mode:{1u,2u}){
         first.host.reset();first.mode=mode;first.callbacks=0;
         bool rejected=false;try{first.host.startImage("exclusion");}catch(const std::runtime_error &){rejected=true;}check(rejected);
         first.host.reset();first.mode=0;first.callbacks=0;first.run();
