@@ -2,6 +2,7 @@
 
 #include "elf.h"
 #include "decoder.h"
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <format>
@@ -51,8 +52,10 @@ namespace bozo
         std::set<uint32_t> seen;
         for (const auto &p : patches)
         {
-            if ((p.address & 3u) || !program.contains(p.address, 4) || !program.isCode(p.address) ||
-                !program.isCode(p.address + 3u) || !seen.insert(p.address).second)
+            const bool codeWord = std::any_of(program.code.begin(), program.code.end(), [&](const AddressRange &range) {
+                return p.address >= range.start && static_cast<uint64_t>(p.address) + 4u <= range.end;
+            });
+            if ((p.address & 3u) || !program.contains(p.address, 4) || !codeWord || !seen.insert(p.address).second)
             {
                 error = std::format("invalid or duplicate instruction patch address 0x{:08x}", p.address);
                 return false;
