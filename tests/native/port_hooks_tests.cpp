@@ -90,6 +90,8 @@ int main()
         host.vu0Microprogram(d, &ctx, 0x80);
         expect(lastCall == 0xB, "a later registration replaces");
 
+        expect(!host.cop0Condition(d, &ctx), "by default no completed transfer means BC0T is not taken");
+
         bool faulted = false;
         try
         {
@@ -119,5 +121,15 @@ int main()
     std::filesystem::remove_all(dir);
     if (failures == 0)
         std::printf("port hooks tests passed\n");
+    {
+        bozo::port::Registry registry;
+        registry.transfersAlwaysDone();
+        bozo::host::FreeHost host(options);
+        bozo::ee::Dispatcher d(host);
+        std::string error;
+        expect(host.setUp(d, nullptr, 0, &registry, error), "set up, transfers always done");
+        R5900Context ctx;
+        expect(host.cop0Condition(d, &ctx), "a port's transfers are always done");
+    }
     return failures == 0 ? 0 : 1;
 }
