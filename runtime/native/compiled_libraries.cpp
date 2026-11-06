@@ -94,6 +94,7 @@ namespace bozo::native::irx
             uint64_t due;
             uint32_t function, a0, a1, gp;
             bool readyAudio = false;
+            uint32_t ownedBuffer = 0;
         };
         std::deque<Event> events;
         bool readyAudioCompletions = false, deliveringReadyAudio = false;
@@ -102,6 +103,8 @@ namespace bozo::native::irx
         std::deque<std::vector<std::pair<uint32_t,uint64_t>>> completedFrames;
         bool nativeFrameCallbacks = false, deliveringFrames = false;
         uint64_t frameListenerSerial = 0;
+        uint32_t commandBuffer = 0, commandCapacity = 0, commandSerial = 0;
+        std::map<uint32_t,Interrupt> commandHandlers;
         struct Sema
         {
             int32_t count = 0;
@@ -463,6 +466,10 @@ namespace bozo::native::irx
                         break;
                     const Event event = *it;
                     events.erase(it);
+                    struct OwnedMessage {
+                        Impl &owner;uint32_t buffer;
+                        ~OwnedMessage(){if(buffer)owner.heap.release(buffer);}
+                    } owned{*this,event.ownedBuffer};
                     if (event.function)
                         invoke(event.function, event.gp, event.a0, event.a1);
                 }
@@ -982,6 +989,26 @@ namespace bozo::native::irx
         }
         if (lib == "sifcmd")
         {
+            if (n == 8)
+            {
+                if (a1 > memory.size()/8 || (!a0 && a1) || uint64_t(a0)+uint64_t(a1)*8>memory.size())
+                    throw std::runtime_error("invalid native user command table");
+                if (a1) physical(a0,a1*8);
+                commandBuffer=a0;commandCapacity=a1;commandHandlers.clear();ret();return;
+            }
+            if (n == 10 || n == 11)
+            {
+                if (a0 >= commandCapacity || !commandBuffer)
+                    throw std::runtime_error("native user command outside registered table");
+                if (n == 10 && (!a1 || !functions.contains(a1) || imports.contains(a1) ||
+                    std::none_of(images.begin(),images.end(),[&](const auto &image){
+                        return a1 >= image.base && uint64_t(a1) < uint64_t(image.base)+image.bytes.size();
+                    }))) throw std::runtime_error("native user command requires an admitted linked handler");
+                if (n == 10) commandHandlers[a0]={a1,a2,c.gpr[28],false};
+                else commandHandlers.erase(a0);
+                write(commandBuffer+a0*8,n==10?a1:0);write(commandBuffer+a0*8+4,n==10?a2:0);
+                ret();return;
+            }
             if (n == 14)
             {
                 ret();
@@ -1193,12 +1220,33 @@ namespace bozo::native::irx
         p.completedFrames.push_back(std::move(listeners));
         if (!p.invokeDepth && !p.current) p.deliverFrames();
     }
+    uint32_t CompiledLibraries::submitCommand(uint32_t command,std::span<const uint8_t> data)
+    {
+        auto &p = *impl_;
+        const auto found=p.commandHandlers.find(command);
+        if (command >= p.commandCapacity || found == p.commandHandlers.end())
+            throw std::runtime_error("no registered native user command handler");
+        if (data.size()<16 || data.size()>112)
+            throw std::runtime_error("native user command data must be 16..112 bytes");
+        const auto callback=found->second;
+        if (p.read(p.commandBuffer+command*8)!=callback.function ||
+            p.read(p.commandBuffer+command*8+4)!=callback.argument)
+            throw std::runtime_error("native user command table changed outside registration");
+        if (p.commandSerial==0x7fffffffu || p.events.size()>=1024)
+            throw std::runtime_error("native user command queue exhausted");
+        const auto buffer=p.heap.allocate(uint32_t(data.size()));
+        if (!buffer) throw std::runtime_error("native user command allocation failed");
+        p.copy(buffer,data.data(),uint32_t(data.size()));
+        p.events.push_back({p.cycle,callback.function,buffer,callback.argument,callback.gp,false,buffer});
+        return ++p.commandSerial;
+    }
     void CompiledLibraries::reset()
     {
         auto &p = *impl_;
         p.tasks.clear();
         p.events.clear();
         p.frameListeners.clear();p.completedFrames.clear();p.frameListenerSerial=0;p.deliveringFrames=false;
+        p.commandBuffer=0;p.commandCapacity=0;p.commandSerial=0;p.commandHandlers.clear();
         p.deliveringReadyAudio = false;
         p.interrupts.clear();
         p.timers.clear();
