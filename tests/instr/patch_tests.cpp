@@ -46,6 +46,14 @@ int main()
         check(!bozo::applyInstructionPatches(original, batch, error), "unsafe adaptation is rejected");
         check(original.image == bytes, "failed batch leaves the complete analysis image unchanged");
     }
+    {
+        auto split = fixture();
+        split.code = {{0x1000, 0x1001, "first byte"}, {0x1003, 0x1010, "last byte and tail"}};
+        const auto bytes = split.image;
+        check(!bozo::applyInstructionPatches(split, {{0x1000, 0x8c220000, 0}}, error),
+              "a complete instruction must fit in one executable range, not span a code hole");
+        check(split.image == bytes, "a code-hole rejection leaves the complete image unchanged");
+    }
     const auto path = std::filesystem::temp_directory_path() /
                       ("bozo-native-patches-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     for (const char *text : {"# comment\n0x1000 8c220000 24020000 # native replacement\n",
