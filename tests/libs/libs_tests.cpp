@@ -123,6 +123,8 @@ namespace
         eq("rand 1", m.call("rand", {}), 0);
         eq("rand 2", m.call("rand", {}), 0x5851f42d);
         eq("rand 3", m.call("rand", {}), 0x40b18ccf);
+        m.string(0x100000, "x%d");
+        eq("scePrintf formats as printf", m.call("scePrintf", {0x100000, 42}), 3);
     }
 }
 
