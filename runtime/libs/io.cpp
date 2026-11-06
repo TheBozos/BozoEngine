@@ -85,16 +85,16 @@ namespace bozo::libs
         {
             // T0_COUNT: the count written last plus the periods since; reading the same count again (a poll loop)
             // charges a period at the next checkpoint (calllog.md section 2).
-            const uint64_t period = t0Period(io.t0Mode);
+            const uint64_t period = t0Period(io.timers[0].mode);
             const uint64_t now = cycle;
-            const uint32_t count = period ? static_cast<uint32_t>((io.t0Start + (now - io.t0Base) / period) & 0xFFFFu) : io.t0Start;
-            if (count == io.t0LastRead)
+            const uint32_t count = period ? static_cast<uint32_t>((io.timers[0].start + (now - io.timers[0].base) / period) & 0xFFFFu) : io.timers[0].start;
+            if (count == io.timers[0].lastRead)
                 timerPending = static_cast<uint32_t>(period);
-            io.t0LastRead = count;
+            io.timers[0].lastRead = count;
             v = count;
         }
         else if (a == 0x10000010u)
-            v = io.t0Mode;
+            v = io.timers[0].mode;
         else if (a == 0x12001000u)
         {
             // CSR: FIELD (bit 13) is the vblank count's parity (read inside TMB's vblankHandler override, boot #729700
@@ -130,13 +130,13 @@ namespace bozo::libs
             complete(l, kIpuTo);
         if (a == 0x10000000u)
         {
-            io.t0Start = v & 0xFFFFu;
-            io.t0Base = cycle;
+            io.timers[0].start = v & 0xFFFFu;
+            io.timers[0].base = cycle;
             // A restart keeps the last read, the port's (TMB's frame end: match1p #34736003) and the game's alike: the
             // next read of the same count is a poll (stage-level0 #13062314: the game read 0, wrote 0, read 0 again).
         }
         else if (a == 0x10000010u)
-            io.t0Mode = v;
+            io.timers[0].mode = v;
         else if (const int ch = channelOf(a, reg); ch >= 0)
         {
             IoState::Channel &c = io.channels[static_cast<uint32_t>(ch)];

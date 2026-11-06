@@ -21,11 +21,15 @@ namespace bozo::libs
 
     struct IoState
     {
-        // ---- Timer 0 (T0_COUNT, T0_MODE; TMB polls the count) ----
-        uint32_t t0Mode = 0;
-        uint64_t t0Base = 0;      // the EE cycle the count was last written
-        uint32_t t0Start = 0;     // the count written then
-        uint32_t t0LastRead = ~0u; // the last value read (a poll that reads it again charges a period)
+        // ---- The timers (Tn_COUNT, Tn_MODE; TMB polls T0's count) ----
+        struct Timer
+        {
+            uint32_t mode = 0;
+            uint64_t base = 0;      // the EE cycle the count was last written
+            uint32_t start = 0;     // the count written then
+            uint32_t lastRead = ~0u; // the last value read (a poll that reads it again charges a period)
+        };
+        std::array<Timer, 4> timers{};
         // TMB's frame boundary (a port override) restarts the count inside it; while that override is answered from a
         // log, the next load of the count re-bases it on the log's value (bozo-run).
         bool t0Rebase = false;
