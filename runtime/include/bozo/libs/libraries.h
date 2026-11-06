@@ -116,6 +116,7 @@ namespace bozo::libs
         bool ready() const { return end_ != 0; }
         uint32_t allocate(uint32_t bytes); // 0 when no free block is large enough
         bool release(uint32_t address);    // false when `address` is not a block in use
+        bool contains(uint32_t address,uint32_t bytes) const;
         size_t blocks() const { return used_.size(); }
 
     private:

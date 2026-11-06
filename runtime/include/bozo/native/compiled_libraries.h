@@ -54,6 +54,9 @@ namespace bozo::native::irx
         void writeBuffer(uint32_t address, const uint8_t *data, uint32_t bytes);
         uint32_t allocateBuffer(uint32_t bytes);
         bool freeBuffer(uint32_t address);
+        // A transient view into one live native allocation, never an image,
+        // stack, opaque module handle, device address or freed block.
+        std::span<uint8_t> allocatedBuffer(uint32_t address,uint32_t bytes);
         uint64_t nativeCalls() const;
 
       private:

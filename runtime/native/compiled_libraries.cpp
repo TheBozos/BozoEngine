@@ -1285,5 +1285,12 @@ namespace bozo::native::irx
     }
     uint32_t CompiledLibraries::allocateBuffer(uint32_t bytes) { return impl_->heap.allocate(bytes); }
     bool CompiledLibraries::freeBuffer(uint32_t address) { return impl_->heap.release(address); }
+    std::span<uint8_t> CompiledLibraries::allocatedBuffer(uint32_t address,uint32_t bytes)
+    {
+        auto &p = *impl_;
+        if (!p.heap.contains(address,bytes))
+            throw std::runtime_error(std::format("native buffer span is not a live allocation: 0x{:x}, {} bytes",address,bytes));
+        return {p.memory.data()+address,bytes};
+    }
     uint64_t CompiledLibraries::nativeCalls() const { return impl_->calls; }
 } // namespace bozo::native::irx
