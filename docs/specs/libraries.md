@@ -159,6 +159,12 @@ calls of the SIF: native since batch B3 (section 14).
 
 ## 5. The GS library (`gs`)
 
+Ports that explicitly enable `Registry::nativeGraphics` own image uploads and readback at their native asset/render
+boundaries. For those ports, `sceGsSetDefLoadImage` and `sceGsSetDefStoreImage` return zero without serializing a
+packet or dereferencing its output address. Generic callers retain the SDK output ABI described below. Port hooks
+that bind native textures must still run before calling the SDK builder. The `native_image_builders` test covers
+both modes, guarded output buffers and inaccessible native outputs. This change does not replace readback consumers.
+
 Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
 `sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`,
 `sceGsExecLoadImage`, `sceGsExecStoreImage`. (The reference had `sceGsSyncV` and `sceGsSetDefLoadImage` as port

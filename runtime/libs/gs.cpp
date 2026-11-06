@@ -199,6 +199,8 @@ namespace bozo::libs
         // then the image tag (its size from the format). Returns 0 (nothing written for a transfer over 32767 quadwords).
         void setDefLoadImage(Libraries &l, Guest &g)
         {
+            // Explicit native ports own image operations; this packet has no consumer.
+            if (port::nativeGraphics(&g.runtime())) { g.ret(0); return; }
             const uint32_t p = g.arg(0);
             const int32_t dbp = s16(g.arg(1)), dbw = s16(g.arg(2)), dpsm = s16(g.arg(3)), x = s16(g.arg(4)), y = s16(g.arg(5)),
                           w = s16(g.arg(6)), h = s16(g.arg(7));
@@ -241,6 +243,8 @@ namespace bozo::libs
         // tag with BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR (GS memory to host). Returns 0.
         void setDefStoreImage(Libraries &l, Guest &g)
         {
+            // Explicit native ports own image operations; this packet has no consumer.
+            if (port::nativeGraphics(&g.runtime())) { g.ret(0); return; }
             const uint32_t p = g.arg(0);
             const int32_t sbp = s16(g.arg(1)), sbw = s16(g.arg(2)), spsm = s16(g.arg(3)), x = s16(g.arg(4)), y = s16(g.arg(5)),
                           w = s16(g.arg(6)), h = s16(g.arg(7));

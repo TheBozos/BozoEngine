@@ -85,3 +85,11 @@ if(BOZO_APP)
   add_test(NAME native_render_targets COMMAND bozo-render-target-tests)
   set_tests_properties(native_render_targets PROPERTIES LABELS "gpu")
 endif()
+
+# Unused native image definitions must not write packets; generic SDK output is retained.
+add_executable(bozo-image-builders-tests libs/image_builders_tests.cpp)
+target_link_libraries(bozo-image-builders-tests PRIVATE bozo_libs)
+if(MINGW)
+  target_link_options(bozo-image-builders-tests PRIVATE -static)
+endif()
+add_test(NAME native_image_builders COMMAND bozo-image-builders-tests)
