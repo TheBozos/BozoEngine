@@ -74,6 +74,12 @@ descriptor or interrupt processor is run. `library_command_replies` verifies mes
 bytes, job IDs, provider rejection, reset and independent hosts. Ports must validate the destination
 and own the queued application's data until its callback completes.
 
+IOP alarms (`thbase` 35-38: `SetAlarm`, `iSetAlarm`, `CancelAlarm`, `iCancelAlarm`) are native periodic jobs on the same
+scheduler as the timer handlers: the linked handler gets its common argument and captured GP, its return value is
+the next interval in 36.864 MHz clocks, zero ends the alarm. A second `SetAlarm` of an active handler/common pair
+returns -104, `CancelAlarm` of an unknown or ended one -105. `USec2SysClock` (39) writes the clock pair. `Kprintf`
+(`sysmem` 14) prints its format string as `printf` (`stdio` 4) does. `library_alarms` checks them.
+
 `ReferThreadStatus` uses the SDK's 68-byte layout, and `SysClock2USec` takes a clock pointer plus two output pointers. ABI definitions were checked against [PS2SDK's public thbase declarations](https://github.com/ps2dev/ps2sdk/blob/master/iop/system/threadman/include/thbase.h); no implementation code was copied from that project.
 
 ## Other reusable port services
