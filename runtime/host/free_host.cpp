@@ -33,7 +33,10 @@ namespace bozo::host
         d_ = &d;
         instructionHandler_ = registry ? registry->instructionHandler() : nullptr;
         if (registry)
+        {
             vu0Programs_ = registry->vu0Programs();
+            transfersAlwaysDone_ = registry->transfersAreAlwaysDone();
+        }
         if (nativeGraphics())
             std::fprintf(stderr, "[graphics] native submission/completion; retired graphics registers and DMA polls are guarded\n");
         // Stops jump back to the dispatcher (nothing on the way holds anything to destroy: dispatcher.h), and no frame
@@ -314,7 +317,7 @@ namespace bozo::host
         if (nativeGraphics())
             fault(*d_, ctx, "native graphics reached the retired DMA completion condition");
         watchdog(ctx);
-        return libs_.io.cpcond0();
+        return transfersAlwaysDone_ || libs_.io.cpcond0();
     }
 
     void FreeHost::watchdog(R5900Context *ctx)
