@@ -34,6 +34,11 @@ namespace bozo
     {
         std::string hex(uint32_t v) { return std::format("0x{:x}u", v); }
         std::string hex64(uint64_t v) { return std::format("0x{:x}ull", v); }
+        uint32_t cop0Register(const Insn &i)
+        {
+            const uint32_t rd = i.rd();
+            return rd == 25u ? rd | ((i.word & 3u) << 8) : rd;
+        }
         uint64_t sext32(uint32_t v) { return static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(v))); }
 
         // The address operand of a load or store: base + offset, 32-bit wrap-around.
@@ -386,8 +391,8 @@ namespace bozo
         case Op::PMTLO: return std::format("ctx->lo = BZ_Q({0}).ud[0]; ctx->lo1 = BZ_Q({0}).ud[1];", s);
 
         // ---- COP0 ----
-        case Op::MFC0: return toT(std::format("bozo::sx32((ctx->pc = {}, bozo_cop0_read(ctx, rt, {})))", hex(i.addr), d));
-        case Op::MTC0: return std::format("ctx->pc = {}; bozo_cop0_write(ctx, rt, {}, BZ_W({}));", hex(i.addr), d, t);
+        case Op::MFC0: return toT(std::format("bozo::sx32((ctx->pc = {}, bozo_cop0_read(ctx, rt, {})))", hex(i.addr), cop0Register(i)));
+        case Op::MTC0: return std::format("ctx->pc = {}; bozo_cop0_write(ctx, rt, {}, BZ_W({}));", hex(i.addr), cop0Register(i), t);
         case Op::EI: return std::format("ctx->pc = {}; bozo_set_interrupts(rdram, ctx, rt, true);", hex(i.addr));
         case Op::DI: return std::format("ctx->pc = {}; bozo_set_interrupts(rdram, ctx, rt, false);", hex(i.addr));
 

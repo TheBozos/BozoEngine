@@ -237,6 +237,7 @@ namespace bozo::ee
         uint64_t dispatches = 0, stops = 0, handlersRun = 0, jumps = 0;
 
     private:
+        uint32_t perfCounter(const R5900Context *ctx, int counter) const;
         static void kernelEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         static void libraryEntry(uint8_t *rdram, R5900Context *ctx, Runtime *rt);
         // Runs the native kernel call; returns true when the caller must stop (it blocked or gave way).
@@ -260,6 +261,11 @@ namespace bozo::ee
         Kernel kernel_;
         std::map<uint32_t, KernelCall> kernelCalls_;
         uint64_t cycle_ = 0;
+        uint32_t pccr_ = 0;
+        uint32_t pcr_[2] = {0, 0};
+        uint64_t perfSince_ = 0;
+        uint32_t epc_ = 0;
+        uint32_t errorEpc_ = 0;
         uint32_t heapStart_ = 0;
         int32_t syscall_ = 0; // the syscall being answered (0: none; 0 is no service BozoEngine answers)
         int32_t heapSize_ = -1; // SetupHeap's size (negative: up to the main thread's stack)
