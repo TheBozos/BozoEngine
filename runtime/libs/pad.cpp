@@ -165,6 +165,68 @@ namespace bozo::libs
             g.ret(1);
         }
 
+        void copyName(Guest &g, const char *const *names, uint32_t count)
+        {
+            const uint32_t i = g.arg(0);
+            const std::string name = i < count ? names[i] : "";
+            g.write(g.arg(1), name.c_str(), static_cast<uint32_t>(name.size() + 1));
+        }
+
+        void stateIntToStr(Libraries &, Guest &g)
+        {
+            static const char *const names[] = {"DISCONNECT", "", "FINDCTP1", "", "", "EXECCMD", "STABLE", "ERROR"};
+            copyName(g, names, 8);
+        }
+
+        void reqIntToStr(Libraries &, Guest &g)
+        {
+            static const char *const names[] = {"COMPLETE", "FAILED", "BUSY", "ERROR"};
+            copyName(g, names, 4);
+        }
+
+        void getDmaStr(Libraries &l, Guest &g)
+        {
+            const PadState::Port *pt = port(l, g);
+            g.retU(pt && pt->open ? pt->dmaBuffer : 0);
+        }
+
+        void getFrameCount(Libraries &l, Guest &g)
+        {
+            const PadState::Port *pt = port(l, g);
+            g.retU(pt && pt->open ? l.framesEnded : 0);
+        }
+
+        void setReqState(Libraries &l, Guest &g)
+        {
+            if (PadState::Port *pt = port(l, g))
+                pt->reqState = g.sarg(2);
+            g.ret(1);
+        }
+
+        void infoComb(Libraries &, Guest &g) { g.ret(0); }
+
+        void setButtonInfo(Libraries &l, Guest &g)
+        {
+            if (PadState::Port *pt = port(l, g))
+                command(l, *pt);
+            g.ret(1);
+        }
+
+        void exitPressMode(Libraries &l, Guest &g)
+        {
+            if (PadState::Port *pt = port(l, g))
+            {
+                pt->pressureMode = false;
+                command(l, *pt);
+            }
+            g.ret(1);
+        }
+
+        void setVrefParam(Libraries &, Guest &g) { g.ret(1); }
+        void getPortMax(Libraries &, Guest &g) { g.ret(2); }
+        void getModVersion(Libraries &, Guest &g) { g.ret(0x400); }
+        void setWarningLevel(Libraries &, Guest &g) { g.ret(0); }
+
         // scePadPortOpen(port, slot, buffer): every slot opens (1), the multitap's too.
         void portOpen(Libraries &l, Guest &g)
         {
@@ -189,8 +251,12 @@ namespace bozo::libs
             g.ret(busy(l, *pt) ? 5 : 6);
         }
 
-        // scePadGetReqState: the last request completed (0).
-        void getReqState(Libraries &, Guest &g) { g.ret(0); }
+        // scePadGetReqState: the last request completed (0), or what scePadSetReqState set.
+        void getReqState(Libraries &l, Guest &g)
+        {
+            const PadState::Port *pt = port(l, g);
+            g.ret(pt ? pt->reqState : 0);
+        }
 
         // scePadInfoMode(port, slot, term, offset): the current or extended ID (1, 2): 7 (DualShock 2, analog) once
         // scePadSetMainMode has set analog mode, 4 (digital) before; the mode table (4): its size at offset -1 (2),
@@ -317,6 +383,19 @@ namespace bozo::libs
     void addPad(std::vector<Function> &out)
     {
         out.push_back({"scePadInit", kPad, init});
+        out.push_back({"scePadInit2", kPad, init});
+        out.push_back({"scePadStateIntToStr", kPad, stateIntToStr});
+        out.push_back({"scePadReqIntToStr", kPad, reqIntToStr});
+        out.push_back({"scePadGetDmaStr", kPad, getDmaStr});
+        out.push_back({"scePadGetFrameCount", kPad, getFrameCount});
+        out.push_back({"scePadSetReqState", kPad, setReqState});
+        out.push_back({"scePadInfoComb", kPad, infoComb});
+        out.push_back({"scePadSetButtonInfo", kPad, setButtonInfo});
+        out.push_back({"scePadExitPressMode", kPad, exitPressMode});
+        out.push_back({"scePadSetVrefParam", kPad, setVrefParam});
+        out.push_back({"scePadGetPortMax", kPad, getPortMax});
+        out.push_back({"scePadGetModVersion", kPad, getModVersion});
+        out.push_back({"scePadSetWarningLevel", kPad, setWarningLevel});
         out.push_back({"scePadPortOpen", kPad, portOpen});
         out.push_back({"scePadGetState", kPad, getState});
         out.push_back({"scePadGetReqState", kPad, getReqState});
