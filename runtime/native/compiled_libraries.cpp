@@ -63,6 +63,10 @@ namespace bozo::native::irx
         std::map<int32_t, Task> tasks;
         int32_t nextTask = 1, current = 0, callbackTask = 0;
         int32_t logicalTask() const { return current ? current : callbackTask; }
+        // Native callback exclusion scopes, never a processor status/register bank.
+        struct CallbackExclusion { int32_t owner; uint32_t token; };
+        std::vector<CallbackExclusion> exclusions;
+        uint64_t deferredTarget = 0;
         uint32_t nextStack = 0x1fe000, invokeDepth = 0;
         struct Interrupt
         {
@@ -219,7 +223,11 @@ namespace bozo::native::irx
                     cpu.gpr[0] = 0;
                     if (expired() || (owner.current &&
                                       (owner.tasks.at(owner.current).waiting || owner.tasks.at(owner.current).done)))
+                    {
+                        if (!owner.exclusions.empty())
+                            throw std::runtime_error("native routine yielded with callbacks excluded");
                         return false;
+                    }
                 }
                 return true;
             }
@@ -248,6 +256,7 @@ namespace bozo::native::irx
         {
             if (ownerTask && (!tasks.contains(ownerTask) || tasks.at(ownerTask).done))
                 throw std::runtime_error("native RPC owner task is not available");
+            const auto exclusionsBefore = exclusions.size();
             // Root calls and callbacks use a separate, bounded stack arena. Creating a persistent task
             // during a root call must never let the next callback overwrite that task's suspended stack.
             if (invokeDepth >= 4)
@@ -276,12 +285,15 @@ namespace bozo::native::irx
             callbackTask = ownerTask;
             const bool done = env.call(function, kReturn);
             cycle += env.executed;
+            if (exclusions.size() != exclusionsBefore)
+                throw std::runtime_error("native routine returned with unbalanced callback exclusion");
             if (!done)
                 throw std::runtime_error(std::format("native library call 0x{:x} exceeded its work budget", function));
             return cpu.gpr[2];
         }
         void runReady()
         {
+            if (!exclusions.empty()) return;
             for (unsigned pass = 0; pass < 32; ++pass)
             {
                 bool ran = false;
@@ -321,6 +333,9 @@ namespace bozo::native::irx
         }
         void advance(uint64_t target)
         {
+            if (!exclusions.empty()) { deferredTarget = std::max(deferredTarget, target); return; }
+            target = std::max(target, deferredTarget);
+            deferredTarget = 0;
             runReady();
             unsigned work = 0;
             while (true)
@@ -527,6 +542,7 @@ namespace bozo::native::irx
                 if(s.count>0){--s.count;ret();return;}
                 if(n==9){ret(static_cast<uint32_t>(-419));return;}
                 if(!current){ret(static_cast<uint32_t>(-100));return;}
+                if(!exclusions.empty())throw std::runtime_error("native semaphore wait with callbacks excluded");
                 auto &t=tasks.at(current);t.waiting=true;t.waitingSema=static_cast<int32_t>(a0);t.sleeping=false;
                 s.waiting.push_back(current);ret();return;
             }
@@ -629,6 +645,7 @@ namespace bozo::native::irx
                     --t.wakeups;
                 else
                 {
+                    if (!exclusions.empty()) throw std::runtime_error("native sleep with callbacks excluded");
                     t.waiting = true;
                     t.sleeping = true;
                 }
@@ -652,6 +669,7 @@ namespace bozo::native::irx
             {
                 if (!current)
                     throw std::runtime_error("native root DelayThread");
+                if (!exclusions.empty()) throw std::runtime_error("native delay with callbacks excluded");
                 auto &t = tasks.at(current);
                 t.waiting = true;
                 t.due = cycle + uint64_t(a0) * 36864 / 1000;
@@ -679,6 +697,22 @@ namespace bozo::native::irx
         }
         if (lib == "intrman")
         {
+            if (n == 17)
+            {
+                const uint32_t token = exclusions.empty() ? 1u : 0u;
+                if (!exclusions.empty() && exclusions.back().owner != logicalTask())
+                    throw std::runtime_error("native callback exclusion owner mismatch");
+                write(a0, token);
+                exclusions.push_back({logicalTask(),token});
+                ret(token ? 0u : uint32_t(-102));
+                return;
+            }
+            if (n == 18)
+            {
+                if (exclusions.empty() || exclusions.back().owner != logicalTask() || exclusions.back().token != a0)
+                    throw std::runtime_error("unbalanced native callback exclusion release");
+                exclusions.pop_back();ret();return;
+            }
             if (n == 4)
             {
                 interrupts[a0] = {a2, a3, c.gpr[28], false};
@@ -707,6 +741,8 @@ namespace bozo::native::irx
             }
             if (n == 9)
             {
+                if (!exclusions.empty())
+                    throw std::runtime_error("native CpuEnableIntr cannot replace a scoped callback release");
                 ret();
                 return;
             } // native callbacks are only delivered at safe points
@@ -814,6 +850,7 @@ namespace bozo::native::irx
             {
                 if (!current)
                     throw std::runtime_error("RpcLoop outside a native task");
+                if (!exclusions.empty()) throw std::runtime_error("native RPC park with callbacks excluded");
                 tasks.at(current).waiting = true;
                 ret();
                 return;
@@ -969,6 +1006,8 @@ namespace bozo::native::irx
         p.nextTimer = 1;
         p.current = 0;
         p.callbackTask = 0;
+        p.exclusions.clear();
+        p.deferredTarget = 0;
         p.cycle = 0;
         p.origin = false;
         std::fill(p.memory.begin(), p.memory.end(), 0);
