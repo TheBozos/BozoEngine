@@ -166,7 +166,8 @@ that bind native textures must still run before calling the SDK builder. The `na
 both modes, guarded output buffers and inaccessible native outputs. This change does not replace readback consumers.
 
 Native: `sceGsResetGraph`, `sceGsResetPath`, `sceGsSetDefDispEnv`, `sceGsSetDefDrawEnv`, `sceGsSetDefDrawEnv2`,
-`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`, `sceGsSyncV`,
+`sceGsSetDefClear`, `sceGsSetDefLoadImage`, `sceGsSetDefStoreImage`, `sceGsPutDrawEnv`, `sceGsSyncPath`,
+`sceGsSyncVCallback`, `sceGsSyncV`,
 `sceGsExecLoadImage`, `sceGsExecStoreImage`. (The reference had `sceGsSyncV` and `sceGsSetDefLoadImage` as port
 overrides, kind 2 in the logs, the others as library stubs.)
 
@@ -199,6 +200,7 @@ output, native calls do not write valid guarded output buffers, and inaccessible
 | `sceGsSetDefStoreImage(sp, sbp, sbw, spsm, x, y, w, h)` | VIF codes, the GIF tag, BITBLTBUF, TRXPOS, TRXREG, FINISH, TRXDIR 1; returns 0 | the first VIF code is a NOP (libgraph: MSKPATH3); BITBLTBUF has DBW = 1; returns 0 (libgraph: 7) |
 | `sceGsPutDrawEnv(packet)` | returns 0 without reading the packet; the port supplies native materials | |
 | `sceGsSyncPath(mode, timeout)` | 0: nothing is ever in flight | |
+| `sceGsSyncVCallback(func)` | keeps `func`, run at the native frame boundary (`kernel.md` section 2) instead of as an INTC 2 handler; returns the previous one, 0 removes it | |
 | `sceGsSyncV(mode)` | 1 when the frames ended by then (this one included) are odd, else 0 | (settled on all 8 calls of boot and 2,290 of match1p; the vblank count's parity matches only half of them) |
 
 `sceGsSyncV` is where the game's frame ends (the FRAME record inside the call). Its result is the library's; the wait
@@ -569,6 +571,12 @@ values are manufactured. Native reset clears SDK jobs/configuration without rese
 field error codes, without programming a controller. `sceGsPutDispEnv` returns without reading its obsolete display
 structure or issuing display-register writes; the native renderer/platform layer already owns presentation.
 
+The four timers are counts read from the EE clock, the one clock every other time here is on. T0 and T3 sharing it is
+what makes SC3's frame budget the console's whatever the host's speed: a poll of T3 that sees the same count charges a
+line, so 256 changes of it take 256 lines of EE time and T0 reads about 9,400. Between reads nothing counts, no compare
+is made and no timer interrupt is raised; the OVFF and EQUF bits of a mode stay as written, so the library code that
+waits on them (libkernel's timer library: `kernel.md` K3) does not work through these registers.
+
 `FreeOptions::profileIo` collects remaining device accesses by guest PC and address in `FreeStats::ioSites`.
 It is off by default. Ports can use it to find callers that still need native adaptation; the existing native
 graphics guard rejects any attempt to access retired graphics devices before the compatibility path runs.
@@ -577,6 +585,8 @@ graphics guard rejects any attempt to access retired graphics devices before the
 |---|---|---|
 | 0x10000000 | T0_COUNT | the count written last plus the periods since (T0_MODE 0x82: BUSCLK/256, a count every 512 EE cycles); a load that reads the same count as the previous one (a poll) leaves the period, 512 cycles, pending (charged at the next checkpoint: `calllog.md` section 2) |
 | 0x10000010 | T0_MODE | kept (0x82) |
+| 0x10000020 | T0_COMP | kept; nothing compares |
+| 0x10000800, 0x10001000, 0x10001800 + 0, 0x10, 0x20 | T1, T2, T3: COUNT, MODE, COMP | as T0, with the clock T`n`_MODE names: BUSCLK, /16, /256, or (3) the horizontal blank, `field x 2 / lines` EE cycles (`kernel.md` section 2). T3's mode is 0x83 from boot: it counts horizontal blanks without the game setting it (SC3's boot calibration measures T0 over 256 of them: 0x12d6c8 on) |
 | (any store) | a port's store patch | a store the port's patch names (`bozo::port::setStorePatch`, by its instruction: the externals' `store` lines) is made as an out-call without its effect (match1p #62516600: TMB's dialog kick, logged, no completion after it) |
 | 0x12001000 | GS CSR (loads) | FIELD (bit 13) the vblank count's parity, nothing else (TMB's vblankHandler reads it inside its override: boot #729700 on). A port's own access (`bozo::port::ioRead32` / `ioWrite32`) is not the game's: a store of its does not complete channel 4's transfer (match1p #14450438); a T0 read of its is a poll as the game's, a T0 write keeps the last read, its (#34736003) and the game's alike (stage-level0 #13062314: the game read 0, wrote 0 and read 0: a poll), and the EE time the port charges (`bozo::port::accountCycles`, TMB's frame end) takes the poll's pending cycles as a checkpoint would (#17538393, #17541951) |
 | 0x10008000-30 | VIF0 CHCR, MADR, QWC, TADR | a start (CHCR STR) completes at once: D_STAT bit 0 and the DMAC interrupt (the kernel runs or keeps it); a chain start notes the microcode image (section 10) |
