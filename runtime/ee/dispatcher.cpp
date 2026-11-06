@@ -387,6 +387,7 @@ namespace bozo::ee
         else if (number == 61) // SetupHeap(start, size): the heap starts at the end of the program, aligned to 16 bytes
         {
             heapStart_ = (arg(ctx, 0) + 15u) & ~15u;
+            heapSize_ = static_cast<int32_t>(arg(ctx, 1));
             ret(ctx, static_cast<int32_t>(heapStart_));
         }
         else if (call != KernelCall::None)
@@ -954,6 +955,65 @@ namespace bozo::ee
         case KernelCall::EnableCache:
         case KernelCall::DisableCache: ret(ctx, 0); return false;
         case KernelCall::GetMemorySize: ret(ctx, 0x2000000); return false;
+        case KernelCall::SuspendThread: ret(ctx, k.suspendThread(a0, false)); return false;
+        case KernelCall::iSuspendThread: ret(ctx, k.suspendThread(a0, true)); return false;
+        case KernelCall::ResumeThread:
+            ret(ctx, k.resumeThread(a0, false));
+            return k.transfer(false);
+        case KernelCall::iResumeThread: ret(ctx, k.resumeThread(a0, true)); return false;
+        case KernelCall::EndOfHeap:
+        {
+            const Thread *main = k.thread(1);
+            if (heapSize_ >= 0)
+                ret(ctx, static_cast<int32_t>(heapStart_ + static_cast<uint32_t>(heapSize_)));
+            else
+                ret(ctx, static_cast<int32_t>(main && main->stack ? main->stack : 0x2000000u));
+            return false;
+        }
+        case KernelCall::GsGetIMR:
+        case KernelCall::iGsGetIMR: ret(ctx, static_cast<int32_t>(gsImr_)); return false;
+        case KernelCall::GsPutIMR:
+        case KernelCall::iGsPutIMR:
+        {
+            const uint64_t old = gsImr_;
+            gsImr_ = ctx->r[4].ud[0];
+            ret(ctx, static_cast<int32_t>(old));
+            return false;
+        }
+        case KernelCall::SetGsCrt: ret(ctx, 0); return false;
+        case KernelCall::GetOsdConfigParam:
+        case KernelCall::SetOsdConfigParam:
+        {
+            uint8_t *p = rt_.memory.hostPointer(arg(ctx, 0), 4);
+            if (!p)
+            {
+                host_.fault(*this, ctx, "OSD configuration word outside guest memory");
+                return false;
+            }
+            if (call == KernelCall::GetOsdConfigParam)
+                std::memcpy(p, &osdConfig, 4);
+            else
+                std::memcpy(&osdConfig, p, 4);
+            ret(ctx, 0);
+            return false;
+        }
+        case KernelCall::GetOsdConfigParam2:
+        case KernelCall::SetOsdConfigParam2:
+        {
+            const uint32_t size = arg(ctx, 1), offset = arg(ctx, 2);
+            uint8_t *p = rt_.memory.hostPointer(arg(ctx, 0), size);
+            if (!p || offset > osdConfig2.size() || size > osdConfig2.size() - offset)
+            {
+                host_.fault(*this, ctx, std::format("OSD configuration block access ({} bytes at {}) out of range", size, offset));
+                return false;
+            }
+            if (call == KernelCall::GetOsdConfigParam2)
+                std::memcpy(p, osdConfig2.data() + offset, size);
+            else
+                std::memcpy(osdConfig2.data() + offset, p, size);
+            ret(ctx, 0);
+            return false;
+        }
         default:
             host_.fault(*this, ctx, syscall_ ? std::format("syscall {} (kernel call {}) at 0x{:x}: not implemented yet", syscall_,
                                                          static_cast<int>(call), ctx->pc)

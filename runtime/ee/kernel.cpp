@@ -360,6 +360,43 @@ namespace bozo::ee
         return count;
     }
 
+    int32_t Kernel::suspendThread(int32_t id, bool interruptSafe)
+    {
+        if (id == 0 || id == running_)
+            return -406; // KE_ILLEGAL_THID
+        Thread *t = thread(id);
+        if (!t)
+            return -407; // KE_UNKNOWN_THID
+        if (t->state == ThreadState::Dormant)
+            return -413; // KE_DORMANT
+        emit(kOpSuspend, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
+        if (t->state == ThreadState::Ready)
+        {
+            removeFromQueue(*t);
+            t->state = ThreadState::Suspended;
+        }
+        else if (t->state == ThreadState::Waiting)
+            t->state = ThreadState::WaitSuspended;
+        return id;
+    }
+
+    int32_t Kernel::resumeThread(int32_t id, bool interruptSafe)
+    {
+        if (id == 0 || id == running_)
+            return -406; // KE_ILLEGAL_THID
+        Thread *t = thread(id);
+        if (!t)
+            return -407; // KE_UNKNOWN_THID
+        if (t->state != ThreadState::Suspended && t->state != ThreadState::WaitSuspended)
+            return -415; // KE_NOT_SUSPEND
+        emit(kOpResume, {static_cast<uint32_t>(id), interruptSafe ? 1u : 0u});
+        if (t->state == ThreadState::WaitSuspended)
+            t->state = ThreadState::Waiting;
+        else
+            makeReady(*t);
+        return id;
+    }
+
     void Kernel::block(int32_t id, uint32_t reason, uint32_t object, uint32_t bits, uint32_t mode, bool completion,
                        uint64_t token, int32_t fixedResult)
     {
@@ -700,6 +737,8 @@ namespace bozo::ee
         case kOpRotate: rotateReadyQueue(arg(0), arg(1) != 0); break;
         case kOpWakeup: wakeupThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
         case kOpCancelWakeup: cancelWakeupThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
+        case kOpSuspend: suspendThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
+        case kOpResume: resumeThread(static_cast<int32_t>(arg(0)), arg(1) != 0); break;
         case kOpSemaCreate:
             createSema(static_cast<int32_t>(arg(0)), static_cast<int32_t>(arg(1)), arg(2), arg(3));
             break;

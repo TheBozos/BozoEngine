@@ -118,6 +118,10 @@ namespace bozo::ee
         bool isKernelCall(uint32_t address) const { return kernelCalls_.count(address) != 0; }
         // The heap's start as SetupHeap (syscall 61) returned it (0 before): where the game's malloc starts.
         uint32_t heapStart() const { return heapStart_; }
+        // The console's OSD settings GetOsdConfigParam answers (kernel.md section 2): English, 4:3, configuration
+        // version 2 (a zeroed second block) until the game or the port sets them.
+        uint32_t osdConfig = 0x00014010u;
+        std::vector<uint8_t> osdConfig2 = std::vector<uint8_t>(0x100, 0);
 
         // The main thread starts at `entry` with sp `sp`; the dispatcher then runs until the host ends the run.
         void boot(uint32_t entry, uint32_t sp);
@@ -251,6 +255,8 @@ namespace bozo::ee
         uint64_t cycle_ = 0;
         uint32_t heapStart_ = 0;
         int32_t syscall_ = 0; // the syscall being answered (0: none; 0 is no service BozoEngine answers)
+        int32_t heapSize_ = -1; // SetupHeap's size (negative: up to the main thread's stack)
+        uint64_t gsImr_ = 0x7F00; // GsPutIMR's mask (no GS behind it): every GS interrupt masked
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
         uint32_t timerPending_ = 0;

@@ -257,6 +257,10 @@ namespace bozo::ee
         int32_t sleepThread();
         int32_t wakeupThread(int32_t id, bool interruptSafe);
         int32_t cancelWakeupThread(int32_t id, bool interruptSafe);
+        // SuspendThread / ResumeThread: a ready thread leaves its queue (a waiting one keeps its wait), and comes back
+        // to its tail. Neither applies to the running thread (-406).
+        int32_t suspendThread(int32_t id, bool interruptSafe);
+        int32_t resumeThread(int32_t id, bool interruptSafe);
         // The running thread blocks. `token` is the wide argument (vblank count, external token...).
         void block(int32_t id, uint32_t reason, uint32_t object, uint32_t bits, uint32_t mode, bool completion,
                    uint64_t token, int32_t fixedResult);
