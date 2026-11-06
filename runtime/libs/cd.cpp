@@ -166,7 +166,14 @@ namespace bozo::libs
         uint8_t bcd(int v) { return static_cast<uint8_t>((v / 10) * 16 + v % 10); }
 
         // sceCdInit(mode), sceCdMmode(media): 1. sceCdDiskReady(mode): 2 (ready). sceFsReset(): 0.
-        void init(Libraries &, Guest &g) { g.ret(1); }
+        void init(Libraries &l, Guest &g) { l.cd.initialized=g.arg(0)!=2;l.cd.error=0;g.ret(1); }
+        void status(Libraries &l, Guest &g)
+        {
+            // Public SDK status values from libcdvd-common.h. These describe
+            // the native file job, not an addressable console device bank.
+            const auto &cd=l.cd;
+            g.ret(!cd.initialized?0:cd.error?0x20:(cd.streaming || l.now(g)<cd.readEnd)?6:0x0a);
+        }
         void mmode(Libraries &, Guest &g) { g.ret(1); }
         void diskReady(Libraries &, Guest &g) { g.ret(2); }
         void fsReset(Libraries &, Guest &g) { g.ret(0); }
@@ -408,6 +415,7 @@ namespace bozo::libs
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
         out.push_back({"sceCdInit", kCd, init});
+        out.push_back({"sceCdStatus", kCd, status});
         out.push_back({"sceCdCallback", kCd, callback});
         out.push_back({"sceCdInitEeCB", kCd, initCallback});
         out.push_back({"sceCdMmode", kCd, mmode});

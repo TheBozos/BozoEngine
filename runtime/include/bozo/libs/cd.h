@@ -46,6 +46,7 @@ namespace bozo::libs
         std::string imagePath; // opened at the first call that needs a sector
         // sceCdReadClock's time: the reference's deterministic clock (2001-06-18 12:00:00) unless the host's.
         bool hostClock = false;
+        bool initialized = false;
 
         // The drive: the last read (sceCdRead) and its error (sceCdGetError).
         int32_t error = 0;
