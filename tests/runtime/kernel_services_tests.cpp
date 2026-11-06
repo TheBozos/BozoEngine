@@ -114,5 +114,7 @@ int main()
         return 8;
     if (bozo::ee::kernelCallByName("_InitSys") != bozo::ee::KernelCall::InitSys)
         return 9;
+    if (d.cop0Read(&ctx, &d.runtime(), 9) != static_cast<uint32_t>(d.cycle()))
+        return 16;
     return 0;
 }

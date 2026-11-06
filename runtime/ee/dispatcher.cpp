@@ -488,6 +488,7 @@ namespace bozo::ee
     {
         switch (reg)
         {
+        case 9: return static_cast<uint32_t>(now(ctx));
         case kCop0Pccr: return pccr_;
         case kCop0Pcr0: return perfCounter(ctx, 0);
         case kCop0Pcr1: return perfCounter(ctx, 1);
