@@ -74,6 +74,12 @@ descriptor or interrupt processor is run. `library_command_replies` verifies mes
 bytes, job IDs, provider rejection, reset and independent hosts. Ports must validate the destination
 and own the queued application's data until its callback completes.
 
+An EE `sceSifCallRpc` to a server a compiled module registered (`sifcmd` 17) runs the handler on that server's task,
+above its parked `RpcLoop` frame, as the SDK's loop runs it. The handler may wait (`DelayThread`, semaphores): the host's
+clock goes on to the next task deadline, timer or event until the handler returns; the task then parks again and the
+call completes with the reply. A failing handler leaves the task parked. Requests made while a compiled routine runs
+(nested) keep the root call. `library_rpc_blocking` checks a handler that delays.
+
 IOP alarms (`thbase` 35-38: `SetAlarm`, `iSetAlarm`, `CancelAlarm`, `iCancelAlarm`) are native periodic jobs on the same
 scheduler as the timer handlers: the linked handler gets its common argument and captured GP, its return value is
 the next interval in 36.864 MHz clocks, zero ends the alarm. A second `SetAlarm` of an active handler/common pair
