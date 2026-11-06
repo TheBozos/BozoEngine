@@ -647,7 +647,8 @@ the I/O model follows from the log (section 11), and 989SND's sound lifetimes, h
 ## 14. The SIF layer (`sif`)
 
 Native: `sceSifInitRpc`, `sceSifBindRpc`, `sceSifCallRpc`, `sceSifCheckStatRpc`, `sceSifGetSreg`, `sceSifSetSreg`,
-`sceSifInitIopHeap`, `sceSifAllocIopHeap`, `sceSifFreeIopHeap`, `sceSifLoadModule`, `sceSifRebootIop`, `sceSifSyncIop`,
+`sceSifInitIopHeap`, `sceSifAllocIopHeap`, `sceSifFreeIopHeap`, `sceSifQueryMemSize`, `sceSifQueryMaxFreeMemSize`,
+`sceSifQueryTotalFreeMemSize`, `sceSifLoadModule`, `sceSifRebootIop`, `sceSifSyncIop`,
 and `sceSifSetDma`, `sceSifDmaStat` (`bozo/libs/sif.h`, `libs/sif.cpp`). There is no IOP: an RPC goes to a native
 server (TMB's only one: 989SND, section 15), a module load loads nothing, the IOP heap is a model of the memory the
 reference's IOP allocator handed out. Every call of both logs returns at once (0 EE cycles, no record inside it): the
@@ -664,6 +665,7 @@ reference's IOP answered every RPC inside the call, so nothing is ever in flight
 | `sceSifGetSreg(reg)`, `sceSifSetSreg(reg, value)` | the 32 software registers; Set returns the old value (boot #153, #154; match1p #17536116: GetSreg(8) 0) |
 | `sceSifInitIopHeap()` | 0 |
 | `sceSifAllocIopHeap(bytes)`, `sceSifFreeIopHeap(address)` | a block of the IOP heap (14.2); 0 (match1p: 11 of each, every block at 0x8b6c0) |
+| `sceSifQueryMemSize()`, `sceSifQueryMaxFreeMemSize()`, `sceSifQueryTotalFreeMemSize()` | 2 MB; the IOP heap's largest free block; the sum of its free blocks (Champions of Norrath sizes its sound stream buffers from the largest block) |
 | `sceSifLoadModule(path, argc, argv)` | the module id: 1 for the first since the IOP's reboot, then 2... (boot #119-#127: TMB's nine modules, ids 1-9) |
 | `sceSifRebootIop(image)`, `sceSifSyncIop()` | 1 (`v0` is already 1 in the records: #27, #28) |
 | `sceSifSetDma(transfers, n)`, `sceSifDmaStat(id)` | the transfer's id (1, 2, ...), and the DMAC interrupt of channel 5 (SIF0) raised as it returns (boot #2157635, an OP inside the override's record at SetDma's return address); -1 (finished). TMB calls them only inside a port override (the movie's PCM, traced: boot #2157634 id 1, then 2...), so they are never checked against a record of their own; the native ids follow the traced ones |
