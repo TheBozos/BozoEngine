@@ -362,6 +362,16 @@ later, at the logged pc. Which call the reference does not count is open.
 **K2.** (settled) texmActivateTextureAsm's return after its calls to texmFindVramSpaceAsm (#17538483) and
 bspVecTestIn's return after it recursed (#17537437, #17538428, #17538329) go through the dispatcher (section 3).
 
-**K3.** Not reached by TMB, implemented from the EE kernel's documented behaviour only: alarms, event flags,
-suspend/resume, sleep/wakeup, `ReferThreadStatus`, `SetVSyncFlag` and the GS vsync callback (the kernel records the
+**Native sleep/wakeup (VP2S startup).** `SleepThread` consumes one queued wakeup credit or blocks the current
+thread with sleep reason. `WakeupThread`/`iWakeupThread` release a sleep wait or accumulate a 32-bit credit without
+releasing other wait reasons. The SDK ABI returns the target id on success; zero/self, unknown and dormant targets
+return -406/-407/-413. Cancel returns and clears the count (zero selects the current thread). Normal wakeup allows
+priority preemption; the interrupt-safe variant defers it. Releasing a suspended wait leaves the thread suspended.
+Starting a dormant thread clears old credits. `thread_sleep` tests these state transitions and runs two native
+synthetic threads through blocking, higher-priority wakeup/preemption and exact return-PC/value resumption. This
+adds no clock, device state, polling, alarm or deadline implementation. Other games' full routes are not qualified
+by this test. Sleeping inside an interrupt handler returns -1 rather than blocking the handler's owning thread.
+
+**K3.** Not reached by TMB: alarms, event flags,
+suspend/resume, `SetVSyncFlag` and the GS vsync callback (the kernel records the
 operation and has no effect yet for those `calllog.md` lists but TMB never makes).
