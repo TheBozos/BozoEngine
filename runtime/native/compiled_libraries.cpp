@@ -582,9 +582,10 @@ namespace bozo::native::irx
                         due = true;
                     }
                 // The mix stops at each input half so its handler and the tasks it wakes refill that half in time.
-                if (const uint64_t half = mixer.nextInputHalfCycle(); half > cycle && half < next)
+                // A task's charge may already have run past it: the mix then catches up to the cycle and stops there.
+                if (const uint64_t half = mixer.nextInputHalfCycle(); half != 0 && half < next)
                 {
-                    next = half;
+                    next = std::max(half, cycle);
                     due = true;
                 }
                 cycle = next;
