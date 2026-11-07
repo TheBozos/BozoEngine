@@ -156,16 +156,27 @@ uniform float uAlphaRef;
 uniform int uOpaque;
 uniform int uFog;
 uniform vec3 uFogColour;
+uniform int uTextureFunction;
+uniform int uTextureAlpha;
 out vec4 fragColor;
 void main()
 {
-    vec4 colour = (uUseQ != 0 ? vColScreen : vCol) * (255.0 / 128.0);
+    vec4 vertex = uUseQ != 0 ? vColScreen : vCol;
+    vec4 colour = vertex * (255.0 / 128.0);
     vec4 texel = uTextured != 0 ? texture(uTex, vUv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
         texel.a = texture(uTex, vUv).a;
-    fragColor = clamp(texel * colour, 0.0, 1.0);
+    if (uTextureFunction == 1)
+        fragColor = texel;
+    else if (uTextureFunction >= 2)
+        fragColor = vec4(texel.rgb * colour.rgb + vertex.a, uTextureFunction == 2 ? texel.a + colour.a : texel.a);
+    else
+        fragColor = texel * colour;
+    if (uTextured != 0 && uTextureAlpha == 0)
+        fragColor.a = colour.a;
+    fragColor = clamp(fragColor, 0.0, 1.0);
     if (uAlphaTest != 0)
     {
         float a = floor(fragColor.a * 128.0 + 0.5), r = floor(uAlphaRef * 128.0 + 0.5);
@@ -296,7 +307,7 @@ void main()
     {
         gl::GLuint shader = 0;
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
-                  locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locFogColour = -1;
+                  locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
@@ -436,6 +447,8 @@ void main()
             locOpaque = g.GetUniformLocation(shader, "uOpaque");
             locFog = g.GetUniformLocation(shader, "uFog");
             locFogColour = g.GetUniformLocation(shader, "uFogColour");
+            locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
+            locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locViewport = g.GetUniformLocation(flatShader, "uViewport");
             locFlatTex = g.GetUniformLocation(flatShader, "uTex");
             g.GenVertexArrays(1, &vao);
@@ -1465,6 +1478,8 @@ void main()
                                         static_cast<float>((m.fogColour >> 16) & 0xffu) / 255.0f};
             g.Uniform1i(gpu.locOpaque, opaque);
             g.Uniform1i(gpu.locFog, fog);
+            g.Uniform1i(gpu.locTextureFunction, static_cast<int>(m.textureFunction));
+            g.Uniform1i(gpu.locTextureAlpha, m.textureAlpha ? 1 : 0);
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);

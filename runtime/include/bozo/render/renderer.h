@@ -72,6 +72,17 @@ namespace bozo::render
         static constexpr uint8_t kPreviousFrame = 8;
         bool nearest = false;
         uint32_t fogColour = 0; // FOGCOL, R in the low byte
+        // TEX0.TFX: the texel and the vertex colour Cf as the GS combines them. Modulate Ct * Cf; Decal Ct; Highlight
+        // Ct * Cf + Af on colour and At + Af on alpha; Highlight2 the same colour, alpha At. textureAlpha is TEX0.TCC: off,
+        // the alpha is the vertex's.
+        enum class TextureFunction : uint8_t
+        {
+            Modulate,
+            Decal,
+            Highlight,
+            Highlight2,
+        } textureFunction = TextureFunction::Modulate;
+        bool textureAlpha = true;
         // Screen-space vertices with the GS's Q: texture coordinates interpolate in perspective by Vertex::q (u, v as S / Q,
         // T / Q), colour and fog across the screen, as the GS does. Off: the draw's matrix gives the perspective.
         bool useQ = false;
