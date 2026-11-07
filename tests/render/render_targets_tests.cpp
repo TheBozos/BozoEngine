@@ -412,6 +412,30 @@ int main()
             pixel("unconditional far write opens only the mask", inverted ? 8 : 24, {0,255,0});
             pixel("tested draw preserves the near clear outside mask", inverted ? 24 : 8, {255,0,0});
         }
+    // An ordered native full-frame colour correction, sampling the current
+    // frame. Different channels cover high clamp, low clamp and saturation.
+    renderer.beginFrame(screen);
+    quad(plain,0x80604020);
+    auto levels=copy;levels.source=0;levels.levels.enabled=true;
+    levels.levels.gain[0]=2;levels.levels.gain[1]=3;levels.levels.gain[2]=4;
+    levels.levels.high[0]=0.2f;levels.levels.high[1]=1;levels.levels.high[2]=1;
+    levels.levels.low[0]=0.05f;levels.levels.low[1]=0.6f;levels.levels.low[2]=0.25f;
+    quad(levels,0x80808080);present();
+    pixel("native levels clamp subtract gain",16,{77,0,255});
+    // Disabled next batch must not inherit uniforms from the previous pass.
+    renderer.beginFrame(screen);quad(plain,0x80004000);present();
+    pixel("colour levels do not leak",16,{0,128,0});
+    // Auxiliary alpha must survive RGB correction. A following destination-
+    // alpha blend observes it independently from the corrected colour.
+    renderer.beginFrame(screen);auto aux=plain;aux.target=1;
+    quad(aux,0x80000040);auto alphaLevels=levels;alphaLevels.target=1;alphaLevels.source=1;
+    auto alphaWrite=plain;alphaWrite.target=1;alphaWrite.blend=Material::Blend::AlphaOnly;
+    quad(alphaWrite,0x40000000);
+    alphaLevels.blend=Material::Blend::AlphaOnly;quad(alphaLevels,0x80808080);
+    auto fromAux=copy;fromAux.source=1;fromAux.blend=Material::Blend::AdditiveByDestination;
+    quad(plain,0x80000000);auto mainAlpha=alphaWrite;mainAlpha.target=0;
+    quad(mainAlpha,0x40000000);quad(fromAux,0x80808080);present();
+    pixel("levels preserve auxiliary alpha",16,{64,0,0});
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);

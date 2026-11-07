@@ -71,6 +71,16 @@ namespace bozo::render
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
         bool nearest = false;
+        // Native colour correction after texturing/fog, before blending:
+        // RGB = clamp(gain * max(0, min(RGB, high) - low), 0, 1).
+        // Alpha is preserved. Off by default; values are copied with the batch.
+        struct ColourLevels
+        {
+            bool enabled = false;
+            float gain[3] = {1, 1, 1};
+            float high[3] = {1, 1, 1};
+            float low[3] = {0, 0, 0};
+        } levels;
         uint32_t fogColour = 0; // FOGCOL, R in the low byte
         // TEX0.TFX: the texel and the vertex colour Cf as the GS combines them. Modulate Ct * Cf; Decal Ct; Highlight
         // Ct * Cf + Af on colour and At + Af on alpha; Highlight2 the same colour, alpha At. textureAlpha is TEX0.TCC: off,
