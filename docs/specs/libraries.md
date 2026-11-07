@@ -267,7 +267,8 @@ Results: boot 29,973 calls native (`scePadGetState` 23,960, `scePadRead` 5,968, 
 ## 7. Memory cards (`mc`)
 
 Native: `sceMcInit`, `sceMcGetInfo`, `sceMcGetDir`, `sceMcSync`; and, not checked yet (below), `sceMcMkdir`,
-`sceMcOpen`, `sceMcClose`, `sceMcRead`, `sceMcWrite`.
+`sceMcOpen`, `sceMcClose`, `sceMcRead`, `sceMcWrite`. `sceMcFlush` also has a native completion;
+the synthetic save/flush/reload tests cover its command identity, cursor and persisted bytes.
 
 Two PS2 memory cards (ports 1 and 2, slot 0), formatted (`McCard`, `bozo/libs/mc.h`), each backed by a host folder
 (`<dir>/mc0`, `<dir>/mc1`: a card's folders and files as host folders and files, loaded at the first card call and
@@ -280,7 +281,8 @@ result over.
 | `sceMcInit` | 0; the cards count as new again (next) |
 | `sceMcGetInfo(port, slot, type, free, format)` | 0; writes type 2 (PS2 card), the free clusters (`0x2000` on an empty 8 MB card), format 1 at once (each pointer when not null); its result is -1 at the first call on a port after `sceMcInit` (and before it), 0 after |
 | `sceMcGetDir(port, slot, name, mode, maxent, table)` | 0; writes the matching entries at once (64-byte `sceMcTblGetDir`: created and modified dates, size, attributes, name); a listing with a wildcard starts with `.` and `..` (attributes `0x80a3`, the date 2001-06-18 12:00:00: the reference's deterministic clock, as `sceCdReadClock`); its result is the count, -4 when nothing matches |
-| `sceMcSync(mode, cmd, result)` | 1; writes the last operation's result (not `cmd`) |
+| `sceMcSync(mode, cmd, result)` | 1 when a completion is pending, writing its command and result to non-null pointers; -1 when none is pending |
+| `sceMcFlush(fd)` | Submission returns 0; sync command `0xA` reports 0 for an open file or -4 for a missing/closed descriptor. Writes already reach the host file during `sceMcWrite`; flush retains the descriptor and cursor |
 
 What TMB does at boot, on the fresh cards: `GetInfo` on both ports (-1, then 0), `GetDir("*")` on the root (`.` and
 `..`: no `BASCUS-97101` folder yet), `GetDir("BASCUS-97101/globalFile")` on both ports (-4). Boot and match1p: 43

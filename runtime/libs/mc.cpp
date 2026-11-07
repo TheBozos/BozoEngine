@@ -122,7 +122,8 @@ namespace bozo::libs
         // libmc's function numbers (what sceMcSync's cmd would report).
         enum : int32_t
         {
-            kFnGetInfo = 1, kFnOpen = 2, kFnClose = 3, kFnRead = 5, kFnWrite = 6, kFnMkdir = 0xB, kFnChdir = 0xC, kFnGetDir = 0xD,
+            kFnGetInfo = 1, kFnOpen = 2, kFnClose = 3, kFnRead = 5, kFnWrite = 6, kFnFlush = 0xA,
+            kFnMkdir = 0xB, kFnChdir = 0xC, kFnGetDir = 0xD,
         };
 
         void init(Libraries &l, Guest &g)
@@ -315,6 +316,17 @@ namespace bozo::libs
             g.ret(0);
         }
 
+        // Writes already reach the host file before their completion is
+        // published. Flush still owns a distinct asynchronous completion; it
+        // neither closes the descriptor nor changes its cursor.
+        void flush(Libraries &l, Guest &g)
+        {
+            const auto it = l.mc.files.find(static_cast<int32_t>(g.arg(0)));
+            const bool valid = it != l.mc.files.end() && l.mc.card(it->second.port).find(it->second.path);
+            finish(l, kFnFlush, valid ? 0 : -4);
+            g.ret(0);
+        }
+
         // sceMcRead(fd, buffer, size), sceMcWrite(fd, buffer, size): the bytes moved.
         void read(Libraries &l, Guest &g)
         {
@@ -445,6 +457,7 @@ namespace bozo::libs
         out.push_back({"sceMcChdir", kMc, chdir});
         out.push_back({"sceMcOpen", kMc, open});
         out.push_back({"sceMcClose", kMc, close});
+        out.push_back({"sceMcFlush", kMc, flush});
         out.push_back({"sceMcRead", kMc, read});
         out.push_back({"sceMcWrite", kMc, write});
     }

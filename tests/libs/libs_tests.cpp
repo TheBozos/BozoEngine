@@ -89,8 +89,19 @@ namespace
         m.string(0x103000, "PS2D-icon");
         m.call("sceMcWrite", {static_cast<uint32_t>(fd), 0x103000, 964});
         eq("Write", m.result(), 964);
+        eq("Flush submission", m.call("sceMcFlush", {static_cast<uint32_t>(fd)}), 0);
+        eq("Flush completion", m.result(), 0);
+        uint32_t completed = 0;
+        std::memcpy(&completed, m.rt->memory.ram() + 0x100000, 4);
+        eq("Flush command identity", completed, 0xA);
+        eq("Flush preserves the open cursor", m.libs.mc.files.at(fd).position, 964);
+        eq("Flush result consumed once", m.call("sceMcSync", {0, 0, 0}), -1);
+        m.call("sceMcFlush", {static_cast<uint32_t>(fd)});
+        eq("Repeated flush is supported", m.result(), 0);
         m.call("sceMcClose", {static_cast<uint32_t>(fd)});
         eq("Close", m.result(), 0);
+        m.call("sceMcFlush", {static_cast<uint32_t>(fd)});
+        eq("Flush rejects a closed descriptor", m.result(), -4);
         m.call("sceMcOpen", {0, 0, 0x101000, 0x1});
         const int32_t rd = m.result();
         m.call("sceMcRead", {static_cast<uint32_t>(rd), 0x104000, 2000});
@@ -249,6 +260,33 @@ void nativeCardDirectories() {
     m.call("sceMcChdir",{0,0,0x110000,0});eq("parent directory",m.result(),0);
     eq("parent restored root",m.libs.mc.currentDirectory[0].empty(),1);
 }
+void nativeCardFlushPersistence() {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("bozo-mc-flush-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    {
+        Machine m;m.libs.mc.hostDirectory=root.string();
+        m.call("sceMcGetInfo",{0,0,0,0,0});m.result();
+        m.string(0x110000,"save");m.call("sceMcOpen",{0,0,0x110000,0x203});const auto fd=m.result();
+        m.string(0x111000,"native-");m.call("sceMcWrite",{uint32_t(fd),0x111000,7});eq("host write",m.result(),7);
+        m.call("sceMcFlush",{uint32_t(fd)});eq("host flush",m.result(),0);
+        m.string(0x111000,"save");m.call("sceMcWrite",{uint32_t(fd),0x111000,4});eq("write after flush",m.result(),4);
+        m.call("sceMcFlush",{uint32_t(fd)});eq("second host flush",m.result(),0);
+        std::ifstream in(root/"mc0"/"save",std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(in)),{});
+        eq("flushed bytes available before close",bytes=="native-save",1);
+        m.call("sceMcClose",{uint32_t(fd)});m.result();
+    }
+    {
+        Machine m;m.libs.mc.hostDirectory=root.string();
+        m.call("sceMcGetInfo",{0,0,0,0,0});m.result();
+        m.string(0x110000,"save");m.call("sceMcOpen",{0,0,0x110000,1});const auto fd=m.result();
+        m.call("sceMcRead",{uint32_t(fd),0x111000,64});eq("flushed save reload size",m.result(),11);
+        eq("flushed save reload bytes",std::memcmp(m.rt->memory.ram()+0x111000,"native-save",11),0);
+        m.call("sceMcClose",{uint32_t(fd)});m.result();
+    }
+    std::filesystem::remove(root/"mc0"/"save");
+    std::filesystem::remove(root/"mc0");std::filesystem::remove(root/"mc1");std::filesystem::remove(root);
+}
 void liveScriptInput() {
     const auto path=std::filesystem::temp_directory_path()/
         ("bozo-live-pad-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -326,6 +364,7 @@ int main()
     }
     sifAndSnd();
     memoryCard();
+    nativeCardFlushPersistence();
     heapAndRand();
     cdStream();
     std::printf("%s\n", g_failures ? "FAILED" : "all passed");
