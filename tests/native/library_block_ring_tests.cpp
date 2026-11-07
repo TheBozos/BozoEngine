@@ -13,7 +13,7 @@ uint32_t call(Env &e,uint32_t fn,uint32_t a=0,uint32_t b=0,uint32_t c=0,uint32_t
     e.cpu.gpr[4]=a;e.cpu.gpr[5]=b;e.cpu.gpr[6]=c;e.cpu.gpr[7]=d;e.cpu.gpr[31]=0xb004;
     check(e.call(fn,0xb004),"import blocked");return e.cpu.gpr[2];
 }
-std::vector<uint32_t> bits;unsigned signals=0;
+std::vector<uint32_t> bits;unsigned signals=0,overrunAt=0;
 void start(Env &e){
     const auto caller=e.cpu.gpr[31];
     call(e,kHandler,1,0xb010,0x42);
@@ -31,12 +31,13 @@ void handler(Env &e){
     ++signals;
     const uint32_t refill=kRing+(second?0:kRingBytes/2);
     for(uint32_t i=0;i<kRingBytes/2;i+=2)e.w16(refill+i,uint16_t(signals*2000));
+    if(signals==overrunAt)e.tick(kHalfSamples*kCycles+100);
     e.cpu.gpr[2]=0;e.cpu.pc=caller;
 }
 const Entry entries[]={{0xb000,start},{0xb010,handler}};
 const Registration registration("ring",0xb10c,0xb000,0x1000,entries,2);
-void run(bool ready){
-    bits.clear();signals=0;
+void run(bool ready,unsigned overrun=0){
+    bits.clear();signals=0;overrunAt=overrun;
     bozo::libs::Libraries libraries;CompiledLibraries host{libraries,0x10000};
     if(ready)host.useReadyAudioCompletions();
     host.addImage({"ring",0xb10c,0xb000,0xb000,0,std::vector<uint8_t>(0x1000),
@@ -59,5 +60,6 @@ void run(bool ready){
 }
 int main(){try{
     run(true);run(false);
-    std::puts("native block ring: one signal per half, status in turn, refills played in order passed");return 0;
+    run(true,2);run(false,2);
+    std::puts("native block ring: one signal per half, status in turn, refills played in order, also after a task charged past a half: passed");return 0;
 }catch(const std::exception &e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
