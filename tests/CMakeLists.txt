@@ -158,6 +158,13 @@ endif()
 add_test(NAME symbol_map_host COMMAND bozo-symbol-map-host-tests)
 set_tests_properties(symbol_map_host PROPERTIES TIMEOUT 10)
 
+add_executable(bozo-mipmap-tests render/mipmap_tests.cpp)
+target_link_libraries(bozo-mipmap-tests PRIVATE bozo_render)
+if(MINGW)
+  target_link_options(bozo-mipmap-tests PRIVATE -static)
+endif()
+add_test(NAME render_mipmap COMMAND bozo-mipmap-tests)
+
 if(BOZO_APP)
   add_executable(bozo-render-target-tests render/render_targets_tests.cpp)
   target_link_libraries(bozo-render-target-tests PRIVATE bozo_render SDL3::SDL3-static)

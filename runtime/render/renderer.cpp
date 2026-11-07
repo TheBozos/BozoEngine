@@ -37,6 +37,8 @@ namespace bozo::render
                 known.texture = texture;
                 known.hash = hash::xxh64(texture->rgba.data(), texture->rgba.size() * sizeof(uint32_t),
                                          hash::xxh64(size, sizeof(size), 0));
+                for (const std::vector<uint32_t> &level : texture->levels)
+                    known.hash = hash::xxh64(level.data(), level.size() * sizeof(uint32_t), known.hash);
                 if (s_known.size() > 65536u) // a long run: start again rather than grow
                 {
                     const uint64_t h = known.hash;
@@ -63,6 +65,22 @@ namespace bozo::render
         if (a == 0u && b == 2u && d == 1u)
             return c == 1u ? Material::Blend::AdditiveByDestination : Material::Blend::Additive;
         return Material::Blend::Alpha;
+    }
+
+    Material::Mipmap mipmapOf(uint64_t tex1)
+    {
+        Material::Mipmap mip;
+        const uint32_t mmin = (tex1 >> 6) & 7u;
+        if (mmin < 2u || mmin > 5u)
+            return mip;
+        mip.levels = static_cast<uint8_t>(std::min<uint64_t>((tex1 >> 2) & 7u, 6u));
+        mip.linearTexel = mmin >= 4u;
+        mip.linearLevels = (mmin & 1u) != 0u;
+        mip.lod = (tex1 & 1u) != 0u ? Material::Mipmap::Lod::Fixed : Material::Mipmap::Lod::FromQ;
+        mip.shift = static_cast<uint8_t>((tex1 >> 19) & 3u);
+        const int32_t k = static_cast<int32_t>(static_cast<uint32_t>(tex1 >> 32) << 20) >> 20;
+        mip.bias = static_cast<float>(k) / 16.0f;
+        return mip;
     }
 
     Renderer::Renderer() = default;
@@ -152,6 +170,14 @@ namespace bozo::render
             {
                 const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9;
                 h = hash::xxh64(&stencil, sizeof(stencil), h);
+            }
+            if (m.mipmap.levels != 0u)
+            {
+                uint32_t bias = 0;
+                std::memcpy(&bias, &m.mipmap.bias, sizeof(bias));
+                const uint64_t mip = uint64_t(m.mipmap.levels) | uint64_t(m.mipmap.linearTexel) << 8 | uint64_t(m.mipmap.linearLevels) << 9 |
+                                     uint64_t(m.mipmap.lod) << 16 | uint64_t(m.mipmap.shift) << 24 | uint64_t(bias) << 32;
+                h = hash::xxh64(&mip, sizeof(mip), h);
             }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);

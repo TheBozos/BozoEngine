@@ -321,6 +321,72 @@ int main()
         }
     }
 
+    // Mip levels: the texture's own (level 0 red, 1 green, 2 blue), or made from level 0 (half red, half blue: 2 is purple).
+    {
+        auto own = std::make_shared<Texture>();
+        own->width = own->height = 4;
+        own->rgba.assign(16, 0x800000FFu);
+        own->levels = {std::vector<uint32_t>(4, 0x8000FF00u), std::vector<uint32_t>(1, 0x80FF0000u)};
+        own->key = 0x3170u;
+        auto made = std::make_shared<Texture>();
+        made->width = made->height = 4;
+        for (int i = 0; i < 16; ++i)
+            made->rgba.push_back((i & 3) < 2 ? 0x800000FFu : 0x80FF0000u);
+        made->key = 0x3171u;
+        Material m;
+        m.depthTest = m.depthWrite = false;
+        m.blend = Material::Blend::Opaque;
+        const auto mipQuad = [&](const Material &material, const std::shared_ptr<const Texture> &texture, float q = 1.0f)
+        {
+            Vertex v[6];
+            const float xy[6][2] = {{0, 0}, {16, 0}, {0, 16}, {16, 0}, {16, 16}, {0, 16}};
+            for (int i = 0; i < 6; ++i)
+            {
+                v[i].x = xy[i][0];
+                v[i].y = xy[i][1];
+                v[i].z = 1;
+                v[i].u = xy[i][0] / 16;
+                v[i].v = xy[i][1] / 16;
+                v[i].q = q;
+                v[i].rgba = 0x80808080;
+            }
+            renderer.beginFrame(screen);
+            renderer.draw(material, identity, v, 6, texture);
+            present();
+        };
+        mipQuad(m, own);
+        pixel("mipmap off: level 0", 16, {255, 0, 0});
+        Material fixed = m;
+        fixed.mipmap.levels = 2;
+        fixed.mipmap.linearTexel = false;
+        fixed.mipmap.lod = Material::Mipmap::Lod::Fixed;
+        fixed.mipmap.bias = 1.0f;
+        mipQuad(fixed, own);
+        pixel("fixed LOD 1: the texture's level 1", 16, {0, 255, 0});
+        fixed.mipmap.bias = 2.0f;
+        mipQuad(fixed, own);
+        pixel("fixed LOD 2: the texture's level 2", 16, {0, 0, 255});
+        fixed.mipmap.levels = 1;
+        mipQuad(fixed, own);
+        pixel("LOD past MXL: the last level allowed", 16, {0, 255, 0});
+        Material fromQ = m;
+        fromQ.useQ = true;
+        fromQ.mipmap = mipmapOf((1ull << 2 | 1ull << 3) | (2ull << 6) | (uint64_t(0x1000 - 16) << 32));
+        mipQuad(fromQ, own, 0.25f);
+        pixel("Q 1/4, K -1: LOD 1", 16, {0, 255, 0});
+        mipQuad(fromQ, own, 1.0f);
+        pixel("Q 1, K -1: level 0", 16, {255, 0, 0});
+        Material screenLod = m;
+        screenLod.mipmap.levels = 2;
+        screenLod.mipmap.bias = 8.0f;
+        mipQuad(screenLod, own);
+        pixel("screen LOD with a large bias: the coarsest level", 16, {0, 0, 255});
+        fixed.mipmap.levels = 2;
+        fixed.mipmap.bias = 2.0f;
+        mipQuad(fixed, made);
+        pixel("levels made at upload: level 2 the average", 16, {128, 0, 128});
+    }
+
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);

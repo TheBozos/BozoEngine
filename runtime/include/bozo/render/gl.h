@@ -38,7 +38,8 @@ namespace bozo::render::gl
     constexpr GLenum kUnsignedByte = 0x1401, kUnsignedInt = 0x1405, kFloat = 0x1406;
     constexpr GLenum kZero = 0, kOne = 1, kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303;
     constexpr GLenum kDstAlpha = 0x0304;
-    constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501;
+    constexpr GLenum kNearestMipmapNearest = 0x2700, kLinearMipmapNearest = 0x2701, kNearestMipmapLinear = 0x2702;
+    constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501, kTextureMaxLevel = 0x813D;
     constexpr GLenum kFuncAdd = 0x8006, kFuncSubtract = 0x800A, kFuncReverseSubtract = 0x800B;
     constexpr GLenum kConstantAlpha = 0x8003, kOneMinusConstantAlpha = 0x8004, kOneMinusDstAlpha = 0x0305;
     constexpr GLenum kLess = 0x0201, kNotEqual = 0x0205, kAlways = 0x0207;
