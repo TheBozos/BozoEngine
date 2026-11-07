@@ -387,6 +387,31 @@ int main()
         pixel("levels made at upload: level 2 the average", 16, {128, 0, 128});
     }
 
+    // A native depth mask writes independently of testing. The far half must
+    // overwrite a previous near clear; the tested draw must then keep its usual
+    // comparison. Cover the main and auxiliary targets and an inverted reuse.
+    auto writeOnly = plain;
+    writeOnly.depthWrite = true;
+    for (uint8_t targetId : {uint8_t(0), uint8_t(2)})
+        for (int inverted = 0; inverted < 2; ++inverted)
+        {
+            renderer.beginFrame(depthScreen);
+            auto clearMask = writeOnly;
+            clearMask.target = targetId;
+            quad(clearMask, 0x80000080, 0, 16, 1000);
+            quad(clearMask, 0x80800000, inverted ? 8 : 0, inverted ? 16 : 8, 0);
+            auto tested = depthMaterial;
+            tested.target = targetId;
+            quad(tested, 0x80008000, 0, 16, 0);
+            if (targetId)
+            {
+                copy.source = targetId;
+                quad(copy, 0x80808080);
+            }
+            present();
+            pixel("unconditional far write opens only the mask", inverted ? 8 : 24, {0,255,0});
+            pixel("tested draw preserves the near clear outside mask", inverted ? 24 : 8, {255,0,0});
+        }
     // An ordered native full-frame colour correction, sampling the current
     // frame. Different channels cover high clamp, low clamp and saturation.
     renderer.beginFrame(screen);
