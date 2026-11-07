@@ -183,6 +183,22 @@ Use `Renderer::setTargetSize` for independent target sizes and `setTargetSharesD
 
 `bozo-render-target-tests` creates a hidden SDL/OpenGL context and checks pixels for orientation, independent target size, current-frame copy, history stability and blend arithmetic. It is included in CTest only with `BOZO_APP=ON` and requires a working GL 3.3 driver. Other tests are headless and use synthetic fixtures, with no game data.
 
+## Native colour levels
+
+`Material::levels.enabled` applies per-channel
+`clamp(gain * max(0, min(RGB, high) - low), 0, 1)` after texturing/fog and before
+blending. It preserves alpha. Gains must be finite and nonnegative; both thresholds
+must be finite in `[0,1]`. The parameters are copied with the ordinary frame batch,
+so a full-screen `fromFrame` draw can correct the image at its exact submission
+position without exposing GPU state or interpreting a console packet. Later draws
+are unaffected. Overlay submission rejects the operation; use a frame draw.
+
+Disabled levels preserve existing draw digests. Enabled digests include all nine
+parameters. `native_colour_levels` checks admission, immutable publication and
+digest sensitivity without a GPU; `native_render_targets` additionally checks
+clamping, subtraction, gain, alpha preservation and uniform reset in a hidden
+OpenGL context. No game data or host input is used.
+
 ## Provenance
 
 The static translator and register-value ABI helpers were moved from the team's independently authored work after a per-line authorship audit (Thomas Martin / boubou666 and Arzaroth). The engine host services and offline relocator were written for BozoEngine. No PS2Recomp CPU, kernel, device or runtime backend was imported. `tools/bench_lock.sh` is also team-authored and preserves the shared local benchmark-lock protocol for ports using either toolchain.

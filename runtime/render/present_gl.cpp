@@ -162,6 +162,10 @@ uniform float uAlphaRef;
 uniform int uOpaque;
 uniform int uFog;
 uniform vec3 uFogColour;
+uniform int uLevels;
+uniform vec3 uLevelGain;
+uniform vec3 uLevelHigh;
+uniform vec3 uLevelLow;
 uniform int uTextureFunction;
 uniform int uTextureAlpha;
 out vec4 fragColor;
@@ -200,6 +204,8 @@ void main()
     }
     if (uFog != 0)
         fragColor.rgb = mix(uFogColour, fragColor.rgb, clamp(uUseQ != 0 ? vFogScreen : vFog, 0.0, 1.0));
+    if (uLevels != 0)
+        fragColor.rgb = clamp(uLevelGain * max(vec3(0.0), min(fragColor.rgb, uLevelHigh) - uLevelLow), 0.0, 1.0);
     if (uOpaque != 0)
         fragColor.a = 1.0;
 }
@@ -321,6 +327,7 @@ void main()
         gl::GLuint shader = 0;
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
                   locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
+                  locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
                   locLodMode = -1, locLodScale = -1, locLodBias = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
@@ -509,6 +516,10 @@ void main()
             locOpaque = g.GetUniformLocation(shader, "uOpaque");
             locFog = g.GetUniformLocation(shader, "uFog");
             locFogColour = g.GetUniformLocation(shader, "uFogColour");
+            locLevels = g.GetUniformLocation(shader, "uLevels");
+            locLevelGain = g.GetUniformLocation(shader, "uLevelGain");
+            locLevelHigh = g.GetUniformLocation(shader, "uLevelHigh");
+            locLevelLow = g.GetUniformLocation(shader, "uLevelLow");
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locLodMode = g.GetUniformLocation(shader, "uLodMode");
@@ -1547,6 +1558,10 @@ void main()
             g.Uniform1i(gpu.locTextureAlpha, m.textureAlpha ? 1 : 0);
             g.Uniform1i(gpu.locLodMode, 0);
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
+            g.Uniform1i(gpu.locLevels, m.levels.enabled);
+            g.Uniform3fv(gpu.locLevelGain, 1, m.levels.gain);
+            g.Uniform3fv(gpu.locLevelHigh, 1, m.levels.high);
+            g.Uniform3fv(gpu.locLevelLow, 1, m.levels.low);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
             if (m.fromFrame) {

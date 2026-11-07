@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 
 namespace bozo::render
 {
@@ -180,6 +181,14 @@ namespace bozo::render
                 h = hash::xxh64(&mip, sizeof(mip), h);
             }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
+            if (m.levels.enabled)
+            {
+                const uint64_t tag = 0x434f4c4f55524c56ull;
+                h = hash::xxh64(&tag, sizeof(tag), h);
+                h = hash::xxh64(m.levels.gain, sizeof(m.levels.gain), h);
+                h = hash::xxh64(m.levels.high, sizeof(m.levels.high), h);
+                h = hash::xxh64(m.levels.low, sizeof(m.levels.low), h);
+            }
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())
                 h = hash::xxh64(frame.vertices.data() + batch.first, batch.count * sizeof(Vertex), h);
@@ -225,6 +234,12 @@ namespace bozo::render
     {
         if (count == 0u)
             return;
+        if (material.levels.enabled)
+            for (unsigned c = 0; c < 3; ++c)
+                if (!std::isfinite(material.levels.gain[c]) || material.levels.gain[c] < 0 ||
+                    !std::isfinite(material.levels.high[c]) || material.levels.high[c] < 0 || material.levels.high[c] > 1 ||
+                    !std::isfinite(material.levels.low[c]) || material.levels.low[c] < 0 || material.levels.low[c] > 1)
+                    throw std::invalid_argument("native colour levels require finite nonnegative gain and normalized thresholds");
         Batch batch;
         batch.material = material;
         std::memcpy(batch.matrix, matrix, sizeof(batch.matrix));
@@ -266,6 +281,8 @@ namespace bozo::render
 
     void Renderer::drawOverlay(const Material &material, const Vertex *vertices, uint32_t count, std::shared_ptr<const Texture> texture)
     {
+        if (material.levels.enabled)
+            throw std::invalid_argument("native colour levels require a frame draw");
         if (count == 0u || m_overlayBuilding.vertices.size() > (1u << 20))
             return; // (never published: a port that does not publish keeps the latest million vertices' worth out)
         Batch batch;
