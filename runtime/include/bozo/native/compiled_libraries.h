@@ -44,6 +44,10 @@ namespace bozo::native::irx
         // Map linked frame listeners to actual native game-frame completions.
         // Opt in before execution; no display interrupt or frame period is generated.
         void useNativeFrameCallbacks();
+        // Opt-in file I/O for compiled SDK disc callers. Reads copy actual ISO
+        // bytes synchronously; sync queries owned work, and callbacks are native
+        // notifications after the copy. No drive clock, registers or interrupts.
+        void useNativeDiscFiles();
         void notifyFrameCompleted();
         // Submit a copied user message to a registered linked native command handler.
         // No system command, transport packet processor or interrupt is executed.

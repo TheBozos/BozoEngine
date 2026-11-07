@@ -2,6 +2,31 @@
 
 `tools/native_irx` and `bozo/native/compiled_libraries.h` let a port retain a disc library's game-independent arithmetic and sequencing as compiled C++ while replacing its SDK calls with native services. No firmware, interpreter, instruction dispatcher, dynamic compiler or device backend is supplied.
 
+## Opt-in native disc files
+
+`CompiledLibraries::useNativeDiscFiles()` enables a file backend for compiled
+SDK disc callers. Install it before execution. Ordinary 2048-byte reads use the
+same `libs::DiscImage` instance as other native file services, validate the source
+and destination extents, read actual ISO bytes into a temporary buffer, then copy
+the complete result. Reads are synchronous host file operations: `sceCdSync`
+queries the actual owned request set, which is empty after the copy returns.
+There is no drive clock, seek/sector delay, display wait, hardware bank or IRQ.
+The EE `CdState` drive-time fields are neither read nor modified by this policy.
+
+Supported `cdvdman` imports are read (6), error (8), sync (11) and callback (37),
+using the [official SDK ordinal table](https://github.com/ps2dev/ps2sdk/blob/master/iop/cdvd/cdvdman/include/cdvdman.h).
+Zero/oversized requests, non-data sector formats and invalid mapped destinations
+reject. Missing images, host read failures and requests past EOF return failure
+with a read error and preserve the destination. Other imports remain unsupported;
+the default policy still rejects every `cdvdman` import.
+
+An accepted read may enqueue its captured linked callback only after the real
+byte copy. Notifications run at linked-call safe points, obey native callback
+exclusion scopes, and use isolated native call contexts. A callback may issue
+another read without recursive notification delivery. Reset clears request,
+error and callback ownership. `library_disc_files` tests actual synthetic ISO
+bytes, failures, callback ordering/exclusion/reentry, isolation and reset.
+
 ## Offline pipeline
 
 1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.

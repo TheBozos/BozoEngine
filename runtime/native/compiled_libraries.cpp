@@ -10,6 +10,7 @@
 #include <deque>
 #include <format>
 #include <map>
+#include <set>
 #include <stdexcept>
 namespace bozo::native::irx
 {
@@ -102,9 +103,14 @@ namespace bozo::native::irx
             uint32_t function, a0, a1, gp;
             bool readyAudio = false;
             uint32_t ownedBuffer = 0;
+            bool readyDisc = false;
         };
         std::deque<Event> events;
         bool readyAudioCompletions = false, deliveringReadyAudio = false;
+        bool nativeDiscFiles = false, deliveringReadyDisc = false;
+        uint64_t discRequestSerial = 0;
+        std::set<uint64_t> discRequests; // Actual host read/copy invocations only.
+        uint32_t discError = 0, discCallback = 0, discCallbackGp = 0;
         struct FrameListener { Interrupt callback;int32_t priority;uint64_t order; };
         std::map<uint32_t,FrameListener> frameListeners;
         std::deque<std::vector<std::pair<uint32_t,uint64_t>>> completedFrames;
@@ -159,6 +165,21 @@ namespace bozo::native::irx
                 const auto event = *found;
                 events.erase(found); // Remove before invoking reentrant native SDK/game code.
                 if (event.function) invoke(event.function,event.gp,event.a0,event.a1);
+            }
+        }
+        void deliverReadyDisc()
+        {
+            if (!nativeDiscFiles || deliveringReadyDisc || !exclusions.empty()) return;
+            deliveringReadyDisc = true;
+            struct Scope { bool &active; ~Scope(){active=false;} } scope{deliveringReadyDisc};
+            unsigned work = 0;
+            while (true)
+            {
+                const auto found=std::find_if(events.begin(),events.end(),[](const auto &event){return event.readyDisc;});
+                if(found==events.end())return;
+                if(++work>1024)throw std::runtime_error("native disc completion work limit");
+                const auto event=*found;events.erase(found);
+                invoke(event.function,event.gp,event.a0,event.a1);
             }
         }
         void deliverFrames()
@@ -271,6 +292,7 @@ namespace bozo::native::irx
                                             cpu.gpr[4], cpu.gpr[5]));
                         }
                         cpu.pc = cpu.gpr[31];
+                        owner.deliverReadyDisc();
                         if (owner.current && owner.tasks.at(owner.current).waiting)
                             return false;
                     }
@@ -282,6 +304,7 @@ namespace bozo::native::irx
                         ++owner.calls;
                         fn->second(*this);
                         owner.deliverReadyAudio();
+                        owner.deliverReadyDisc();
                     }
                     cpu.gpr[0] = 0;
                     if (expired() || (owner.current &&
@@ -1481,6 +1504,49 @@ namespace bozo::native::irx
                 return;
             }
         }
+        if (lib == "cdvdman" && nativeDiscFiles)
+        {
+            // SDK ordinals: ps2dev/ps2sdk iop/cdvd/cdvdman/include/cdvdman.h.
+            // This is a synchronous native file backend. The request exists
+            // only while actual host I/O and the bounded destination copy run.
+            if(n==11){ret(!discRequests.empty());return;}
+            if(n==8){ret(discError);return;}
+            if(n==37)
+            {
+                const bool admitted=std::any_of(images.begin(),images.end(),[&](const auto &image){
+                    return a0>=image.base && uint64_t(a0)<uint64_t(image.base)+image.bytes.size();
+                });
+                if(a0 && (!admitted || !functions.contains(a0) || imports.contains(a0)))
+                    throw std::runtime_error("native disc callback requires an admitted linked function");
+                const auto old=discCallback;discCallback=a0;discCallbackGp=a0?gpAt(a0):0;
+                ret(old);return;
+            }
+            if(n==6)
+            {
+                if(!a1 || a1>memory.size()/libs::kSectorBytes)
+                    throw std::runtime_error("native disc read count outside buffer bounds");
+                const uint32_t bytes=a1*libs::kSectorBytes;
+                const auto destination=physical(a2,bytes),mode=physical(a3,3);
+                // Only ordinary 2048-byte ISO data sectors are qualified.
+                if(memory[mode+2]!=0)throw std::runtime_error("unported native disc sector format");
+                if(discCallback && events.size()>=1024)throw std::runtime_error("native disc notification queue limit");
+                const auto request=++discRequestSerial;discRequests.insert(request);
+                struct Scope {std::set<uint64_t> &requests;uint64_t id;~Scope(){requests.erase(id);}} scope{discRequests,request};
+                auto &disc=libraries.cd.disc;std::string error;
+                if((!disc.isOpen() && !disc.open(libraries.cd.imagePath,error)) ||
+                   uint64_t(a0)+a1>disc.sectors())
+                {discError=0x30;ret(0);return;}
+                std::vector<uint8_t> data(bytes);
+                if(!disc.read(a0,a1,data.data())){discError=0x30;ret(0);return;}
+                std::copy(data.begin(),data.end(),memory.begin()+destination);discError=0;
+                if(discCallback)
+                {
+                    Event completion{cycle,discCallback,1,0,discCallbackGp};completion.readyDisc=true;
+                    events.push_back(completion);
+                }
+                ret(1);return;
+            }
+        }
         if (lib == "ioman")
         {
             auto &cd = libraries.cd;
@@ -1653,6 +1719,13 @@ namespace bozo::native::irx
             throw std::runtime_error("native frame policy must be installed before execution");
         p.nativeFrameCallbacks = true;
     }
+    void CompiledLibraries::useNativeDiscFiles()
+    {
+        auto &p=*impl_;
+        if(!p.started.empty() || p.invokeDepth || !p.tasks.empty() || p.calls)
+            throw std::runtime_error("native disc file policy must be installed before execution");
+        p.nativeDiscFiles=true;
+    }
     void CompiledLibraries::notifyFrameCompleted()
     {
         auto &p = *impl_;
@@ -1695,6 +1768,7 @@ namespace bozo::native::irx
         p.frameListeners.clear();p.completedFrames.clear();p.frameListenerSerial=0;p.deliveringFrames=false;
         p.commandBuffer=0;p.commandCapacity=0;p.commandSerial=0;p.commandHandlers.clear();
         p.deliveringReadyAudio = false;
+        p.discRequests.clear();p.discRequestSerial=0;p.discError=0;p.discCallback=0;p.discCallbackGp=0;p.deliveringReadyDisc=false;
         p.interrupts.clear();
         p.timers.clear();
         p.semas.clear();
