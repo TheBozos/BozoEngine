@@ -189,6 +189,37 @@ int main()
     present();
     pixel("GS blend (Cs - Cd) * As + Cd", 8, {192, 192, 192});
 
+    // TEX0.TFX and TCC, on the frame so far as the texture: 128 on the target, Cf 0x40 (0.5), Af 0x20.
+    const auto sampled = [&flat](Material::TextureFunction function, bool textureAlpha = true)
+    {
+        Material m = flat;
+        m.textured = true;
+        m.fromFrame = 1u;
+        m.nearest = true;
+        m.textureFunction = function;
+        m.textureAlpha = textureAlpha;
+        return m;
+    };
+    const auto function = [&](const char *name, Material m, uint32_t colour, std::array<int, 3> expected)
+    {
+        renderer.beginFrame(screen);
+        quad(flat, 0x80404040);
+        quad(m, colour);
+        present();
+        pixel(name, 8, expected);
+    };
+    function("TFX modulate", sampled(Material::TextureFunction::Modulate), 0x20404040, {64, 64, 64});
+    function("TFX decal", sampled(Material::TextureFunction::Decal), 0x20404040, {128, 128, 128});
+    function("TFX highlight", sampled(Material::TextureFunction::Highlight), 0x20404040, {96, 96, 96});
+    function("TFX highlight2, per channel", sampled(Material::TextureFunction::Highlight2), 0x20802040, {96, 64, 160});
+    {
+        Material m = sampled(Material::TextureFunction::Highlight2, false);
+        m.blend = Material::Blend::Alpha;
+        m.gsBlend = true;
+        m.blendA = 0, m.blendB = 1, m.blendC = 0, m.blendD = 1;
+        function("TCC off: the vertex's alpha blends", m, 0x20808080, {128 + 8, 128 + 8, 128 + 8});
+    }
+
     // FBMSK for the channels: only green written.
     renderer.beginFrame(screen);
     quad(flat, 0x80000000);
