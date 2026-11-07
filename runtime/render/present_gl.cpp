@@ -1509,11 +1509,13 @@ void main()
             }
             g.DepthMask(m.depthWrite ? gl::kTrue : gl::kFalse);
             // The GS's depth test is GEQUAL (larger nearer): here LEQUAL on 1 - z, so what lies at the far end (a sky at
-            // Z 0, a clear) passes against the cleared depth as on the GS; a draw without ZTE is not tested.
-            if (m.depthTest)
+            // Z 0, a clear) passes against the cleared depth. OpenGL disables
+            // writes as well when the test is disabled, so an independent
+            // depthWrite request needs an enabled, unconditional test.
+            if (m.depthTest || m.depthWrite)
             {
                 g.Enable(gl::kDepthTest);
-                g.DepthFunc(m.depthGreater ? gl::kLess : gl::kLequal);
+                g.DepthFunc(m.depthTest ? (m.depthGreater ? gl::kLess : gl::kLequal) : gl::kAlways);
             }
             else
                 g.Disable(gl::kDepthTest);

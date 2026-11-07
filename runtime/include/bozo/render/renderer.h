@@ -56,7 +56,7 @@ namespace bozo::render
         uint8_t alphaRef = 0; // texels at or below are discarded when alphaTest
         bool alphaTest = false;
         bool depthTest = true; // GS depth: larger is nearer (GEQUAL)
-        bool depthWrite = true;
+        bool depthWrite = true; // independent of depthTest; no test means an unconditional write
         bool clampU = false, clampV = false; // CLAMP's WMS / WMT: the texture's edge past 0..1 (else it repeats)
         uint64_t region = 0;                 // CLAMP, for a REGION_REPEAT window
         bool fog = false;                    // PRIM.FGE: the colour goes toward fogColour by 1 - Vertex::fog
