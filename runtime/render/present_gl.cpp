@@ -67,6 +67,7 @@ out vec4 vCol;
 out float vFog;
 noperspective out vec4 vColScreen;
 noperspective out float vFogScreen;
+noperspective out float vQ;
 void main()
 {
     vec4 c = uM[0] * aPos.x + uM[1] * aPos.y + uM[2] * aPos.z + uM[3];
@@ -83,6 +84,7 @@ void main()
     vFog = aFog;
     vColScreen = aCol;
     vFogScreen = aFog;
+    vQ = uUseQ != 0 && aQ > 0.0 ? aQ : 1.0 / c.w;
 }
 )";
 
@@ -146,8 +148,12 @@ in vec4 vCol;
 in float vFog;
 noperspective in vec4 vColScreen;
 noperspective in float vFogScreen;
+noperspective in float vQ;
 uniform int uUseQ;
 uniform sampler2D uTex;
+uniform int uLodMode;
+uniform float uLodScale;
+uniform float uLodBias;
 uniform int uTextured;
 uniform int uTarget;
 uniform int uAlphaTest;
@@ -159,11 +165,18 @@ uniform vec3 uFogColour;
 uniform int uTextureFunction;
 uniform int uTextureAlpha;
 out vec4 fragColor;
+vec4 sampled()
+{
+    if (uLodMode == 0)
+        return texture(uTex, vUv);
+    float lod = uLodMode == 1 ? -log2(max(abs(vQ), 1e-30)) * uLodScale + uLodBias : uLodBias;
+    return textureLod(uTex, vUv, lod);
+}
 void main()
 {
     vec4 vertex = uUseQ != 0 ? vColScreen : vCol;
     vec4 colour = vertex * (255.0 / 128.0);
-    vec4 texel = uTextured != 0 ? texture(uTex, vUv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
+    vec4 texel = uTextured != 0 ? sampled() * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
@@ -307,7 +320,8 @@ void main()
     {
         gl::GLuint shader = 0;
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
-                  locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1;
+                  locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
+                  locLodMode = -1, locLodScale = -1, locLodBias = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
@@ -350,6 +364,8 @@ void main()
         {
             gl::GLuint id = 0;
             std::shared_ptr<const Texture> source; // held, so its address is not reused while compared
+            int levels = 0;          // mip levels past 0 on the GPU
+            bool generated = false;  // made from level 0 (the texture had none)
         };
         std::unordered_map<uint64_t, GpuTexture> textures;
         // The overlay's textures, their alpha from the GS's (0x80 is 1.0) to 255. By the texture's key when it has one
@@ -422,8 +438,54 @@ void main()
                     gl::api().DeleteTextures(1, &slot.id);
                 slot.id = makeTexture(source->rgba.data(), static_cast<int>(source->width), static_cast<int>(source->height), gl::kRepeat);
                 slot.source = source;
+                slot.levels = 0;
+                slot.generated = false;
+                const gl::Api &g = gl::api();
+                for (const std::vector<uint32_t> &level : source->levels)
+                {
+                    const int n = slot.levels + 1;
+                    const int width = std::max(1, static_cast<int>(source->width >> n)), height = std::max(1, static_cast<int>(source->height >> n));
+                    if (level.size() < static_cast<size_t>(width) * static_cast<size_t>(height))
+                        break;
+                    g.TexImage2D(gl::kTexture2D, n, static_cast<gl::GLint>(gl::kRgba8), width, height, 0, gl::kRgba, gl::kUnsignedByte, level.data());
+                    slot.levels = n;
+                    if (width == 1 && height == 1)
+                        break;
+                }
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, slot.levels);
             }
             return slot.id;
+        }
+
+        // The texture bound, its mip levels and filters as the material samples them: the uniforms that choose the level.
+        void sampleLevels(uint64_t key, const Material &m)
+        {
+            const gl::Api &g = gl::api();
+            const Material::Mipmap &mip = m.mipmap;
+            GpuTexture &slot = textures[key];
+            if (mip.levels == 0u)
+            {
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, m.nearest ? gl::kNearest : gl::kLinear);
+                g.Uniform1i(locLodMode, 0);
+                return;
+            }
+            if (slot.levels == 0 && !slot.generated && slot.source && slot.source->levels.empty())
+            {
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, 1000);
+                g.GenerateMipmap(gl::kTexture2D);
+                uint32_t size = std::max(slot.source->width, slot.source->height);
+                while (size > 1u)
+                    size >>= 1, ++slot.levels;
+                slot.generated = true;
+            }
+            g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, std::min<int>(mip.levels, slot.levels));
+            static constexpr gl::GLenum kFilters[2][2] = {{gl::kNearestMipmapNearest, gl::kNearestMipmapLinear},
+                                                         {gl::kLinearMipmapNearest, gl::kLinearMipmapLinear}};
+            g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, kFilters[mip.linearTexel][mip.linearLevels]);
+            g.TexParameterf(gl::kTexture2D, gl::kTextureLodBias, mip.lod == Material::Mipmap::Lod::Screen ? mip.bias : 0.0f);
+            g.Uniform1i(locLodMode, static_cast<int>(mip.lod));
+            g.Uniform1f(locLodScale, static_cast<float>(1u << mip.shift));
+            g.Uniform1f(locLodBias, mip.bias);
         }
 
         bool init()
@@ -449,6 +511,9 @@ void main()
             locFogColour = g.GetUniformLocation(shader, "uFogColour");
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
+            locLodMode = g.GetUniformLocation(shader, "uLodMode");
+            locLodScale = g.GetUniformLocation(shader, "uLodScale");
+            locLodBias = g.GetUniformLocation(shader, "uLodBias");
             locViewport = g.GetUniformLocation(flatShader, "uViewport");
             locFlatTex = g.GetUniformLocation(flatShader, "uTex");
             g.GenVertexArrays(1, &vao);
@@ -1480,6 +1545,7 @@ void main()
             g.Uniform1i(gpu.locFog, fog);
             g.Uniform1i(gpu.locTextureFunction, static_cast<int>(m.textureFunction));
             g.Uniform1i(gpu.locTextureAlpha, m.textureAlpha ? 1 : 0);
+            g.Uniform1i(gpu.locLodMode, 0);
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
@@ -1561,9 +1627,10 @@ void main()
                 g.Uniform1i(gpu.locTarget, 0);
                 if (textured)
                 {
-                    const gl::GLuint id = gpu.texture(m.tex0 ^ (m.texa * 0x9e3779b97f4a7c15ull) ^ (m.region * 0xc2b2ae3d27d4eb4full), texture);
+                    const uint64_t key = m.tex0 ^ (m.texa * 0x9e3779b97f4a7c15ull) ^ (m.region * 0xc2b2ae3d27d4eb4full);
+                    const gl::GLuint id = gpu.texture(key, texture);
                     g.BindTexture(gl::kTexture2D, id);
-                    g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,m.nearest ? gl::kNearest : gl::kLinear);
+                    gpu.sampleLevels(key, m);
                     g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,m.nearest ? gl::kNearest : gl::kLinear);
                     g.TexParameteri(gl::kTexture2D, gl::kTextureWrapS, static_cast<gl::GLint>(m.clampU ? gl::kClampToEdge : gl::kRepeat));
                     g.TexParameteri(gl::kTexture2D, gl::kTextureWrapT, static_cast<gl::GLint>(m.clampV ? gl::kClampToEdge : gl::kRepeat));

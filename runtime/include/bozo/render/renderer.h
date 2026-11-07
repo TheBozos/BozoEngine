@@ -83,6 +83,24 @@ namespace bozo::render
             Highlight2,
         } textureFunction = TextureFunction::Modulate;
         bool textureAlpha = true;
+        // TEX1's mip levels. levels (MXL) 0 samples level 0 only. Otherwise levels 0..levels: Texture::levels when the port
+        // gave them, else made from level 0 at upload. linearTexel filters within a level, linearLevels blends the two nearest
+        // levels (MMIN). The level: Screen from the screen-space footprint plus bias (the PC's way); FromQ the GS's
+        // -log2(|Q|) * 2^shift + bias (LCM 0, K and L), Q being Vertex::q with useQ and 1 / w otherwise; Fixed bias (LCM 1).
+        struct Mipmap
+        {
+            uint8_t levels = 0;
+            bool linearTexel = true;
+            bool linearLevels = false;
+            enum class Lod : uint8_t
+            {
+                Screen,
+                FromQ,
+                Fixed,
+            } lod = Lod::Screen;
+            uint8_t shift = 0;
+            float bias = 0.0f;
+        } mipmap;
         // Screen-space vertices with the GS's Q: texture coordinates interpolate in perspective by Vertex::q (u, v as S / Q,
         // T / Q), colour and fog across the screen, as the GS does. Off: the draw's matrix gives the perspective.
         bool useQ = false;
@@ -124,6 +142,9 @@ namespace bozo::render
 
     // The blend of a draw with PRIM.ABE set, from the GS's ALPHA register.
     Material::Blend blendOf(uint64_t alpha);
+
+    // The mip levels of a draw from the GS's TEX1 register (MXL, MMIN, LCM, L, K); MMIN 0 / 1 samples level 0 only.
+    Material::Mipmap mipmapOf(uint64_t tex1);
 
     // PS2 screen space as the game draws to it: the screen point at the window's top-left corner and the size that
     // fills the window (the GS XYOFFSET and the frame size).
