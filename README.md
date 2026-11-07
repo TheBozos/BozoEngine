@@ -7,9 +7,8 @@ runtime that answers the game's calls with native PC code. **No PS2 hardware at 
 no DMA controller, no IOP machine backend, no SPU2. What the game draws goes to a native renderer; what it plays goes to a native
 mixer; what it reads, saves and polls comes from native implementations of the libraries it calls.
 
-Status: **Twisted Metal: Black runs on it**, in a window (SDL3, OpenGL 3.3) at 60 fps, with pads for 1 to 4 players
-and sound, from the boot through the menus, matches and the story. Its menus and settings panel are being finished;
-the release moves to BozoEngine once the comparison with the current build is clean. See [docs/PLAN.md](docs/PLAN.md).
+To see which games run on it and how far along they are, go to [RecompWatcher](https://thebozos.github.io/RecompWatcher/).
+The engine's own plan is in [docs/PLAN.md](docs/PLAN.md).
 
 Ports can also statically compile disc libraries into native C++ and bind their SDK imports to reusable host services. This has no interpreter or device fallback; see [native library and port services](docs/native-irx.md).
 
@@ -19,8 +18,8 @@ Ports can also statically compile disc libraries into native C++ and bind their 
   plan).
 - **Native by construction.** There are no emulation layers to route around: the runtime implements Sony's libraries
   at the call the game makes (read the pad, open a file, play a movie), not the chips below them.
-- **Proved against what works.** Every step is checked against recordings of the current build: the same game state,
-  calls, threads and draw lists, frame by frame (boot and a full match, 74 million recorded calls, 0 differences).
+- **Proved against what works.** Every step is checked against recordings of a working build: the same game state,
+  calls, threads and draw lists, frame by frame.
 
 ## Layout
 
