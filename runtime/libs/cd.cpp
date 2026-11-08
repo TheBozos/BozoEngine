@@ -1,6 +1,6 @@
 // libcdvd (libraries.md section 8): the disc image's sectors, the stream, the drive's time. What TMB calls: sceCdInit,
 // sceCdMmode, sceCdDiskReady, sceFsReset, sceCdReadClock, sceCdRead, sceCdSync, sceCdGetError, sceCdStInit,
-// sceCdStStart, sceCdStRead, sceCdStStop.
+// sceCdStStart, sceCdStRead, sceCdStStop; sceCdBreak cancels a sector read.
 #include "bozo/libs/libraries.h"
 
 #include "bozo/ee/dispatcher.h"
@@ -231,6 +231,17 @@ namespace bozo::libs
         // sceCdGetError(): the last read's error (0: none).
         void getError(Libraries &l, Guest &g) { g.ret(l.cd.error); }
 
+        // sceCdBreak(): accept the abort and finish the outstanding sector-read
+        // timing. read() has already copied its bytes, so cancellation does not
+        // roll back RAM. The next read establishes a fresh error/completion.
+        // libcdvd reports SCECdErABRT (1), including a break while idle.
+        void breakRead(Libraries &l, Guest &g)
+        {
+            l.cd.readEnd = 0;
+            l.cd.error = 1;
+            g.ret(1);
+        }
+
         // sceCdStInit(ring sectors, banks, IOP buffer): 1.
         void stInit(Libraries &l, Guest &g)
         {
@@ -384,6 +395,7 @@ namespace bozo::libs
         out.push_back({"sceCdReadClock", kCd, readClock});
         out.push_back({"sceCdRead", kCd, read, false, true});
         out.push_back({"sceCdSync", kCd, sync, false, true});
+        out.push_back({"sceCdBreak", kCd, breakRead});
         out.push_back({"sceCdGetError", kCd, getError});
         out.push_back({"sceCdStInit", kCd, stInit});
         out.push_back({"sceCdStStart", kCd, stStart});

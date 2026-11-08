@@ -300,7 +300,7 @@ the card's error codes on the paths TMB tries.
 
 ## 8. The CD and file access (`cd`)
 
-Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`,
+Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdSync`, `sceCdBreak`,
 `sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
 Sectors come from the game's disc image (`DiscImage`: an ISO 9660 image of 2048-byte sectors, checked by its primary
@@ -321,6 +321,7 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | `sceCdRead(lbn, sectors, buffer, mode)` | 1; the sectors are in the buffer when it returns (the reference's too: its runs hold them); it takes `sectors` x 114,400 EE cycles (every read of the logs) |
 | `sceCdSync(0)` | waits for the read to end: when it waits, a vblank wait (reason 4, its result 0, no completion) until the vblank the drive is done by; then 0 |
 | `sceCdSync(1)` | 1 while a read is in progress, else 0 |
+| `sceCdBreak()` | 1; cancels the sector-read completion timer, so subsequent sync is idle, and sets `SCECdErABRT` (1). Already copied bytes remain in RAM; the next `sceCdRead` replaces the error and completion time. |
 | `sceCdGetError()` | the last read's error: 0 |
 | `sceCdStInit(sectors, banks, buffer)` | 1; the ring's size (TMB: 0x50 sectors in 5 banks) |
 | `sceCdStStart(lbn, mode)`, `sceCdStStop()` | 1; the stream starts at `lbn` / stops |
