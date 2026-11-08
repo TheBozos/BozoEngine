@@ -1,9 +1,11 @@
 // BozoEngine's EE kernel. See bozo/ee/kernel.h and docs/specs/kernel.md.
 #include "bozo/ee/kernel.h"
+#include "bozo/runtime.h"
 
 #include <bit>
 
 #include <algorithm>
+#include <sstream>
 #include <stdexcept>
 
 namespace bozo::ee
@@ -126,6 +128,7 @@ namespace bozo::ee
             f.status = kFreshStatus;
             f.last.fill(0);
             f.ran = false;
+            f.parkedStack = 0;
         }
     }
 
@@ -612,9 +615,78 @@ namespace bozo::ee
         queued_.push_back(q);
     }
 
+    void Kernel::parkThreadStack(uint32_t sp)
+    {
+        Thread *on = thread(running_);
+        Thread *owner = on && on->pseudo ? thread(1) : on;
+        if (!on || !owner || on->frames.empty() || !sp || on->top().parkedStack ||
+            sp != on->top().ctx.r[29].uw[0] || !owner->stack || !owner->stackSize ||
+            uint64_t(sp) < owner->stack || uint64_t(sp) > uint64_t(owner->stack) + owner->stackSize)
+            throw std::runtime_error("native work-stack switch requires a live owned stack pointer");
+        const auto offset = GuestMemory::flatOffset(owner->stack, owner->stackSize);
+        if (offset < 0 || uint64_t(offset) + owner->stackSize > kFlatScratchpadOffset)
+            throw std::runtime_error("native work-stack declaration is outside RAM");
+        on->top().parkedStack = sp;
+    }
+
+    void Kernel::resumeThreadStack(uint32_t sp)
+    {
+        Thread *on = thread(running_);
+        if (!on || on->frames.empty() || !sp || on->top().parkedStack != sp)
+            throw std::runtime_error("native work-stack return does not match its parked pointer");
+        on->top().parkedStack = 0;
+    }
+
+    uint32_t Kernel::ownedHandlerStack(const Thread &on) const
+    {
+        const auto main = threads_.find(1);
+        const Thread *owner = on.pseudo ? (main == threads_.end() ? nullptr : main->second.get()) : &on;
+        if (!owner || owner->pseudo || !owner->stack || !owner->stackSize ||
+            uint64_t(owner->stack) + owner->stackSize > 0x100000000ull)
+            throw std::runtime_error("native handler requires a declared thread stack");
+        const uint64_t begin = owner->stack, end = begin + owner->stackSize;
+        const auto offset = GuestMemory::flatOffset(owner->stack, owner->stackSize);
+        if (offset < 0 || uint64_t(offset) + owner->stackSize > kFlatScratchpadOffset)
+            throw std::runtime_error("native handler stack declaration is outside RAM");
+        const auto contains = [&](uint32_t sp) { return sp >= begin && sp <= end; };
+        const auto liveStack = [&](const Thread &thread) -> uint32_t {
+            for (auto it = thread.frames.rbegin(); it != thread.frames.rend(); ++it)
+            {
+                const auto &frame = **it;
+                  const auto sp = frame.parkedStack ? frame.parkedStack : frame.ctx.r[29].uw[0];
+                if (contains(sp))
+                {
+                    if (uint64_t(sp) < begin + kHandlerCallAreaBytes + 16)
+                        throw std::runtime_error("native handler has no owned stack headroom");
+                    return (sp - kHandlerCallAreaBytes) & ~15u;
+                }
+                // Do not fall back above an automatic frame that overflowed.
+                if (frame.sp && contains(frame.sp))
+                    throw std::runtime_error("native handler context left its owned stack");
+            }
+            return 0;
+        };
+        if (const auto sp = liveStack(on))
+            return sp;
+        // The dispatcher finishes an active pseudo-handler before scheduling
+        // ready user threads. Its idle invocation can borrow below the main
+        // thread's parked frame; nested invocations use their live frame above.
+        if (on.pseudo)
+            if (const auto sp = liveStack(*owner))
+                return sp;
+        std::ostringstream message;
+        message << "native handler has no live owned stack frame: thread=" << on.id
+                << " owner=" << owner->id << std::hex << " bounds=" << begin << ".." << end;
+        for (const auto &frame : owner->frames)
+            message << " sp=" << frame->ctx.r[29].uw[0] << " entry-sp=" << frame->sp
+                    << " pc=" << frame->ctx.pc;
+        throw std::runtime_error(message.str());
+    }
+
     Frame &Kernel::stackOn(Thread &on, const QueuedHandler &h)
     {
-        if (on.handlerSlot < 0)
+        const uint32_t nativeStack = !h.sp && ownedHandlerStacks_ ? ownedHandlerStack(on) : 0;
+        if (!ownedHandlerStacks_ && on.handlerSlot < 0)
             on.handlerSlot = handlerSlots_++;
         auto f = std::make_unique<Frame>();
         freshContext(*f);
@@ -623,7 +695,8 @@ namespace bozo::ee
         for (int i = 0; i < 4; ++i)
             f->a[i] = h.a[i];
         f->gp = h.gp;
-        f->sp = h.sp ? h.sp : kHandlerStackTop - static_cast<uint32_t>(on.handlerSlot) * kHandlerStackBytes;
+        f->sp = h.sp ? h.sp : ownedHandlerStacks_ ? nativeStack
+                                                : kHandlerStackTop - static_cast<uint32_t>(on.handlerSlot) * kHandlerStackBytes;
         f->ra = h.ra;
         f->completion = h.completion;
         f->sequence = h.sequence;
@@ -644,8 +717,9 @@ namespace bozo::ee
     Frame &Kernel::stackHandler(Thread &on)
     {
         const QueuedHandler h = queued_.front();
+        Frame &frame = stackOn(on, h);
         queued_.pop_front();
-        return stackOn(on, h);
+        return frame;
     }
 
     Thread &Kernel::pseudoThread()
