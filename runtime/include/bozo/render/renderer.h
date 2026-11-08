@@ -33,7 +33,7 @@ namespace bozo::render
     {
         float x = 0, y = 0, z = 0; // the object's space: the draw's matrix takes it to PS2 screen space
         float u = 0, v = 0;        // texture coordinates, 0..1 across the texture (the GS's S / Q, T / Q)
-        uint32_t rgba = 0;         // lit colour, R in the low byte; 0x80 per channel is 1.0, as the GS modulates
+        uint32_t rgba = 0;         // lit colour, R low byte; 0x80 is neutral modulation (or display RGB with directColour)
         float fog = 1.0f;          // the GS's F / 255: 1 keeps the colour, 0 is all fog colour (Material::fog)
         float q = 1.0f;            // the GS's Q (U / V across the triangle in perspective)
     };
@@ -44,6 +44,10 @@ namespace bozo::render
         uint64_t tex0 = 0; // keys the texture's GPU copy (a port gives each asset its own value)
         uint64_t texa = 0;
         bool textured = true;
+        // Untextured RGB is already in display byte units (0..255), rather
+        // than 0x80-unit modulation. Alpha keeps its 0x80 unit; textured draws
+        // retain modulation. Opt-in so existing native adapters are unchanged.
+        bool directColour = false;
         enum class Blend : uint8_t
         {
             Opaque,                // no blending
@@ -58,6 +62,9 @@ namespace bozo::render
         bool depthTest = true; // GS depth: larger is nearer (GEQUAL)
         bool depthWrite = true; // independent of depthTest; no test means an unconditional write
         bool clampU = false, clampV = false; // CLAMP's WMS / WMT: the texture's edge past 0..1 (else it repeats)
+        // Optional normalized atlas region (min U/V, max U/V). Clamp sampling
+        // after interpolation, preserving interior texel positions. Zero disables.
+        float uvBounds[4] = {};
         uint64_t region = 0;                 // CLAMP, for a REGION_REPEAT window
         bool fog = false;                    // PRIM.FGE: the colour goes toward fogColour by 1 - Vertex::fog
         // The texture is the target being drawn into, as it is when this batch is drawn (a game's screen distortion:

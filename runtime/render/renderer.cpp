@@ -131,6 +131,10 @@ namespace bozo::render
                                            static_cast<uint64_t>(m.context) << 40,
                                        m.fogColour, textureIdentity(batch.texture), batch.count, 0u};
             h = hash::xxh64(words, sizeof(words), h);
+            if (m.uvBounds[2] > m.uvBounds[0] && m.uvBounds[3] > m.uvBounds[1])
+                h = hash::xxh64(m.uvBounds, sizeof(m.uvBounds), h);
+            if (m.directColour)
+                h = hash::xxh64(&m.directColour, sizeof(m.directColour), h);
             if(m.fromFrame || m.target || m.source || m.nearest) {
                 const uint64_t extended=uint64_t(m.fromFrame) | uint64_t(m.target)<<8 | uint64_t(m.source)<<16 |
                     uint64_t(m.nearest)<<24 | uint64_t(m.frameWidth)<<32 | uint64_t(m.frameHeight)<<48;

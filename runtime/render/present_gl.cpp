@@ -61,7 +61,8 @@ uniform vec4 uScreen;
 uniform float uDepthMax;
 uniform vec4 uUvMap;
 out vec2 vUv;
-out vec4 vCol;
+// Vertex colours are screen-space Gouraud values; only ST needs perspective.
+noperspective out vec4 vCol;
 out float vFog;
 void main()
 {
@@ -86,10 +87,12 @@ void main()
         // taken as the GS's 0x80 (1.0).
         const char *kFragmentShader = R"(#version 330
 in vec2 vUv;
-in vec4 vCol;
+noperspective in vec4 vCol;
 in float vFog;
 uniform sampler2D uTex;
 uniform int uTextured;
+uniform int uDirectColour;
+uniform vec4 uUvBounds;
 uniform int uTarget;
 uniform int uAlphaTest;
 uniform float uAlphaRef;
@@ -100,11 +103,16 @@ out vec4 fragColor;
 void main()
 {
     vec4 colour = vCol * (255.0 / 128.0);
-    vec4 texel = uTextured != 0 ? texture(uTex, vUv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
+    if (uTextured == 0 && uDirectColour != 0)
+        colour.rgb = vCol.rgb;
+    vec2 uv = vUv;
+    if (uUvBounds.z > uUvBounds.x && uUvBounds.w > uUvBounds.y)
+        uv = clamp(uv, uUvBounds.xy, uUvBounds.zw);
+    vec4 texel = uTextured != 0 ? texture(uTex, uv) * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
-        texel.a = texture(uTex, vUv).a;
+        texel.a = texture(uTex, uv).a;
     fragColor = clamp(texel * colour, 0.0, 1.0);
     if (uAlphaTest != 0 && fragColor.a <= uAlphaRef)
         discard;
@@ -229,8 +237,8 @@ void main()
     struct Renderer::Gpu
     {
         gl::GLuint shader = 0;
-        gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
-                  locAlphaTest = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locFogColour = -1;
+        gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locUvBounds = -1, locTex = -1, locTextured = -1, locTarget = -1,
+                  locAlphaTest = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locFogColour = -1, locDirectColour = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
@@ -360,8 +368,10 @@ void main()
             locScreen = g.GetUniformLocation(shader, "uScreen");
             locDepthMax = g.GetUniformLocation(shader, "uDepthMax");
             locUvMap = g.GetUniformLocation(shader, "uUvMap");
+            locUvBounds = g.GetUniformLocation(shader, "uUvBounds");
             locTex = g.GetUniformLocation(shader, "uTex");
             locTextured = g.GetUniformLocation(shader, "uTextured");
+            locDirectColour = g.GetUniformLocation(shader, "uDirectColour");
             locTarget = g.GetUniformLocation(shader, "uTarget");
             locAlphaTest = g.GetUniformLocation(shader, "uAlphaTest");
             locAlphaRef = g.GetUniformLocation(shader, "uAlphaRef");
@@ -1373,7 +1383,9 @@ void main()
             const float fogColour[3] = {static_cast<float>(m.fogColour & 0xffu) / 255.0f, static_cast<float>((m.fogColour >> 8) & 0xffu) / 255.0f,
                                         static_cast<float>((m.fogColour >> 16) & 0xffu) / 255.0f};
             g.Uniform1i(gpu.locOpaque, opaque);
+            g.Uniform1i(gpu.locDirectColour, m.directColour ? 1 : 0);
             g.Uniform1i(gpu.locFog, fog);
+            g.Uniform4fv(gpu.locUvBounds, 1, m.uvBounds);
             g.Uniform3fv(gpu.locFogColour, 1, fogColour);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
