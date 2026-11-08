@@ -375,6 +375,18 @@ void nativeIsoFiles() {
         eq("unaligned sector-spanning file read",m.call("sceRead",{uint32_t(fd),0x103000,32}),32);
         eq("read first sector tail",m.rt->memory.ram()[0x103007],0x22);
         eq("read next sector head",m.rt->memory.ram()[0x103008],0x33);
+        eq("sector read starts",m.call("sceCdRead",{22,2,0x104000,0}),1);
+        eq("sector read is initially busy",m.call("sceCdSync",{1}),1);
+        eq("cancel sector read",m.call("sceCdBreak",{}),1);
+        eq("cancelled read is no longer busy",m.call("sceCdSync",{1}),0);
+        eq("cancelled read reports SCECdErABRT",m.call("sceCdGetError",{}),1);
+        eq("break does not undo bytes already delivered",m.rt->memory.ram()[0x104000],0x22);
+        eq("break while idle succeeds",m.call("sceCdBreak",{}),1);
+        eq("idle break stays idle",m.call("sceCdSync",{1}),0);
+        eq("read after cancellation starts",m.call("sceCdRead",{23,1,0x104000,0}),1);
+        eq("new read clears abort error",m.call("sceCdGetError",{}),0);
+        eq("new read delivers its own sector",m.rt->memory.ram()[0x104000],0x33);
+        eq("new read has its own completion time",m.call("sceCdSync",{1}),1);
         eq("native file close",m.call("sceClose",{uint32_t(fd)}),0);
         eq("closed descriptor cannot read",m.call("sceRead",{uint32_t(fd),0x103000,1}),-1);
         uint32_t lbn;std::memcpy(&lbn,m.rt->memory.ram()+0x102000,4);
