@@ -168,9 +168,27 @@ uniform vec3 uLevelHigh;
 uniform vec3 uLevelLow;
 uniform int uTextureFunction;
 uniform int uTextureAlpha;
+uniform int uImageRadius;
+uniform vec4 uImageStep;
+uniform vec4 uImageKernel[5];
+uniform int uImageDepth;
+uniform sampler2D uImageDepthTex;
+uniform vec4 uImageWeights[64];
+uniform vec4 uImageSize;
+uniform int uImageAlpha;
+uniform sampler2D uImageAlphaTex;
 out vec4 fragColor;
 vec4 sampled()
 {
+    if (uImageRadius != 0) {
+        vec4 sum=textureLod(uTex,vUv,0.0)*uImageKernel[0][0];
+        for(int i=1;i<=16;++i) {
+            if(i>uImageRadius)break;
+            vec2 offset=uImageStep.xy*float(i);
+            sum+=(textureLod(uTex,vUv+offset,0.0)+textureLod(uTex,vUv-offset,0.0))*uImageKernel[i/4][i%4];
+        }
+        return sum;
+    }
     if (uLodMode == 0)
         return texture(uTex, vUv);
     float lod = uLodMode == 1 ? -log2(max(abs(vQ), 1e-30)) * uLodScale + uLodBias : uLodBias;
@@ -181,6 +199,11 @@ void main()
     vec4 vertex = uUseQ != 0 ? vColScreen : vCol;
     vec4 colour = vertex * (255.0 / 128.0);
     vec4 texel = uTextured != 0 ? sampled() * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
+    if(uImageDepth != 0) {
+        float depth=texture(uImageDepthTex,gl_FragCoord.xy/uImageSize.xy).r;
+        int index=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,255.0));
+        texel=vec4(vec3(uImageWeights[index/4][index%4]),1.0);
+    }
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
@@ -208,6 +231,8 @@ void main()
         fragColor.rgb = clamp(uLevelGain * max(vec3(0.0), min(fragColor.rgb, uLevelHigh) - uLevelLow), 0.0, 1.0);
     if (uOpaque != 0)
         fragColor.a = 1.0;
+    if(uImageAlpha != 0)
+        fragColor.a*=clamp(texture(uImageAlphaTex,gl_FragCoord.xy/uImageSize.xy).g*uImageSize.w,0.0,1.0);
 }
 )";
 
@@ -328,6 +353,8 @@ void main()
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
                   locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
                   locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
+                  locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthTex=-1,
+                  locImageWeights=-1,locImageSize=-1,locImageAlpha=-1,locImageAlphaTex=-1,
                   locLodMode = -1, locLodScale = -1, locLodBias = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
@@ -339,6 +366,8 @@ void main()
         gl::GLuint white = 0;         // 1 x 1 white: an untextured 2D draw
         // The frame's target (raylib's render texture: RGBA8 colour, a depth renderbuffer).
         gl::GLuint fbo = 0, colour = 0, depth = 0;
+        gl::GLuint imageDepth=0;
+        int imageDepthWidth=0,imageDepthHeight=0;
         int targetWidth = 0, targetHeight = 0;
         bool targetFiltered = false; // bilinear (render scale other than 1) rather than point
         gl::GLuint targetCopy = 0;   // Material::sampleTarget: the target's colour, copied per batch
@@ -520,6 +549,15 @@ void main()
             locLevelGain = g.GetUniformLocation(shader, "uLevelGain");
             locLevelHigh = g.GetUniformLocation(shader, "uLevelHigh");
             locLevelLow = g.GetUniformLocation(shader, "uLevelLow");
+            locImageRadius=g.GetUniformLocation(shader,"uImageRadius");
+            locImageStep=g.GetUniformLocation(shader,"uImageStep");
+            locImageKernel=g.GetUniformLocation(shader,"uImageKernel[0]");
+            locImageDepth=g.GetUniformLocation(shader,"uImageDepth");
+            locImageDepthTex=g.GetUniformLocation(shader,"uImageDepthTex");
+            locImageWeights=g.GetUniformLocation(shader,"uImageWeights[0]");
+            locImageSize=g.GetUniformLocation(shader,"uImageSize");
+            locImageAlpha=g.GetUniformLocation(shader,"uImageAlpha");
+            locImageAlphaTex=g.GetUniformLocation(shader,"uImageAlphaTex");
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locLodMode = g.GetUniformLocation(shader, "uLodMode");
@@ -564,6 +602,8 @@ void main()
             for (gl::GLuint *t : {&white, &colour, &targetCopy, &displayPicture})
                 if (*t != 0)
                     g.DeleteTextures(1, t);
+            if(imageDepth)g.DeleteTextures(1,&imageDepth);
+            imageDepth=0;imageDepthWidth=imageDepthHeight=0;
             if (depth != 0)
                 g.DeleteRenderbuffers(1, &depth);
             if (fbo != 0)
@@ -1478,16 +1518,21 @@ void main()
             const Material &m = batch.material;
             if (m.target >= 8 || m.source > Material::kPreviousFrame)
                 throw std::runtime_error("native render target index outside supported range");
-            if (m.target != drawingTarget) {
+            const bool explicitResize=m.target && m.targetWidth &&
+                (gpu.auxiliary[m.target].width!=m.targetWidth || gpu.auxiliary[m.target].height!=m.targetHeight);
+            if (m.target != drawingTarget || explicitResize) {
                 drawingTarget=m.target;
                 drawWidth=w; drawHeight=h;
                 if (drawingTarget) {
                     const uint32_t size=m_targetSize[drawingTarget].load();
                     const bool shared=(m_sharedDepth.load() & (1u << drawingTarget)) != 0;
+                    if(shared && m.targetWidth && (m.targetWidth!=w || m.targetHeight!=h))
+                        throw std::runtime_error("native shared depth requires matching image dimensions");
                     if (size && !shared) { drawWidth=size >> 16; drawHeight=size & 0xffff; }
+                    if(m.targetWidth){drawWidth=m.targetWidth;drawHeight=m.targetHeight;}
                     if (!gpu.auxiliaryTarget(drawingTarget,drawWidth,drawHeight,shared))
                         throw std::runtime_error("native render target framebuffer incomplete");
-                    if (!touched[drawingTarget]) {
+                    if (!touched[drawingTarget] || explicitResize) {
                         g.Disable(gl::kScissorTest); scissored=false;
                         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
                         g.DepthMask(gl::kTrue); g.ClearColor(0,0,0,0);
@@ -1566,6 +1611,44 @@ void main()
             g.Uniform3fv(gpu.locLevelLow, 1, m.levels.low);
             g.Uniform1i(gpu.locAlphaTest, alphaTest);
             g.Uniform1f(gpu.locAlphaRef, m.alphaRef / 128.0f);
+            const auto *processing=m.imageProcessing.get();
+            g.Uniform1i(gpu.locImageRadius,processing?processing->radius:0);
+            g.Uniform1i(gpu.locImageDepth,processing && processing->depthLookup);
+            g.Uniform1i(gpu.locImageAlpha,processing && processing->alphaSource);
+            if(processing){
+                float kernel[20]={};std::copy(processing->weights.begin(),processing->weights.end(),kernel);
+                const float step[4]={processing->step[0],processing->step[1],0,0};
+                const float dimensions[4]={float(drawWidth),float(drawHeight),processing->depthScale,processing->alphaScale};
+                g.Uniform4fv(gpu.locImageKernel,5,kernel);g.Uniform4fv(gpu.locImageStep,1,step);
+                g.Uniform4fv(gpu.locImageSize,1,dimensions);
+                if(processing->depthLookup){
+                    g.ActiveTexture(gl::kTexture0+1);
+                    if(!gpu.imageDepth)g.GenTextures(1,&gpu.imageDepth);
+                    g.BindTexture(gl::kTexture2D,gpu.imageDepth);
+                    if(gpu.imageDepthWidth!=w || gpu.imageDepthHeight!=h){
+                        g.TexImage2D(gl::kTexture2D,0,gl::kDepthComponent24,w,h,0,gl::kDepthComponent,gl::kUnsignedInt,nullptr);
+                        gpu.imageDepthWidth=w;gpu.imageDepthHeight=h;
+                    }
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kNearest);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,gl::kNearest);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureWrapS,gl::kClampToEdge);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureWrapT,gl::kClampToEdge);
+                    g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                    g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,w,h);
+                    g.BindFramebuffer(gl::kFramebuffer,drawingTarget?gpu.auxiliary[drawingTarget].fbo:gpu.fbo);
+                    g.Uniform1i(gpu.locImageDepthTex,1);
+                    g.Uniform4fv(gpu.locImageWeights,64,processing->depthWeights.data());
+                }
+                if(processing->alphaSource){
+                    const auto &alpha=gpu.auxiliary[processing->alphaSource];
+                    if(!alpha.colour || !touched[processing->alphaSource])throw std::runtime_error("native alpha image has no producer this frame");
+                    g.ActiveTexture(gl::kTexture0+2);g.BindTexture(gl::kTexture2D,alpha.colour);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kLinear);
+                    g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,gl::kLinear);
+                    g.Uniform1i(gpu.locImageAlphaTex,2);
+                }
+                g.ActiveTexture(gl::kTexture0);
+            }
             if (m.fromFrame) {
                 gl::GLuint source=0;
                 if (m.source==Material::kPreviousFrame) source=gpu.previousColour;
@@ -1573,8 +1656,8 @@ void main()
                     auto &t=gpu.auxiliary[m.source];
                     const bool shared=(m_sharedDepth.load() & (1u << m.source)) != 0;
                     const uint32_t size=m_targetSize[m.source].load();
-                    const int sw=size && !shared ? int(size >> 16) : w;
-                    const int sh=size && !shared ? int(size & 0xffff) : h;
+                    const int sw=touched[m.source] ? t.width : size && !shared ? int(size >> 16) : w;
+                    const int sh=touched[m.source] ? t.height : size && !shared ? int(size & 0xffff) : h;
                     const bool fresh=!t.colour || t.width!=sw || t.height!=sh;
                     if (!gpu.auxiliaryTarget(m.source,sw,sh,shared))
                         throw std::runtime_error("native source framebuffer incomplete");

@@ -189,6 +189,22 @@ namespace bozo::render
                 h = hash::xxh64(m.levels.high, sizeof(m.levels.high), h);
                 h = hash::xxh64(m.levels.low, sizeof(m.levels.low), h);
             }
+            if (m.targetWidth || m.targetHeight) {
+                const uint32_t size=uint32_t(m.targetWidth)<<16 | m.targetHeight;
+                h=hash::xxh64(&size,sizeof(size),h);
+            }
+            if (m.imageProcessing) {
+                const auto &p=*m.imageProcessing;
+                const uint64_t tag=0x494d41474550524full;
+                h=hash::xxh64(&tag,sizeof(tag),h);
+                h=hash::xxh64(&p.radius,sizeof(p.radius),h);
+                h=hash::xxh64(p.weights.data(),sizeof(float)*(p.radius+1),h);
+                h=hash::xxh64(p.step.data(),sizeof(float)*2,h);
+                h=hash::xxh64(&p.depthLookup,sizeof(p.depthLookup),h);
+                if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);}
+                h=hash::xxh64(&p.alphaSource,sizeof(p.alphaSource),h);
+                h=hash::xxh64(&p.alphaScale,sizeof(float),h);
+            }
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())
                 h = hash::xxh64(frame.vertices.data() + batch.first, batch.count * sizeof(Vertex), h);
@@ -234,6 +250,21 @@ namespace bozo::render
     {
         if (count == 0u)
             return;
+        if ((material.targetWidth==0)!=(material.targetHeight==0) ||
+            (material.targetWidth && (!material.target || material.targetWidth>4096 || material.targetHeight>4096)))
+            throw std::invalid_argument("invalid per-draw image dimensions");
+        if(material.imageProcessing){
+            const auto &p=*material.imageProcessing;
+            if(p.radius>16 || p.alphaSource>7 || (p.alphaSource && p.alphaSource==material.target) ||
+               !std::isfinite(p.alphaScale) || p.alphaScale<0 || !std::isfinite(p.depthScale) || p.depthScale<0 ||
+               !std::isfinite(p.step[0]) || !std::isfinite(p.step[1]) ||
+               (p.radius && !material.fromFrame) || (p.depthLookup && p.radius))
+                throw std::invalid_argument("invalid native image operation");
+            for(unsigned i=0;i<=p.radius;++i)if(!std::isfinite(p.weights[i]) || p.weights[i]<0)
+                throw std::invalid_argument("invalid native image kernel");
+            if(p.depthLookup)for(float weight:p.depthWeights)if(!std::isfinite(weight) || weight<0 || weight>1)
+                throw std::invalid_argument("invalid native depth opacity");
+        }
         if (material.levels.enabled)
             for (unsigned c = 0; c < 3; ++c)
                 if (!std::isfinite(material.levels.gain[c]) || material.levels.gain[c] < 0 ||
@@ -242,6 +273,7 @@ namespace bozo::render
                     throw std::invalid_argument("native colour levels require finite nonnegative gain and normalized thresholds");
         Batch batch;
         batch.material = material;
+        if(material.imageProcessing)batch.material.imageProcessing=std::make_shared<const Material::ImageProcessing>(*material.imageProcessing);
         std::memcpy(batch.matrix, matrix, sizeof(batch.matrix));
         batch.texture = std::move(texture);
         batch.first = static_cast<uint32_t>(m_building.vertices.size());
@@ -283,6 +315,8 @@ namespace bozo::render
     {
         if (material.levels.enabled)
             throw std::invalid_argument("native colour levels require a frame draw");
+        if(material.imageProcessing || material.targetWidth || material.targetHeight)
+            throw std::invalid_argument("native image processing requires a frame draw");
         if (count == 0u || m_overlayBuilding.vertices.size() > (1u << 20))
             return; // (never published: a port that does not publish keeps the latest million vertices' worth out)
         Batch batch;

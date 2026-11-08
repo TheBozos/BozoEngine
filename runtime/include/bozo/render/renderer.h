@@ -17,6 +17,7 @@
 #include "bozo/render/texture.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -41,6 +42,27 @@ namespace bozo::render
     // How a draw blends and tests, from the GS registers a game sets (ALPHA, TEST) reduced to what a PC GPU does.
     struct Material
     {
+        // Port-owned image operations, independent of console command streams.
+        // A symmetric separable kernel uses weights[0] at the centre and
+        // weights[i] at both +/- i * step (normalized image coordinates).
+        struct ImageProcessing {
+            uint8_t radius = 0;
+            std::array<float,17> weights{1};
+            std::array<float,2> step{};
+            // Replace sampled colour with a grayscale lookup of the current
+            // main-frame depth: floor((1-windowDepth) * depthScale), clamped.
+            bool depthLookup = false;
+            float depthScale = 255;
+            std::array<float,256> depthWeights{};
+            // Multiply output alpha by an auxiliary image's green channel.
+            // Zero disables it; reading the draw target itself is rejected.
+            uint8_t alphaSource = 0;
+            float alphaScale = 1;
+        };
+        std::shared_ptr<const ImageProcessing> imageProcessing;
+        // Optional per-draw auxiliary dimensions. Main-frame dimensions follow
+        // the presentation; a shared-depth target must use that same size.
+        uint16_t targetWidth = 0, targetHeight = 0;
         uint64_t tex0 = 0; // keys the texture's GPU copy (a port gives each asset its own value)
         uint64_t texa = 0;
         bool textured = true;
