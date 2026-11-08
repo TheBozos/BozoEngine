@@ -63,7 +63,8 @@ uniform vec4 uScreen;
 uniform float uDepthMax;
 uniform vec4 uUvMap;
 out vec2 vUv;
-out vec4 vCol;
+// Vertex colours are screen-space Gouraud values; only ST needs perspective.
+noperspective out vec4 vCol;
 out float vFog;
 noperspective out vec4 vColScreen;
 noperspective out float vFogScreen;
@@ -144,7 +145,7 @@ void main()
         // taken as the GS's 0x80 (1.0).
         const char *kFragmentShader = R"(#version 330
 in vec2 vUv;
-in vec4 vCol;
+noperspective in vec4 vCol;
 in float vFog;
 noperspective in vec4 vColScreen;
 noperspective in float vFogScreen;
@@ -155,6 +156,8 @@ uniform int uLodMode;
 uniform float uLodScale;
 uniform float uLodBias;
 uniform int uTextured;
+uniform int uDirectColour;
+uniform vec4 uUvBounds;
 uniform int uTarget;
 uniform int uAlphaTest;
 uniform int uAlphaFunc;
@@ -178,26 +181,35 @@ uniform vec4 uImageSize;
 uniform int uImageAlpha;
 uniform sampler2D uImageAlphaTex;
 out vec4 fragColor;
+vec2 atlasUv(vec2 uv)
+{
+    if (uUvBounds.z > uUvBounds.x && uUvBounds.w > uUvBounds.y)
+        return clamp(uv, uUvBounds.xy, uUvBounds.zw);
+    return uv;
+}
 vec4 sampled()
 {
+    vec2 uv = atlasUv(vUv);
     if (uImageRadius != 0) {
-        vec4 sum=textureLod(uTex,vUv,0.0)*uImageKernel[0][0];
+        vec4 sum=textureLod(uTex,uv,0.0)*uImageKernel[0][0];
         for(int i=1;i<=16;++i) {
             if(i>uImageRadius)break;
             vec2 offset=uImageStep.xy*float(i);
-            sum+=(textureLod(uTex,vUv+offset,0.0)+textureLod(uTex,vUv-offset,0.0))*uImageKernel[i/4][i%4];
+            sum+=(textureLod(uTex,atlasUv(uv+offset),0.0)+textureLod(uTex,atlasUv(uv-offset),0.0))*uImageKernel[i/4][i%4];
         }
         return sum;
     }
     if (uLodMode == 0)
-        return texture(uTex, vUv);
+        return texture(uTex, uv);
     float lod = uLodMode == 1 ? -log2(max(abs(vQ), 1e-30)) * uLodScale + uLodBias : uLodBias;
-    return textureLod(uTex, vUv, lod);
+    return textureLod(uTex, uv, lod);
 }
 void main()
 {
     vec4 vertex = uUseQ != 0 ? vColScreen : vCol;
     vec4 colour = vertex * (255.0 / 128.0);
+    if (uTextured == 0 && uDirectColour != 0)
+        colour.rgb = vertex.rgb;
     vec4 texel = uTextured != 0 ? sampled() * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if(uImageDepth != 0) {
         float depth=texture(uImageDepthTex,gl_FragCoord.xy/uImageSize.xy).r;
@@ -207,7 +219,7 @@ void main()
     if (uTarget == 1)
         texel.a = 1.0;
     else if (uTarget == 2)
-        texel.a = texture(uTex, vUv).a;
+        texel.a = texture(uTex, atlasUv(vUv)).a;
     if (uTextureFunction == 1)
         fragColor = texel;
     else if (uTextureFunction >= 2)
@@ -350,7 +362,7 @@ void main()
     struct Renderer::Gpu
     {
         gl::GLuint shader = 0;
-        gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locTex = -1, locTextured = -1, locTarget = -1,
+        gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locUvBounds = -1, locDirectColour = -1, locTex = -1, locTextured = -1, locTarget = -1,
                   locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
                   locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
                   locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthTex=-1,
@@ -535,8 +547,10 @@ void main()
             locScreen = g.GetUniformLocation(shader, "uScreen");
             locDepthMax = g.GetUniformLocation(shader, "uDepthMax");
             locUvMap = g.GetUniformLocation(shader, "uUvMap");
+            locUvBounds = g.GetUniformLocation(shader, "uUvBounds");
             locTex = g.GetUniformLocation(shader, "uTex");
             locTextured = g.GetUniformLocation(shader, "uTextured");
+            locDirectColour = g.GetUniformLocation(shader, "uDirectColour");
             locTarget = g.GetUniformLocation(shader, "uTarget");
             locAlphaTest = g.GetUniformLocation(shader, "uAlphaTest");
             locAlphaRef = g.GetUniformLocation(shader, "uAlphaRef");
@@ -1600,7 +1614,9 @@ void main()
             const float fogColour[3] = {static_cast<float>(m.fogColour & 0xffu) / 255.0f, static_cast<float>((m.fogColour >> 8) & 0xffu) / 255.0f,
                                         static_cast<float>((m.fogColour >> 16) & 0xffu) / 255.0f};
             g.Uniform1i(gpu.locOpaque, opaque);
+            g.Uniform1i(gpu.locDirectColour, m.directColour ? 1 : 0);
             g.Uniform1i(gpu.locFog, fog);
+            g.Uniform4fv(gpu.locUvBounds, 1, m.uvBounds);
             g.Uniform1i(gpu.locTextureFunction, static_cast<int>(m.textureFunction));
             g.Uniform1i(gpu.locTextureAlpha, m.textureAlpha ? 1 : 0);
             g.Uniform1i(gpu.locLodMode, 0);

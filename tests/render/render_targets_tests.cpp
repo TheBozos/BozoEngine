@@ -3,6 +3,7 @@
 #include "bozo/render/gl.h"
 #include "bozo/render/renderer.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -436,6 +437,38 @@ int main()
     quad(plain,0x80000000);auto mainAlpha=alphaWrite;mainAlpha.target=0;
     quad(mainAlpha,0x40000000);quad(fromAux,0x80808080);present();
     pixel("levels preserve auxiliary alpha",16,{64,0,0});
+    // Colour is interpolated in screen space, independently of reciprocal
+    // depth. ST texture coordinates still need perspective correction.
+    auto gradient = [&](float rightW, std::shared_ptr<const Texture> texture = {}) {
+        float project[16];
+        std::copy(identity, identity + 16, project);
+        project[11] = 1; // homogeneous w = object z + 1
+        project[10] = 0;
+        Vertex vertices[6];
+        const float xy[6][2] = {{0,0},{16,0},{0,16},{16,0},{16,16},{0,16}};
+        for (int i = 0; i < 6; ++i) {
+            const bool right = xy[i][0] != 0;
+            const float w = right ? rightW : 1;
+            auto &v = vertices[i];
+            v.x = xy[i][0] * w; v.y = xy[i][1] * w; v.z = w - 1;
+            v.u = right ? 1 : 0; v.v = 0;
+            v.rgba = texture ? 0x80808080 : right ? 0x80800000 : 0x80000080;
+        }
+        auto material = plain;
+        material.textured = bool(texture); material.nearest = true;
+        renderer.beginFrame(screen);
+        renderer.draw(material, project, vertices, 6, texture);
+        present();
+    };
+    gradient(1);
+    pixel("colour gradient with uniform w",16,{124,0,131});
+    gradient(4);
+    pixel("colour gradient ignores varying w",16,{124,0,131});
+    auto twoTexels = std::make_shared<Texture>();
+    twoTexels->width = 2; twoTexels->height = 1;
+    twoTexels->rgba = {0x80000080,0x80008000};twoTexels->key = 0x534b59;twoTexels->version = 1;
+    gradient(4,twoTexels);
+    pixel("texture coordinates retain perspective correction",16,{128,0,0});
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);
