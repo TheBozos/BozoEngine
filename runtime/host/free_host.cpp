@@ -136,6 +136,7 @@ namespace bozo::host
         uint32_t entry = 0;
         std::memcpy(&entry, elf.bytes().data() + 24, 4);
         d.boot(entry, 0x1FFFFF0u);
+        d.kernel().useOwnedHandlerStacks();
         if (!opt_.out.empty())
         {
             reference::Header h;

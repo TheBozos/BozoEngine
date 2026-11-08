@@ -8,10 +8,15 @@ namespace {
 void check(bool v) { if(!v) throw std::runtime_error("deadline assertion failed"); }
 struct Done {};
 struct TestHost final:Host {
-    bool sleep=false; unsigned callbacks=0,idles=0; uint64_t due=100;
+    bool sleep=false,owned=false; unsigned callbacks=0,idles=0; uint64_t due=100;
     void libraryCall(Dispatcher &d,R5900Context *c,uint32_t pc) override {
         check(pc==0x300000 && d.now(c)>=due && d.now(c)<d.kernel().field());
         check(c->r[4].uw[0]==123 && c->r[28].uw[0]==0x123456);
+        if(owned) {
+            check(c->r[29].uw[0]==0x1ffef80);
+            auto *ram=d.runtime().memory.ram();
+            for(unsigned i=0;i<0x60;++i) ram[c->r[29].uw[0]-0x60+i]=0xCC;
+        }
         ++callbacks; d.runtime().memory.ram()[0x2000]=1;
         if(sleep) check(d.kernel().wakeupThread(1,true)==1);
         c->pc=c->r[31].uw[0];
@@ -57,17 +62,30 @@ int main() {
     Kernel independent;check(independent.nextEvent()==original);
     // Both a checkpointing thread and an otherwise idle sleeping thread must
     // observe the callback before the next field, through the actual dispatcher.
-    for(bool sleep:{false,true}) {
-        TestHost host;host.sleep=sleep;Dispatcher d(host);
+    for(bool owned:{false,true}) for(bool sleep:{false,true}) {
+        TestHost host;host.sleep=sleep;host.owned=owned;Dispatcher d(host);
         const BozoFunctionEntry f[]={{0x100000,mainThread}};
         const BozoResumeEntry r[]={{0x100000,0x100010,mainThread}};
         d.setFunctions(f,1,r,1);d.bindLibrary(0x300000);
         d.bindKernelCall(0x300010,KernelCall::SleepThread);
         d.boot(0x100000,0x1fff000);d.runtime().memory.ram()[0x2001]=sleep;
+        if(owned) {
+            d.kernel().threadSetup(0x1ff0000,0x10000,0);
+            d.kernel().useOwnedHandlerStacks();
+            auto *ram=d.runtime().memory.ram();
+            for(unsigned i=0;i<0x80;++i) ram[0x1fff000+i]=0xA5;
+            for(unsigned i=0;i<0x100;++i) ram[0x1fe7f00+i]=0x5A;
+        }
         h.a[0]=123;d.kernel().scheduleDeadline(1,host.due,h);
         try { d.run();check(false); } catch(const Done &) {}
         check(host.callbacks==1 && host.idles==unsigned(sleep));
         check(!d.kernel().handlerQueued());
+        if(owned) {
+            auto *ram=d.runtime().memory.ram();
+            for(unsigned i=0;i<0x80;++i) check(ram[0x1fff000+i]==0xA5);
+            for(unsigned i=0;i<0x100;++i) check(ram[0x1fe7f00+i]==0x5A);
+            for(unsigned i=0;i<0x60;++i) check(ram[0x1ffef20+i]==0xCC);
+        }
     }
     std::puts("native callback deadline replacement/cancel/order/isolation/checkpoint/idle tests passed");return 0;
  } catch(const std::exception &e) { std::fprintf(stderr,"%s\n",e.what());return 1; }

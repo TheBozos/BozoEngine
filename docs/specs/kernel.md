@@ -72,6 +72,24 @@ fresh with a0-a3, gp, ra and pc set; sp, when the queue gave none, is that threa
 x slot, slots given out in the order threads first get a handler (thread 1 slot 0; boot's decode threads 2, 4, 6:
 slots 1-3).
 
+That fixed-address rule is a recorded-call convention, not allocated storage.
+FreeHost enables `useOwnedHandlerStacks()` after boot: when no explicit SP is
+provided, a callback uses the live SP of its selected thread, inside that thread's
+declared stack. It reserves 128 bytes for the suspended call's eight 128-bit
+argument/home slots and aligns the callback SP down to 16 bytes. Nested callbacks
+use the current frame's live SP. A callback queued while all user threads wait
+borrows below the main thread's parked frame; the dispatcher resumes an active
+pseudo-handler before any ready user thread. Explicit callback SP values and the
+default recorded-host convention are unchanged. Missing bounds, an escaped owned
+frame, or insufficient headroom reject without consuming the queued callback.
+Ports that deliberately move a running frame onto a temporary work stack bracket
+the original switch with `parkThreadStack`/`resumeThreadStack`. The saved live SP
+must lie in the owning thread's declared RAM stack; it belongs to that frame,
+including across nested callbacks, and the return must match it exactly. Automatic
+callbacks then use space below the parked RAM SP, leaving the work stack intact.
+This avoids treating an unreserved fixed arena as storage: VP2S's seventh handler
+slot otherwise overwrote a live heap allocation at `0x1fe7f80`.
+
 **The vblank.** The field lasts `294,912,000 x den / num` EE cycles, rounded down (4,920,115 for 60000/1001, also the
 default before the game sets its rate); vblank n starts at n x field and ends 147,456 cycles later. At a start the
 vblank count goes up, the threads waiting for a count below it are woken in thread id order (match1p and boot

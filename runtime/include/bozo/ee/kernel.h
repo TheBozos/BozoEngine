@@ -137,6 +137,7 @@ namespace bozo::ee
     constexpr uint32_t kOne = 0x3F800000u;            // 1.0f: vf0.w and Q of a new context
     constexpr uint32_t kHandlerStackTop = 0x1FFFFF0u; // the stack handlers run on (one 16 KB area per thread)
     constexpr uint32_t kHandlerStackBytes = 0x4000u;
+    constexpr uint32_t kHandlerCallAreaBytes = 0x80u; // eight 128-bit argument/home slots
     constexpr uint64_t kNoCall = ~0ull;
 
     // One guest context the dispatcher can run: a thread's own (depth 0) or a handler stacked on it.
@@ -146,6 +147,7 @@ namespace bozo::ee
         uint32_t status = kFreshStatus; // COP0 Status of this context
         ContextWords last{};            // the context when guest code last stopped here (calllog.md 4.4)
         bool ran = false;
+        uint32_t parkedStack = 0; // port-bracketed work-stack switch, owned RAM SP
         // A handler's invocation (depth >= 1).
         uint16_t kind = 0;
         uint32_t pc = 0, a[4] = {}, gp = 0, sp = 0, ra = 0;
@@ -225,6 +227,13 @@ namespace bozo::ee
     public:
         Kernel();
         void setObserver(KernelObserver *o) { observer_ = o; }
+        // Free-running native calls use live, declared thread stacks. The
+        // fixed-address convention remains available to recorded-call hosts.
+        void useOwnedHandlerStacks(bool enabled = true) { ownedHandlerStacks_ = enabled; }
+        // A port brackets a deliberate temporary work-stack switch. The saved
+        // pointer must remain within the selected thread's declared RAM stack.
+        void parkThreadStack(uint32_t sp);
+        void resumeThreadStack(uint32_t sp);
 
         // ---- Who is making the next operations (calllog.md section 5) ----
         void setOrigin(uint32_t origin, uint64_t call = kNoCall)
@@ -366,6 +375,8 @@ namespace bozo::ee
         uint64_t picks_ = 0; // a rotation of the running thread's queue: the next transfer gives way
         int32_t nextPseudo_ = -1;
         int32_t handlerSlots_ = 0;
+        bool ownedHandlerStacks_ = false;
+        uint32_t ownedHandlerStack(const Thread &on) const;
         int32_t nextThreadId_ = 2;
         int32_t nextSemaId_ = 1;
         int32_t nextIntcHandler_ = 1, nextDmacHandler_ = 1;
