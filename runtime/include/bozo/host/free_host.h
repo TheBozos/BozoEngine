@@ -45,6 +45,10 @@ namespace bozo::host
         // free mode), the frame's samples to onAudio and to the record's sound field. Off: the mixer runs only as the
         // driver's commands bring it up (nothing is output).
         bool sound = true;
+        // While no game frame ends (a game busy-waiting for its sound library before its first frame: The Third Age
+        // waits for EA's driver to answer a command), the watchdog brings the libraries' engine up to the EE clock, a
+        // few times a field. Off: only at frame ends (and, in real time with an output, at the sound watcher's stalls).
+        bool advanceLibrariesWhileStalled = false;
         // Optional native game-frame duration. Ports with host-paced frames can charge their logical
         // clock here instead of running a console timer/device loop. Zero keeps explicit port accounting.
         uint64_t framePeriodCycles = 0;
@@ -134,6 +138,7 @@ namespace bozo::host
         // Ends the run when no frame ended for opt_.stallFields fields (a wait that never ends), saying where.
         void watchdog(R5900Context *ctx);
         uint64_t lastFrameCycle_ = 0;
+        uint64_t lastStallAdvance_ = 0; // advanceLibrariesWhileStalled: the EE cycle of the last advance
         void endFrame(R5900Context *ctx);
         void frameSound(uint64_t &hash, uint32_t &count);
         std::vector<int16_t> audio_;
