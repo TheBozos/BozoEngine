@@ -570,6 +570,7 @@ static void mpegSdkModel()
     m.libs.mpegOptions.sdkNodata = true;
     const uint32_t tmbWord = 0x1717BC;
     std::memset(m.rt->memory.ram() + tmbWord, 0xAB, 4);
+    eq("init (SDK)", m.call("sceMpegInit", {}), 1);
     eq("create (SDK)", m.call("sceMpegCreate", {0x100000, 0x110000, 0x122800}), 1);
     eq("no write to TMB's address", m.rt->memory.ram()[tmbWord], 0xAB);
     eq("first callback: none before", m.call("sceMpegAddCallback", {0x100000, 1, 0x1BE698, 0x200000}), 0);

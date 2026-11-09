@@ -283,8 +283,9 @@ namespace bozo::libs
 
         // ---- The functions ----
 
-        // sceMpegInit(): 0.
-        void init(Libraries &, Guest &g) { g.ret(0); }
+        // sceMpegInit(): 0 (the SDK's 1 off the reference layout). Nothing is reset: a game may call it from its Nodata
+        // callback, in the middle of a stream.
+        void init(Libraries &l, Guest &g) { g.ret(l.mpegOptions.referenceLayout ? 0 : 1); }
 
         // sceMpegCreate(mp, work, size): the sceMpeg and its work area as the reference sets them, 0x600 bytes from the
         // game's heap; returns work + 0x118.
