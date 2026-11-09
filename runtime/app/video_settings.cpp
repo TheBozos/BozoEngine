@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <optional>
 #include <string_view>
 
 namespace bozo::app::video
@@ -30,6 +32,26 @@ namespace bozo::app::video
         SDL_Window *g_window = nullptr;
         WindowMode g_lastFull = WindowMode::Borderless; // where F11 / Alt+Enter go from the window
         bool g_applyPending = false;                    // requestApply(): at the next frameUpdate, between two frames
+        // shared() and post(): the only state another thread touches, under this lock.
+        std::mutex g_sharedLock;
+        Shared g_shared;
+        std::optional<std::pair<Settings, bool>> g_posted;
+
+        // The window's thread, each time g_current or the window changes: shared()'s copy.
+        void publish()
+        {
+            Shared copy;
+            copy.applied = g_current;
+            copy.open = g_window != nullptr;
+            if (copy.open)
+            {
+                copy.resolutions = resolutions();
+                copy.monitor = monitorSize();
+                copy.monitorRefresh = monitorRefresh();
+            }
+            const std::lock_guard lock(g_sharedLock);
+            g_shared = std::move(copy);
+        }
 
         std::string trim(const std::string &text)
         {
@@ -219,11 +241,16 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(target.renderScale);
         render::Renderer::instance().setFrameRate(target.frameRate);
         g_current = target;
+        publish();
         std::fprintf(stderr, "[video] %dx%d %s, render scale %.2f, frame rate %s (%s)\n", g_current.width, g_current.height,
                      modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), configPath().c_str());
     }
 
-    void detach() { g_window = nullptr; }
+    void detach()
+    {
+        g_window = nullptr;
+        publish();
+    }
 
     void handleEvent(const SDL_Event &event)
     {
@@ -235,6 +262,7 @@ namespace bozo::app::video
         {
             g_current.width = g_edited.width = event.window.data1;
             g_current.height = g_edited.height = event.window.data2;
+            publish();
         }
         if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
             (event.key.scancode == SDL_SCANCODE_F11 || (event.key.scancode == SDL_SCANCODE_RETURN && (event.key.mod & SDL_KMOD_ALT))))
@@ -286,11 +314,35 @@ namespace bozo::app::video
             s_script.erase(s_script.begin());
             g_applyPending = true;
         }
+        std::optional<std::pair<Settings, bool>> posted;
+        {
+            const std::lock_guard lock(g_sharedLock);
+            posted.swap(g_posted);
+        }
+        if (posted)
+        {
+            g_edited = posted->first;
+            g_applyPending = true;
+        }
         if (g_applyPending)
         {
             g_applyPending = false;
             apply();
         }
+        if (posted && posted->second && !save())
+            std::fprintf(stderr, "[video] could not write %s\n", configPath().c_str());
+    }
+
+    Shared shared()
+    {
+        const std::lock_guard lock(g_sharedLock);
+        return g_shared;
+    }
+
+    void post(const Settings &settings, bool save)
+    {
+        const std::lock_guard lock(g_sharedLock);
+        g_posted.emplace(settings, save);
     }
 
     void requestApply() { g_applyPending = true; }
@@ -306,6 +358,7 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
         render::Renderer::instance().setFrameRate(g_edited.frameRate);
         g_current = g_edited;
+        publish();
         const auto [w, h] = windowSize();
         std::fprintf(stderr, "[video] applied %dx%d %s, render scale %.2f, frame rate %s (window %dx%d)\n", g_current.width,
                      g_current.height, modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), w, h);
