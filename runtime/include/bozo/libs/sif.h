@@ -69,6 +69,10 @@ namespace bozo::libs
         // memory as much as ours (a level's heap reaches 0x1f10000 and overwrites it), so a call finds its server here.
         std::map<uint32_t, uint32_t> bound;
         uint32_t sreg[32] = {};
+        // The IOP side's 32 software registers, as compiled modules read and write them (sifcmd sceSifGetSreg 6,
+        // sceSifSetSreg 7). The SDK's set-sreg system command (0x80000001: index at +0x10, value at +0x14 of the packet)
+        // writes the other side's: a module's sceSifSendCmd sets sreg above; a port answering the EE's sets this one.
+        uint32_t iopSreg[32] = {};
         uint32_t dmaId = 0;  // the last SIF DMA transfer's id (sceSifSetDma: 1, 2, ...)
         uint32_t modules = 0; // modules loaded since the IOP's reboot (their ids are 1, 2, ...)
         IopHeap heap;
