@@ -15,7 +15,7 @@
 //   60, the frames between the game's drawn interpolated; the window's loop presents at the monitor's refresh with
 //   vsync, or that many a second without).
 //
-// Everything here runs on the window's thread.
+// Everything here runs on the window's thread, except shared() and post() (any thread: a game's own menu).
 #pragma once
 
 #include <string>
@@ -72,6 +72,21 @@ namespace bozo::app::video
     std::string configPath();
 
     const char *modeName(WindowMode mode);
+    // Any thread (a port's in-game menu, on the game's thread): what is applied now, with the sizes and refresh to
+    // offer, copied by the window's thread each time it changes; `open` false until the window is open.
+    struct Shared
+    {
+        Settings applied;
+        std::vector<std::pair<int, int>> resolutions;
+        std::pair<int, int> monitor{0, 0};
+        int monitorRefresh = 0;
+        bool open = false;
+    };
+    Shared shared();
+    // Any thread: `settings` applied at the next frameUpdate as the Video tab's Apply (it becomes edited() too), and
+    // written to video.ini when `save`. A later post before that frame replaces it.
+    void post(const Settings &settings, bool save);
+
     // Sizes to offer: common 4:3 and 16:9 ones that fit the monitor, the monitor's own, and the current one.
     std::vector<std::pair<int, int>> resolutions();
     std::pair<int, int> monitorSize();
