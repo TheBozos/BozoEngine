@@ -207,6 +207,7 @@ namespace bozo::libs
         // turn it into DMA controller registers or execute a hardware environment.
         std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
+        MpegOptions mpegOptions;
         SifState sif;
         TimerState timers;
         SndDriver snd;

@@ -499,6 +499,35 @@ static void padCalls()
     eq("req name", std::strcmp(reinterpret_cast<const char *>(m.rt->memory.ram() + 0x100300), "BUSY"), 0);
 }
 
+// libmpeg off the reference layout (MpegOptions, a game on the SDK's model): the SDK's results, nothing written outside
+// the work area, sceMpegAddBs taking ((bytes + 19) >> 4) << 4 bytes of coded video, sceMpegIsEnd from the stream alone.
+static void mpegSdkModel()
+{
+    Machine m;
+    m.libs.mpegOptions.referenceLayout = false;
+    m.libs.mpegOptions.paced = false;
+    m.libs.mpegOptions.sdkNodata = true;
+    const uint32_t tmbWord = 0x1717BC;
+    std::memset(m.rt->memory.ram() + tmbWord, 0xAB, 4);
+    eq("create (SDK)", m.call("sceMpegCreate", {0x100000, 0x110000, 0x122800}), 1);
+    eq("no write to TMB's address", m.rt->memory.ram()[tmbWord], 0xAB);
+    eq("first callback: none before", m.call("sceMpegAddCallback", {0x100000, 1, 0x1BE698, 0x200000}), 0);
+    eq("again: the previous one", m.call("sceMpegAddCallback", {0x100000, 1, 0x1BE6A0, 0x200000}), 0x1BE698);
+    // A sequence header and a picture start, 0xFB0 bytes given: 0xFC0 taken, as the SDK sends to the IPU.
+    uint8_t *bs = m.rt->memory.ram() + 0x120000;
+    std::memset(bs, 0, 0x1000);
+    const uint8_t seq[] = {0, 0, 1, 0xB3}, pic[] = {0, 0, 1, 0x00};
+    std::memcpy(bs, seq, 4);
+    std::memcpy(bs + 0x40, pic, 4);
+    eq("add bs", m.call("sceMpegAddBs", {0x100000, 0x120000, 0xFB0}), 1);
+    eq("rounded up to 16 with the 19", m.libs.mpeg.es.size(), 0xFC0);
+    eq("its picture counted", m.libs.mpeg.pictureStarts, 1);
+    eq("not the end while input may come", m.call("sceMpegIsEnd", {0x100000}), 0);
+    m.call("sceMpegReset", {0x100000});
+    eq("reset leaves TMB's static word alone", m.rt->memory.ram()[0x171904], 0);
+    eq("delete (SDK)", m.call("sceMpegDelete", {0x100000}), 1);
+}
+
 static void cardCalls()
 {
     Machine m;
@@ -716,6 +745,7 @@ static void debugCalls()
 int main()
 {
     padCalls();
+    mpegSdkModel();
     cardCalls();
     dmaCalls();
     sifCalls();

@@ -59,6 +59,25 @@ namespace bozo::libs
         virtual void samples(const int16_t *frames, size_t count, int64_t pts) { (void)frames, (void)count, (void)pts; }
     };
 
+    // How libmpeg answers a game: by default as TMB's reference build does (its sceMpeg layout, results and pacing).
+    // A port whose game uses libmpeg the SDK's way (The Third Age: sceMpegAddBs from a Nodata callback, its own
+    // pacing) sets them; they survive sceMpegCreate.
+    struct MpegOptions
+    {
+        // The reference's layout: sceMpegCreate writes its sceMpeg and work area (with TMB's addresses) and takes a
+        // block and each callback's data from the game's heap, sceMpegReset clears TMB's static word, and the results
+        // are the reference's. Off: libmpeg writes nothing outside the work area the game gave sceMpegCreate (the
+        // Nodata callback's 32-byte data is its first bytes), and the results are the SDK's (sceMpegCreate and
+        // sceMpegDelete 1, sceMpegAddCallback the previous callback).
+        bool referenceLayout = true;
+        // sceMpegGetPicture holds each picture until its two fields are due; off, a game that paces itself gets it at
+        // once and sceMpegIsEnd answers from the stream alone.
+        bool paced = true;
+        // The Nodata callback as the SDK calls it: (mp, callback data, the data given to sceMpegAddCallback); a 0 it
+        // returns ends the input (the pictures left come out, then sceMpegIsEnd answers 1).
+        bool sdkNodata = false;
+    };
+
     // One sceMpeg (TMB plays one movie at a time).
     struct MpegState
     {
@@ -91,6 +110,7 @@ namespace bozo::libs
         uint32_t starts = 0;        // picture starts and sequence ends whole in the stream so far
         uint32_t pictureStarts = 0; // picture starts alone
         bool sequenceEnd = false;
+        bool inputEnded = false; // the Nodata callback said there is no more input (MpegOptions::sdkNodata)
         bool headerOpen = false;
         std::vector<size_t> cuts; // where each coded picture's data (with its headers) begins
         size_t sent = 0;          // coded pictures given to the decoder
