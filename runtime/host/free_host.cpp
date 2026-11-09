@@ -225,6 +225,7 @@ namespace bozo::host
         }
         ++stats_.libraryCalls;
         const libs::Function &f = *n->second;
+        ++stats_.libraryByName[f.name];
         const ee::Thread *self = d_->currentThread();
         const int32_t selfId = self ? self->id : 0;
         const uint32_t ra = gpr(ctx, 31);
@@ -366,6 +367,7 @@ namespace bozo::host
         if (!f)
             return false;
         ++stats_.libraryCalls;
+        ++stats_.libraryByName[f->name];
         libs_.pin = libs::Pin{};
         libs::Guest g(d_->runtime(), ctx);
         try
@@ -423,6 +425,7 @@ namespace bozo::host
         if (!f)
             return false;
         ++stats_.libraryCalls;
+        ++stats_.libraryByName[f->name];
         libs_.pin = libs::Pin{};
         libs::Guest g(d_->runtime(), ctx);
         f->handler(libs_, g);

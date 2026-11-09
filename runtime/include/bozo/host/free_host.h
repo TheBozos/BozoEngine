@@ -57,6 +57,8 @@ namespace bozo::host
         uint64_t libraryCalls = 0, kernelCalls = 0, overrideCalls = 0, vu0Calls = 0, ioAccesses = 0, ioUnknown = 0;
         uint64_t frames = 0;
         std::map<std::string, uint64_t> unanswered; // calls with no native answer (by name), which end the run
+        // The native library calls by function (its libs::Function name, a static string), as libraryCalls counts them.
+        std::unordered_map<const char *, uint64_t> libraryByName;
         // (guest PC, device address) -> {reads, writes}; populated only when profileIo is enabled. BC0F and BC0T count as
         // reads of kCop0ConditionSite.
         std::map<std::pair<uint32_t, uint32_t>, std::array<uint64_t, 2>> ioSites;
