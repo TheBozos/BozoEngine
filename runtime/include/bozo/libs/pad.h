@@ -110,5 +110,12 @@ namespace bozo::libs
         bool multitap = false;
         // Whether sceMtapPortOpen finds a multitap in port 1 (a port or the settings can unplug it).
         bool multitapAttached = true;
+        // libpad2 (pad2.cpp): its sockets, by number, each on a port and slot.
+        struct Pad2Socket
+        {
+            int32_t port = 0, slot = 0;
+        };
+        std::map<int32_t, Pad2Socket> pad2Sockets;
+        int32_t pad2Next = 0;
     };
 }
