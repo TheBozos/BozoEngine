@@ -338,6 +338,15 @@ namespace bozo::host
         }
         if (soundDue_.load(std::memory_order_relaxed))
             stallSound(ctx);
+        if (opt_.advanceLibrariesWhileStalled && opt_.sound && libs_.audioProvider)
+        {
+            const uint64_t at = ctx ? d_->now(ctx) : d_->now(), quarter = d_->kernel().field() / 4;
+            if (at - lastFrameCycle_ > d_->kernel().field() && at - lastStallAdvance_ >= quarter)
+            {
+                lastStallAdvance_ = at;
+                libs_.audioProvider(at);
+            }
+        }
         if (!opt_.stallFields)
             return;
         const uint64_t now = d_->now(ctx);
