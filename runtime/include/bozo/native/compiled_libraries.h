@@ -41,6 +41,13 @@ namespace bozo::native::irx
         // Deliver already completed native audio jobs at linked-call safe points.
         // Opt in before execution; existing ports retain their callback schedule.
         void useReadyAudioCompletions();
+        // With ready completions, also deliver them when an import call returns, not only a linked function: a routine
+        // that starts a libsd transfer and then polls its completion flag in a loop with no call in it sees the flag.
+        // Opt in before execution (it implies useReadyAudioCompletions); ports without it keep their schedule.
+        void useReadyAudioCompletionsAfterImports();
+        // The work a root call (a module's start, a callback) may do before it counts as stuck: 1,000,000 by default. A
+        // module whose start legitimately does more (EA's AUDIOPF clears its large buffers byte by byte) raises it.
+        void setRootCallBudget(uint64_t budget);
         // Map linked frame listeners to actual native game-frame completions.
         // Opt in before execution; no display interrupt or frame period is generated.
         void useNativeFrameCallbacks();

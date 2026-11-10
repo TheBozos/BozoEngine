@@ -106,7 +106,8 @@ namespace bozo::native::irx
             bool readyDisc = false;
         };
         std::deque<Event> events;
-        bool readyAudioCompletions = false, deliveringReadyAudio = false;
+        bool readyAudioCompletions = false, deliveringReadyAudio = false, readyAudioAfterImports = false;
+        uint64_t rootCallBudget = 1000000;
         bool nativeDiscFiles = false, deliveringReadyDisc = false;
         uint64_t discRequestSerial = 0;
         std::set<uint64_t> discRequests; // Actual host read/copy invocations only.
@@ -248,7 +249,7 @@ namespace bozo::native::irx
             {
                 ram = o.memory.data();
                 ramSize = static_cast<uint32_t>(o.memory.size());
-                budget = 1000000;
+                budget = o.rootCallBudget;
             }
             uint8_t read8(uint32_t a) override { return owner.memory[owner.physical(a, 1)]; }
             uint16_t read16(uint32_t a) override
@@ -292,6 +293,8 @@ namespace bozo::native::irx
                                             cpu.gpr[4], cpu.gpr[5]));
                         }
                         cpu.pc = cpu.gpr[31];
+                        if (owner.readyAudioAfterImports)
+                            owner.deliverReadyAudio();
                         owner.deliverReadyDisc();
                         if (owner.current && owner.tasks.at(owner.current).waiting)
                             return false;
@@ -1375,9 +1378,38 @@ namespace bozo::native::irx
         }
         if (lib == "sifcmd")
         {
+            // sceSifInitCmd (4) and sceSifExitCmd (5): there is no command transport to start or stop.
+            if (n == 4 || n == 5)
+            {
+                ret();
+                return;
+            }
+            // sceSifGetSreg (6) and sceSifSetSreg (7, returns the old value): the IOP side's software registers.
+            if (n == 6)
+            {
+                ret(libraries.sif.iopSreg[a0 & 31u]);
+                return;
+            }
+            if (n == 7)
+            {
+                const uint32_t old = libraries.sif.iopSreg[a0 & 31u];
+                libraries.sif.iopSreg[a0 & 31u] = a1;
+                ret(old);
+                return;
+            }
             if (n == 12 || n == 13)
             {
                 if (a2<16 || a2>112) {ret();return;}
+                // The set-sreg system command: writes the EE's software register at once (the packet's index at +0x10,
+                // its value at +0x14). The SDK returns a nonzero transfer id.
+                if (a0 == 0x80000001u)
+                {
+                    if (a2 < 0x18 || uint64_t(a1) + a2 > memory.size())
+                        throw std::runtime_error("native set-sreg packet is outside owned storage");
+                    libraries.sif.sreg[read(a1 + 0x10) & 31u] = read(a1 + 0x14);
+                    ret(++transferSerial);
+                    return;
+                }
                 if (a0&0x80000000u) throw std::runtime_error("native user messages do not process system commands");
                 if (!libraries.sif.receiveCommand) throw std::runtime_error("native EE user-message receiver is not installed");
                 const auto destination=read(c.gpr[29]+16),suppliedExtra=read(c.gpr[29]+20);
@@ -1511,6 +1543,27 @@ namespace bozo::native::irx
             // only while actual host I/O and the bounded destination copy run.
             if(n==11){ret(!discRequests.empty());return;}
             if(n==8){ret(discError);return;}
+            // sceCdInit (4) and sceCdMmode (75): no drive to start or switch, 1. sceCdDiskReady (13): the image is
+            // always ready, 2 (SCECdComplete).
+            if(n==4||n==75){ret(1);return;}
+            if(n==13){ret(2);return;}
+            // sceCdSearchFile (10): the sceCdlFILE record (sector, byte length, name[16], date[8]) from the image's
+            // ISO directory, as the EE library's sceCdSearchFile writes it; 0 when the file is not there.
+            if(n==10)
+            {
+                auto &disc=libraries.cd.disc;std::string error;
+                if(!disc.isOpen() && !disc.open(libraries.cd.imagePath,error)){ret(0);return;}
+                const std::string name=string(a1);
+                uint32_t lbn=0,bytes=0;
+                if(!disc.findFile(name,lbn,bytes)){ret(0);return;}
+                uint8_t record[32]={};
+                std::memcpy(record,&lbn,4);std::memcpy(record+4,&bytes,4);
+                const auto slash=name.find_last_of("/\\");
+                const auto leaf=name.substr(slash==std::string::npos?0:slash+1);
+                std::memcpy(record+8,leaf.data(),std::min<size_t>(16,leaf.size()));
+                copy(a0,record,sizeof(record));
+                ret(1);return;
+            }
             if(n==37)
             {
                 const bool admitted=std::any_of(images.begin(),images.end(),[&](const auto &image){
@@ -1711,6 +1764,17 @@ namespace bozo::native::irx
         if (!p.started.empty() || p.invokeDepth || !p.tasks.empty() || p.calls)
             throw std::runtime_error("native audio completion policy must be installed before execution");
         p.readyAudioCompletions = true;
+    }
+    void CompiledLibraries::setRootCallBudget(uint64_t budget)
+    {
+        if (!budget)
+            throw std::runtime_error("native root call budget must be positive");
+        impl_->rootCallBudget = budget;
+    }
+    void CompiledLibraries::useReadyAudioCompletionsAfterImports()
+    {
+        useReadyAudioCompletions();
+        impl_->readyAudioAfterImports = true;
     }
     void CompiledLibraries::useNativeFrameCallbacks()
     {
