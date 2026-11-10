@@ -9,7 +9,8 @@
 // - Edge: edge-directed, in the family of Hyllian's xBR. For each corner of a texel, the colour differences along the two
 //   diagonals of its 5x5 neighbourhood decide whether an edge cuts that corner, and whether it is at 45 degrees, shallow or
 //   steep; the corner then takes the neighbouring colour by the area the edge's line covers in each output texel (exact
-//   coverage, so any power-of-two factor works). Straight edges and flat areas stay as they are, texel for texel.
+//   coverage, so any power-of-two factor works), over the smooth filter's image: texels with no diagonal edge are
+//   interpolated as the smooth filter does (replicated texels look blocky once the GPU filters them), flat areas exactly.
 // - Smooth: Catmull-Rom bicubic, each value held within its four nearest texels (no ringing).
 // Both blend with premultiplied alpha, so a transparent texel's colour never bleeds into a visible one (no halo at a
 // cutout's edge); a texture that repeats is scaled with the opposite edge as its neighbour, one that clamps with its own.

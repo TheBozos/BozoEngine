@@ -84,8 +84,9 @@ int main()
         bool sharp = true;
         for (uint32_t y = 0; y < out.height; ++y)
             for (uint32_t x = 0; x < out.width; ++x)
-                sharp = sharp && out.rgba[y * out.width + x] == (x < 16 ? kRed : kBlue);
-        check(sharp, "edge: a straight edge stays sharp");
+                if (x < 12 || x >= 20)
+                    sharp = sharp && out.rgba[y * out.width + x] == (x < 16 ? kRed : kBlue);
+        check(sharp, "edge: a straight edge blends within a texel of it only");
     }
     {
         const Texture stairs = image(8, 8, [](uint32_t x, uint32_t y) { return x > y ? kBlue : kWhite; });
@@ -101,6 +102,8 @@ int main()
                     ++wrong;
             }
             check(blended > 0, "edge: a staircase's steps are smoothed");
+            check(out.rgba != upscaleTexture(stairs, TextureUpscale{u.factor, UpscaleFilter::Smooth}, false, false).rgba,
+                  "edge: the steps cut, not only interpolated");
             check(wrong == 0, "edge: only blue and white mixed");
             check(out.rgba[0] == kWhite && out.rgba[out.width - 1] == kBlue, "edge: the corners far from the diagonal kept");
             const uint32_t below = out.rgba[static_cast<size_t>(out.width) * (out.height - 1) + u.factor * 3];

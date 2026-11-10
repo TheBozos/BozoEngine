@@ -230,10 +230,12 @@ namespace bozo::render
             return cut;
         }
 
+        void scaleSmooth(const Texture &source, const Image &image, uint8_t factor, std::vector<uint32_t> &out);
+
         void scaleEdge(const Texture &source, const Image &image, uint8_t factor, std::vector<uint32_t> &out)
         {
             const uint32_t width = source.width * factor;
-            out.assign(static_cast<size_t>(width) * source.height * factor, 0u);
+            scaleSmooth(source, image, factor, out);
             const Coverage *tables[4];
             for (int corner = 0; corner < 4; ++corner)
                 tables[corner] = &coverage(factor, corner);
@@ -256,12 +258,10 @@ namespace bozo::render
                     }
                     uint32_t *const base = &out[static_cast<size_t>(y) * factor * width + static_cast<size_t>(x) * factor];
                     if (!any)
-                    {
-                        for (uint32_t j = 0; j < factor; ++j)
-                            std::fill_n(base + static_cast<size_t>(j) * width, factor, original);
                         continue;
-                    }
-                    std::fill(cell.begin(), cell.end(), image.colour[e]);
+                    for (uint32_t j = 0; j < factor; ++j)
+                        for (uint32_t i = 0; i < factor; ++i)
+                            cell[static_cast<size_t>(j) * factor + i] = premultiply(base[static_cast<size_t>(j) * width + i]);
                     std::fill(touched.begin(), touched.end(), uint8_t{0});
                     for (int corner = 0; corner < 4; ++corner)
                     {
@@ -280,7 +280,8 @@ namespace bozo::render
                         for (uint32_t i = 0; i < factor; ++i)
                         {
                             const size_t c = static_cast<size_t>(j) * factor + i;
-                            base[static_cast<size_t>(j) * width + i] = touched[c] ? straighten(cell[c], original) : original;
+                            if (touched[c])
+                                base[static_cast<size_t>(j) * width + i] = straighten(cell[c], original);
                         }
                 }
         }
@@ -336,6 +337,13 @@ namespace bozo::render
                         }
                     sum = {std::clamp(sum.r, low.r, high.r), std::clamp(sum.g, low.g, high.g), std::clamp(sum.b, low.b, high.b),
                            std::clamp(sum.a, low.a, high.a)};
+                    const uint32_t c00 = source.rgba[image.at(x0, y0)];
+                    if (c00 == source.rgba[image.at(x0 + 1, y0)] && c00 == source.rgba[image.at(x0, y0 + 1)] &&
+                        c00 == source.rgba[image.at(x0 + 1, y0 + 1)])
+                    {
+                        out[static_cast<size_t>(oy) * width + ox] = c00;
+                        continue;
+                    }
                     const int32_t nx = static_cast<int32_t>(std::lround(std::floor(sx + 0.5f)));
                     const int32_t ny = static_cast<int32_t>(std::lround(std::floor(sy + 0.5f)));
                     const uint32_t nearest = source.rgba[image.at(nx, ny)];

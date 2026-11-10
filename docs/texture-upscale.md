@@ -31,12 +31,14 @@ is drawn as it is. Copies are kept by content (another `Texture` object with the
 ## Filters
 
 Both are written for BozoEngine from the published descriptions of the methods; no code is taken from any
-implementation (xBR's and xBRZ's code, and most shader packs, are under licences BozoEngine cannot take).
+implementation (xBRZ is GPL, as are many shader packs: nothing of them may enter an MIT engine).
 
 - `edge`: edge-directed, in the family of Hyllian's xBR (2011). For each corner of a texel, the colour differences along
   the two diagonals of its 5x5 neighbourhood decide whether an edge cuts that corner, and whether it runs at 45 degrees,
   shallow or steep. The corner then takes the neighbouring colour by the area the edge's line covers in each output
-  texel, computed for any power-of-two factor. Straight edges and flat areas are kept texel for texel.
+  texel, computed for any power-of-two factor. It works over the smooth filter's image: a texel with no diagonal edge
+  is interpolated as `smooth` does it (replicating it, as pixel-art scalers do, looks blocky on painted textures once
+  the GPU filters the copy), and flat areas are kept texel for texel.
 - `smooth`: Catmull-Rom bicubic, each value held within its four nearest texels (no ringing).
 
 Both blend premultiplied by alpha, so the colour of a transparent texel never reaches a visible one (no dark or coloured
