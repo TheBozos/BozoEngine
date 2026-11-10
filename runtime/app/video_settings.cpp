@@ -137,16 +137,7 @@ namespace bozo::app::video
         // PS2X_TEXTURE_PACK_RELOAD=1 a thread that lists it again every 2 s (changed files drawn again: development).
         void applyTexturePack(const std::string &setting)
         {
-            std::string folder;
-            std::error_code ec;
-            if (setting.empty())
-            {
-                const std::filesystem::path &user = userDirectory();
-                if (!user.empty() && std::filesystem::is_directory(user / "texture_pack", ec))
-                    folder = (user / "texture_pack").string();
-            }
-            else if (setting != "off" && setting != "0")
-                folder = setting;
+            const std::string folder = texturePackFolder(setting);
             render::TextureReplacements::instance().setFolder(folder);
             const char *reload = std::getenv("PS2X_TEXTURE_PACK_RELOAD");
             static bool s_watching = false;
@@ -403,6 +394,17 @@ namespace bozo::app::video
 
     void requestApply() { g_applyPending = true; }
 
+    std::string texturePackFolder(const std::string &setting)
+    {
+        if (setting == "off" || setting == "0")
+            return std::string();
+        if (!setting.empty())
+            return setting;
+        std::error_code ec;
+        const std::filesystem::path &user = userDirectory();
+        return !user.empty() && std::filesystem::is_directory(user / "texture_pack", ec) ? (user / "texture_pack").string() : std::string();
+    }
+
     const Settings &current() { return g_current; }
     Settings &edited() { return g_edited; }
 
@@ -414,6 +416,8 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
         render::Renderer::instance().setFrameRate(g_edited.frameRate);
         render::Renderer::instance().setTextureUpscale(g_edited.textureUpscale);
+        if (g_edited.texturePack != g_current.texturePack)
+            applyTexturePack(g_edited.texturePack);
         g_current = g_edited;
         publish();
         const auto [w, h] = windowSize();

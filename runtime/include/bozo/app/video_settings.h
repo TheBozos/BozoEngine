@@ -53,6 +53,9 @@ namespace bozo::app::video
         std::string texturePack;
     };
 
+    // The texture replacements' folder a texture_pack setting names ("" when off or when there is none).
+    std::string texturePackFolder(const std::string &setting);
+
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).
     bool parseFrameRate(const char *text, int &rate);
     std::string frameRateName(int rate);

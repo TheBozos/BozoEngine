@@ -343,6 +343,23 @@ namespace bozo::app
         envNote("PS2X_TEXTURE_FILTER");
         ImGui::TextDisabled("The game's textures redrawn 2 or 4 times as large (applies at once; made in the background).");
 
+        // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
+        {
+            static std::string s_lastOn; // a set folder (video.ini, PS2X_TEXTURE_PACK) given back when turned on again
+            const bool on = edited.texturePack != "off" && edited.texturePack != "0";
+            if (on && !edited.texturePack.empty())
+                s_lastOn = edited.texturePack;
+            const std::string folder = video::texturePackFolder(on ? edited.texturePack : s_lastOn);
+            if (!folder.empty())
+            {
+                bool use = on;
+                if (ImGui::Checkbox("Texture pack", &use))
+                    edited.texturePack = use ? s_lastOn : "off";
+                envNote("PS2X_TEXTURE_PACK");
+                ImGui::TextDisabled("Your own replacement textures, in %s (applies at once; over texture upscaling).", folder.c_str());
+            }
+        }
+
         // The window's frame rate: the game's 60, or the monitor's with the frames between the game's interpolated (a set
         // rate, from video.ini or PS2X_FRAME_RATE, is offered as it is).
         const int refresh = video::monitorRefresh();

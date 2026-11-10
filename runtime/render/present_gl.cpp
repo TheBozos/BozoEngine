@@ -21,6 +21,7 @@
 #include "bozo/render/texture_replace.h"
 
 #include <algorithm>
+#include <list>
 #include <cstdlib>
 #include <chrono>
 #include <cmath>
@@ -421,13 +422,32 @@ void main()
             uint64_t replacements = 0; // TextureReplacements::generation() when it was sent
             uint8_t holds = 0;         // what it was sent: 0 the texture as it is, 1 its upscaled copy, 2 its replacement
             size_t bytes = 0;        // sent to the GPU (generated levels not counted)
+            const Texture *shared = nullptr; // a larger copy's: the GPU texture is sharedCopies' (not this slot's own)
         };
+        // Larger copies (replacements, upscaled copies) on the GPU, by the copy (the same object for the same texels: the
+        // replacements' and the upscaler's caches give it back): a slot whose key changed for the same texture (a game's
+        // texture manager moving it in its VRAM gives it a new TEX0) takes the copy already there instead of sending it
+        // again. Copies no slot uses are kept, least recently used dropped first, up to kIdleCopyBytes.
+        struct SharedCopy
+        {
+            gl::GLuint id = 0;
+            std::shared_ptr<const Texture> copy;
+            int levels = 0;
+            size_t bytes = 0;
+            int users = 0;
+            std::list<const Texture *>::iterator idle;
+        };
+        std::unordered_map<const Texture *, SharedCopy> sharedCopies;
+        std::list<const Texture *> idleCopies; // users 0, most recent first
+        size_t idleBytes = 0;
+        static constexpr size_t kIdleCopyBytes = size_t(512) << 20;
+        uint64_t sharedGeneration = 0; // TextureReplacements::generation() of the copies kept
         size_t textureBytes = 0;
         double textureStatsAt = 0.0;
         // Larger copies (replacements, upscaled copies) sent to the GPU this present, in bytes: past kLargeUploadBytes the
         // others wait for a later present, drawn as they were meanwhile, so copies finishing together (a level's, the
         // workers' batch) never take a frame's time. The first of a present always goes.
-        static constexpr size_t kLargeUploadBytes = size_t(12) << 20;
+        static constexpr size_t kLargeUploadBytes = size_t(4) << 20;
         size_t largeUploads = 0;
         void sent(GpuTexture &slot, const Texture &image)
         {
@@ -507,7 +527,7 @@ void main()
                 scaled = TextureUpscaler::instance().find(source, upscale, wrapU, wrapV);
                 wanted = scaled ? 1u : 0u;
             }
-            if (scaled && !(same && wanted <= slot.holds))
+            if (scaled && !(same && wanted <= slot.holds) && !sharedCopies.count(scaled.get()))
             {
                 // A larger copy to send: within this present's upload budget, else at a later present (drawn as it was).
                 size_t bytes = scaled->rgba.size() * sizeof(uint32_t);
@@ -560,14 +580,74 @@ void main()
             return slot.id;
         }
 
+        void dropIdle(size_t keep)
+        {
+            while (idleBytes > keep && !idleCopies.empty())
+            {
+                const auto it = sharedCopies.find(idleCopies.back());
+                idleCopies.pop_back();
+                gl::api().DeleteTextures(1, &it->second.id);
+                idleBytes -= it->second.bytes;
+                textureBytes -= it->second.bytes;
+                sharedCopies.erase(it);
+            }
+        }
+
+        // The slot's GPU texture let go: its own deleted, a shared copy's use counted down (kept, idle).
+        void release(GpuTexture &slot)
+        {
+            if (slot.shared)
+            {
+                SharedCopy &c = sharedCopies[slot.shared];
+                if (--c.users == 0)
+                {
+                    idleCopies.push_front(slot.shared);
+                    c.idle = idleCopies.begin();
+                    idleBytes += c.bytes;
+                    dropIdle(kIdleCopyBytes);
+                }
+            }
+            else if (slot.id != 0)
+            {
+                gl::api().DeleteTextures(1, &slot.id);
+                textureBytes -= slot.bytes;
+            }
+            slot.id = 0;
+            slot.bytes = 0;
+            slot.shared = nullptr;
+        }
+
         gl::GLuint texture(uint64_t key, const std::shared_ptr<const Texture> &source, TextureUpscale upscale, bool wrapU, bool wrapV)
         {
             GpuTexture &slot = textures[key];
             std::shared_ptr<const Texture> scaled;
+            if (const uint64_t generation = TextureReplacements::instance().generation(); generation != sharedGeneration)
+            {
+                sharedGeneration = generation; // replacements changed (another pack, off, a hot reload): idle copies dropped
+                dropIdle(0);
+            }
             if (stale(slot, source, upscale, wrapU, wrapV, scaled))
             {
-                if (slot.id != 0)
-                    gl::api().DeleteTextures(1, &slot.id);
+                release(slot);
+                if (scaled)
+                {
+                    const auto found = sharedCopies.find(scaled.get());
+                    if (found != sharedCopies.end())
+                    {
+                        SharedCopy &c = found->second;
+                        if (c.users++ == 0)
+                        {
+                            idleCopies.erase(c.idle);
+                            idleBytes -= c.bytes;
+                        }
+                        slot.id = c.id;
+                        slot.shared = scaled.get();
+                        slot.source = source;
+                        slot.levels = c.levels;
+                        slot.generated = false;
+                        return slot.id;
+                    }
+                }
                 const Texture &image = scaled ? *scaled : *source;
                 slot.id = makeTexture(image.rgba.data(), static_cast<int>(image.width), static_cast<int>(image.height), gl::kRepeat);
                 slot.source = source;
@@ -587,6 +667,12 @@ void main()
                         break;
                 }
                 g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, slot.levels);
+                if (scaled) // the slot's texture becomes a shared copy
+                {
+                    SharedCopy &c = sharedCopies[scaled.get()];
+                    c = SharedCopy{slot.id, scaled, slot.levels, slot.bytes, 1, {}};
+                    slot.shared = scaled.get();
+                }
             }
             return slot.id;
         }
@@ -702,8 +788,13 @@ void main()
             const gl::Api &g = gl::api();
             for (auto *map : {&textures, &overlayTextures})
                 for (auto &[key, slot] : *map)
-                    if (slot.id != 0)
+                    if (slot.id != 0 && !slot.shared)
                         g.DeleteTextures(1, &slot.id);
+            for (auto &[copy, c] : sharedCopies)
+                g.DeleteTextures(1, &c.id);
+            sharedCopies.clear();
+            idleCopies.clear();
+            idleBytes = 0;
             for (auto &t : auxiliary) {
                 if (t.colour) g.DeleteTextures(1,&t.colour);
                 if (t.depth) g.DeleteRenderbuffers(1,&t.depth);
