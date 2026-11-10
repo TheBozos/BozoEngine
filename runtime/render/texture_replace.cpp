@@ -7,6 +7,7 @@
 #include "bozo/hash.h"
 #include "bozo/render/png_read.h"
 #include "bozo/render/texture_upscale.h"
+#include "bozo/render/worker_priority.h"
 
 #include <algorithm>
 #include <chrono>
@@ -360,7 +361,7 @@ namespace bozo::render
             const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
             for (unsigned i = 0, n = std::clamp(cores / 4u, 1u, 2u); i < n; ++i)
             {
-                s.workers.emplace_back([state = m_state] { state->work(); });
+                s.workers.emplace_back([state = m_state] { lowerWorkerPriority(); state->work(); });
                 s.workers.back().detach();
             }
         }

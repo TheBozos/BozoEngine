@@ -436,7 +436,10 @@ void main()
                 bytes += level.size() * sizeof(uint32_t);
             textureBytes += bytes - slot.bytes;
             slot.bytes = bytes;
+            ++uploads;
+            uploadedBytes += bytes;
         }
+        uint64_t uploads = 0, uploadedBytes = 0; // every texture sent, for the stats (PS2X_TEXTURE_STATS)
         std::unordered_map<uint64_t, GpuTexture> textures;
         // The overlay's textures, their alpha from the GS's (0x80 is 1.0) to 255. By the texture's key when it has one
         // (a picture that changes: one slot, its image replaced), else its address.
@@ -498,7 +501,8 @@ void main()
             if (source->asset)
                 scaled = replacements.find(source, loading);
             uint8_t wanted = scaled ? 2u : 0u;
-            if (!scaled && upscale.on())
+            // No upscaled copy for a texture whose replacement is being read: the workers would make one only to drop it.
+            if (!scaled && !loading && upscale.on())
             {
                 scaled = TextureUpscaler::instance().find(source, upscale, wrapU, wrapV);
                 wanted = scaled ? 1u : 0u;
@@ -1416,11 +1420,14 @@ void main()
         {
             gpu.textureStatsAt = presentNow;
             const TextureUpscaler::Stats u = TextureUpscaler::instance().stats();
-            std::fprintf(stderr, "[render] textures: %zu sent, %.1f MB; upscale %s %s: %llu made (%.1f ms each, %.2f s), %.1f MB kept, %llu waiting\n",
+            std::fprintf(stderr, "[render] textures: %zu sent, %.1f MB, %llu uploads (%.1f MB) since the last line; upscale %s %s: %llu made "
+                                 "(%.1f ms each, %.2f s), %.1f MB kept, %llu waiting\n",
                          gpu.textures.size() + gpu.overlayTextures.size(), static_cast<double>(gpu.textureBytes) / 1048576.0,
+                         static_cast<unsigned long long>(gpu.uploads), static_cast<double>(gpu.uploadedBytes) / 1048576.0,
                          upscaleFactorName(upscale.factor), upscaleFilterName(upscale.filter), static_cast<unsigned long long>(u.made),
                          u.made ? u.seconds * 1000.0 / static_cast<double>(u.made) : 0.0, u.seconds, static_cast<double>(u.bytes) / 1048576.0,
                          static_cast<unsigned long long>(u.queued - u.made));
+            gpu.uploads = gpu.uploadedBytes = 0;
             if (const TextureReplacements::Stats r = TextureReplacements::instance().stats(); r.files)
                 std::fprintf(stderr, "[render] texture replacements: %llu files, %llu loaded (%.1f ms each), %llu refused, %.1f MB kept\n",
                              static_cast<unsigned long long>(r.files), static_cast<unsigned long long>(r.loaded),

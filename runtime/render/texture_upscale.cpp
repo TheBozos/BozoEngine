@@ -3,6 +3,7 @@
 //
 // Texture upscaling (bozo/render/texture_upscale.h).
 #include "bozo/render/texture_upscale.h"
+#include "bozo/render/worker_priority.h"
 
 #include "bozo/hash.h"
 
@@ -544,7 +545,7 @@ namespace bozo::render
             const unsigned count = std::clamp(cores / 4u, 1u, 4u);
             for (unsigned i = 0; i < count; ++i)
             {
-                s.workers.emplace_back([state = m_state] { state->work(); });
+                s.workers.emplace_back([state = m_state] { lowerWorkerPriority(); state->work(); });
                 s.workers.back().detach();
             }
         }
