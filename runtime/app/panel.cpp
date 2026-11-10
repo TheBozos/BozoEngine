@@ -323,6 +323,26 @@ namespace bozo::app
         envNote("PS2X_RENDER_SCALE");
         ImGui::TextDisabled("The 3D against the window's resolution (applies at once).");
 
+        static const uint8_t kUpscales[] = {1, 2, 4};
+        static const char *kUpscaleNames[] = {"Off (the game's textures)", "2x", "4x"};
+        int upscaleIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kUpscales); ++i)
+            if (edited.textureUpscale.factor == kUpscales[i])
+                upscaleIndex = i;
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Texture upscaling", &upscaleIndex, kUpscaleNames, IM_ARRAYSIZE(kUpscaleNames)))
+            edited.textureUpscale.factor = kUpscales[upscaleIndex];
+        envNote("PS2X_TEXTURE_UPSCALE");
+        static const char *kFilterNames[] = {"Edge-directed (sharp edges)", "Smooth (bicubic)"};
+        int filterIndex = edited.textureUpscale.filter == render::UpscaleFilter::Smooth ? 1 : 0;
+        ImGui::BeginDisabled(!edited.textureUpscale.on());
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Upscaling filter", &filterIndex, kFilterNames, IM_ARRAYSIZE(kFilterNames)))
+            edited.textureUpscale.filter = filterIndex == 1 ? render::UpscaleFilter::Smooth : render::UpscaleFilter::Edge;
+        ImGui::EndDisabled();
+        envNote("PS2X_TEXTURE_FILTER");
+        ImGui::TextDisabled("The game's textures redrawn 2 or 4 times as large (applies at once; made in the background).");
+
         // The window's frame rate: the game's 60, or the monitor's with the frames between the game's interpolated (a set
         // rate, from video.ini or PS2X_FRAME_RATE, is offered as it is).
         const int refresh = video::monitorRefresh();
@@ -351,9 +371,10 @@ namespace bozo::app
 
         ImGui::Separator();
         const auto [windowWidth, windowHeight] = video::windowSize();
-        ImGui::Text("Now: %d x %d, %s, render scale %d%%, frame rate %s; window %d x %d", current.width, current.height,
-                    video::modeName(current.mode), static_cast<int>(std::lround(current.renderScale * 100.0f)),
-                    video::frameRateName(current.frameRate).c_str(), windowWidth, windowHeight);
+        ImGui::Text("Now: %d x %d, %s, render scale %d%%, frame rate %s, textures %s; window %d x %d", current.width,
+                    current.height, video::modeName(current.mode), static_cast<int>(std::lround(current.renderScale * 100.0f)),
+                    video::frameRateName(current.frameRate).c_str(), render::upscaleFactorName(current.textureUpscale.factor),
+                    windowWidth, windowHeight);
         static std::string s_status;
         if (ImGui::Button("Apply"))
         {

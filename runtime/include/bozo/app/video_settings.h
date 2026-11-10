@@ -5,7 +5,7 @@
 // team's ps2_video_settings (phase 4, milestone M4), raylib's window and monitor calls replaced by SDL3's. Loaded from
 // video.ini in the user folder (bozo/app/app.h; PS2X_VIDEO_CONFIG names another file) before the window opens, edited
 // in the Video tab of the settings window (F2) and saved back there; the environment still overrides the file
-// (PS2X_WINDOW_SIZE, PS2X_WINDOW_MODE, PS2X_RENDER_SCALE, PS2X_FRAME_RATE). F11 or Alt+Enter switch between the
+// (PS2X_WINDOW_SIZE, PS2X_WINDOW_MODE, PS2X_RENDER_SCALE, PS2X_FRAME_RATE, PS2X_TEXTURE_UPSCALE, PS2X_TEXTURE_FILTER). F11 or Alt+Enter switch between the
 // window and the last full-screen mode. Whatever the window's shape, the picture keeps its 4:3 and is centred with
 // bars (the present loop).
 //
@@ -14,9 +14,13 @@
 // - frame_rate (game, monitor or a number): the window's frame rate, live (Renderer::setFrameRate: above the game's
 //   60, the frames between the game's drawn interpolated; the window's loop presents at the monitor's refresh with
 //   vsync, or that many a second without).
+// - texture_upscale (off, 2x or 4x) and texture_filter (edge or smooth): the texture assets drawn from scaled copies
+//   (Renderer::setTextureUpscale, live); off by default. Not the render scale: that one is the 3D's resolution.
 //
 // Everything here runs on the window's thread, except shared() and post() (any thread: a game's own menu).
 #pragma once
+
+#include "bozo/render/texture_upscale.h"
 
 #include <string>
 #include <utility>
@@ -43,6 +47,7 @@ namespace bozo::app::video
         // The window's frame rate (live): 0 the game's 60 (the default), -1 the monitor's refresh with vsync, n that many
         // a second without vsync; above the game's, the renderer draws frames between the game's.
         int frameRate = 0;
+        render::TextureUpscale textureUpscale; // texture assets drawn from copies 2 or 4 times as large (live); off by default
     };
 
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).

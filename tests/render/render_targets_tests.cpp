@@ -469,6 +469,112 @@ int main()
     twoTexels->rgba = {0x80000080,0x80008000};twoTexels->key = 0x534b59;twoTexels->version = 1;
     gradient(4,twoTexels);
     pixel("texture coordinates retain perspective correction",16,{128,0,0});
+    // Texture upscaling: an asset drawn from its scaled copy once it is made, anything else as it is; the game's levels k
+    // levels down.
+    {
+        auto diagonal = std::make_shared<Texture>();
+        diagonal->width = diagonal->height = 4;
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 4; ++x)
+                diagonal->rgba.push_back(x > y ? 0x80FF0000u : 0x800000FFu);
+        diagonal->asset = true;
+        diagonal->key = 0x5ca1e;
+        auto notAsset = std::make_shared<Texture>(*diagonal);
+        notAsset->asset = false;
+        notAsset->key = 0x5ca1f;
+        Material m;
+        m.depthTest = m.depthWrite = false;
+        m.blend = Material::Blend::Opaque;
+        m.nearest = true;
+        m.clampU = m.clampV = true;
+        const TextureUpscale twice{2, UpscaleFilter::Edge};
+        const Texture expected = upscaleTexture(*diagonal, twice, false, false);
+        const auto texelQuad = [&](const Material &material, const std::shared_ptr<const Texture> &texture)
+        {
+            Vertex v[6];
+            const float xy[6][2] = {{0, 0}, {16, 0}, {0, 16}, {16, 0}, {16, 16}, {0, 16}};
+            for (int i = 0; i < 6; ++i)
+            {
+                v[i].x = xy[i][0];
+                v[i].y = xy[i][1];
+                v[i].z = 1;
+                v[i].u = xy[i][0] / 16;
+                v[i].v = xy[i][1] / 16;
+                v[i].rgba = 0x80808080;
+            }
+            renderer.beginFrame(screen);
+            renderer.draw(material, identity, v, 6, texture);
+            present();
+        };
+        const auto texels = [&](const char *name, const std::vector<uint32_t> &want, int side)
+        {
+            const int step = 32 / side;
+            for (int ty = 0; ty < side; ++ty)
+                for (int tx = 0; tx < side; ++tx)
+                {
+                    uint8_t rgba[4]{};
+                    gl::api().ReadPixels(tx * step + step / 2, 31 - (ty * step + step / 2), 1, 1, gl::kRgba, gl::kUnsignedByte, rgba);
+                    const uint32_t c = want[static_cast<size_t>(ty) * side + tx];
+                    for (int k = 0; k < 3; ++k)
+                        if (std::abs(int(rgba[k]) - int((c >> (8 * k)) & 0xffu)) > 3)
+                        {
+                            std::printf("FAIL %s: texel %d,%d RGB %u,%u,%u\n", name, tx, ty, rgba[0], rgba[1], rgba[2]);
+                            ++failures;
+                            return;
+                        }
+                }
+        };
+        texelQuad(m, diagonal);
+        texels("upscaling off: the texture as it is", diagonal->rgba, 4);
+        renderer.setTextureUpscale(twice);
+        texelQuad(m, diagonal);
+        texels("upscaling on, the copy not made yet: the texture as it is", diagonal->rgba, 4);
+        TextureUpscaler::instance().waitIdle();
+        texelQuad(m, diagonal);
+        texels("upscaling on: the scaled copy", expected.rgba, 8);
+        texelQuad(m, notAsset);
+        texels("not an asset: never scaled", notAsset->rgba, 4);
+
+        auto own = std::make_shared<Texture>();
+        own->width = own->height = 4;
+        own->rgba.assign(16, 0x800000FFu);
+        own->levels = {std::vector<uint32_t>(4, 0x8000FF00u), std::vector<uint32_t>(1, 0x80FF0000u)};
+        own->key = 0x3172u;
+        own->asset = true;
+        auto made = std::make_shared<Texture>();
+        made->width = made->height = 4;
+        for (int i = 0; i < 16; ++i)
+            made->rgba.push_back((i & 3) < 2 ? 0x800000FFu : 0x80FF0000u);
+        made->key = 0x3173u;
+        made->asset = true;
+        Material fixed;
+        fixed.depthTest = fixed.depthWrite = false;
+        fixed.blend = Material::Blend::Opaque;
+        fixed.mipmap.levels = 2;
+        fixed.mipmap.linearTexel = false;
+        fixed.mipmap.lod = Material::Mipmap::Lod::Fixed;
+        for (const uint8_t factor : {uint8_t(2), uint8_t(4)})
+        {
+            renderer.setTextureUpscale(TextureUpscale{factor, UpscaleFilter::Edge});
+            fixed.mipmap.bias = 1.0f;
+            texelQuad(fixed, own);
+            TextureUpscaler::instance().waitIdle();
+            texelQuad(fixed, own);
+            pixel("upscaled, fixed LOD 1: the texture's level 1", 16, {0, 255, 0});
+            fixed.mipmap.bias = 2.0f;
+            texelQuad(fixed, own);
+            pixel("upscaled, fixed LOD 2: the texture's level 2", 16, {0, 0, 255});
+            fixed.mipmap.levels = 1;
+            texelQuad(fixed, own);
+            pixel("upscaled, LOD past MXL: the last level allowed", 16, {0, 255, 0});
+            fixed.mipmap.levels = 2;
+            texelQuad(fixed, made);
+            TextureUpscaler::instance().waitIdle();
+            texelQuad(fixed, made);
+            pixel("upscaled, levels made at upload from the texture's level 0: level 2 the average", 16, {128, 0, 128});
+        }
+        renderer.setTextureUpscale(TextureUpscale{});
+    }
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);
