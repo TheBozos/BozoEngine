@@ -50,6 +50,8 @@ add_library(bozo_render STATIC
   render/gl.cpp
   render/texture_pack.cpp
   render/texture_upscale.cpp
+  render/texture_replace.cpp
+  render/png_read.cpp
   render/mesh_pack.cpp
   render/mesh_draw.cpp)
 target_link_libraries(bozo_render PUBLIC bozo_runtime_headers)
