@@ -761,8 +761,12 @@ namespace bozo::ee
     {
         emit(kOpThreadSetup, {stack, stackSize, gp});
         if (Thread *self = thread(running_)) {
-            self->stack = stack;
-            self->stackSize = stackSize;
+            // A size of 0 (Twisted Metal: Black's crt0) gives the stack's top only: the stack pointer starts there and
+            // the stack grows below it, undeclared. The owned handler stacks need bounds, so it is taken as the
+            // kUndeclaredStackBytes below that top. The call's result (the stack pointer) is unchanged.
+            const bool undeclared = stackSize == 0u && stack != 0xffffffffu && stack >= kUndeclaredStackBytes;
+            self->stack = undeclared ? stack - kUndeclaredStackBytes : stack;
+            self->stackSize = undeclared ? kUndeclaredStackBytes : stackSize;
             self->gp = gp;
         }
         return stack + stackSize;
