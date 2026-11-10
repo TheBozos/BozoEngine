@@ -82,7 +82,8 @@ namespace bozo::audio
         uint32_t getEffectAttr(uint32_t core, uint32_t attr); // 24
         uint32_t setEffectMode(uint32_t core, uint32_t attr);       // 32: the mode, its delay, feedback and depth 0
         uint32_t setEffectModeParams(uint32_t core, uint32_t attr); // 33: the current mode only: its depth; delay, feedback in modes 7, 8
-        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25, and 31 (Clean: waits for it)
+        uint32_t clearEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 25: returns once the area is clear
+        uint32_t cleanEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode); // 31: its DMA channel's transfer end reports it
         uint32_t transIntrHandlerArgument(uint32_t channel);                         // 28
         uint32_t stopTrans(uint32_t channel);                                        // 30
 
