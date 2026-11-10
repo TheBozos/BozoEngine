@@ -18,6 +18,7 @@
 #include "bozo/render/gl.h"
 #include "bozo/render/movie.h"
 #include "bozo/render/renderer.h"
+#include "bozo/render/texture_replace.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -417,10 +418,17 @@ void main()
             TextureUpscale upscale;  // asked for when it was sent
             bool pending = false;    // its scaled copy not made yet: the texture as it is meanwhile
             int shift = 0;           // the texture's level 0 is the GPU's level `shift` (log2 of the copy's factor)
+            uint64_t replacements = 0; // TextureReplacements::generation() when it was sent
+            uint8_t holds = 0;         // what it was sent: 0 the texture as it is, 1 its upscaled copy, 2 its replacement
             size_t bytes = 0;        // sent to the GPU (generated levels not counted)
         };
         size_t textureBytes = 0;
         double textureStatsAt = 0.0;
+        // Larger copies (replacements, upscaled copies) sent to the GPU this present, in bytes: past kLargeUploadBytes the
+        // others wait for a later present, drawn as they were meanwhile, so copies finishing together (a level's, the
+        // workers' batch) never take a frame's time. The first of a present always goes.
+        static constexpr size_t kLargeUploadBytes = size_t(12) << 20;
+        size_t largeUploads = 0;
         void sent(GpuTexture &slot, const Texture &image)
         {
             size_t bytes = image.rgba.size() * sizeof(uint32_t);
@@ -480,15 +488,49 @@ void main()
         bool stale(GpuTexture &slot, const std::shared_ptr<const Texture> &source, TextureUpscale upscale, bool wrapU, bool wrapV,
                    std::shared_ptr<const Texture> &scaled)
         {
-            const bool same = slot.id != 0 && slot.source == source && slot.upscale == upscale;
+            TextureReplacements &replacements = TextureReplacements::instance();
+            const uint64_t generation = replacements.generation();
+            const bool same = slot.id != 0 && slot.source == source && slot.upscale == upscale && slot.replacements == generation;
             if (same && !slot.pending)
                 return false;
-            if (upscale.on())
+            // A replacement first (the player's own texture), else the upscaled copy, else the texture as it is.
+            bool loading = false;
+            if (source->asset)
+                scaled = replacements.find(source, loading);
+            uint8_t wanted = scaled ? 2u : 0u;
+            if (!scaled && upscale.on())
+            {
                 scaled = TextureUpscaler::instance().find(source, upscale, wrapU, wrapV);
-            if (same && !scaled)
+                wanted = scaled ? 1u : 0u;
+            }
+            if (scaled && !(same && wanted <= slot.holds))
+            {
+                // A larger copy to send: within this present's upload budget, else at a later present (drawn as it was).
+                size_t bytes = scaled->rgba.size() * sizeof(uint32_t);
+                for (const std::vector<uint32_t> &level : scaled->levels)
+                    bytes += level.size() * sizeof(uint32_t);
+                if (largeUploads + bytes > kLargeUploadBytes && largeUploads != 0u)
+                {
+                    scaled.reset();
+                    wanted = 0u;
+                    loading = true;
+                }
+                else
+                    largeUploads += bytes;
+            }
+            const bool pending = loading || (upscale.on() && !scaled);
+            if (same && wanted <= slot.holds)
+            {
+                // Nothing better than what the GPU has yet (a replacement still loading, an upscaled copy being made).
+                if (wanted < slot.holds)
+                    scaled.reset();
+                slot.pending = pending;
                 return false;
+            }
+            slot.holds = wanted;
             slot.upscale = upscale;
-            slot.pending = upscale.on() && !scaled;
+            slot.replacements = generation;
+            slot.pending = pending;
             slot.shift = 0;
             for (uint32_t f = scaled ? scaled->width / std::max(1u, source->width) : 1u; f > 1u; f >>= 1)
                 ++slot.shift;
@@ -551,6 +593,17 @@ void main()
             const gl::Api &g = gl::api();
             const Material::Mipmap &mip = m.mipmap;
             GpuTexture &slot = textures[key];
+            if (mip.levels == 0u && slot.shift != 0 && slot.levels >= slot.shift)
+            {
+                // A larger copy (upscaled or replaced) of a texture drawn without levels: its levels down to the texture's
+                // own size, so a minified draw samples what it did and a magnified one gets the detail (the larger level
+                // alone would alias and cost bandwidth where the texture is far).
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, slot.shift);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, m.nearest ? gl::kNearestMipmapNearest : gl::kLinearMipmapLinear);
+                g.TexParameterf(gl::kTexture2D, gl::kTextureLodBias, 0.0f);
+                g.Uniform1i(locLodMode, 0);
+                return;
+            }
             if (mip.levels == 0u)
             {
                 g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, m.nearest ? gl::kNearest : gl::kLinear);
@@ -1357,8 +1410,9 @@ void main()
             }
         }
         Gpu &gpu = *m_gpu;
+        gpu.largeUploads = 0;
         static const bool s_textureStats = [] { const char *v = std::getenv("PS2X_TEXTURE_STATS"); return v && *v && *v != '0'; }();
-        if (const TextureUpscale upscale = textureUpscale(); (upscale.on() || s_textureStats) && presentNow - gpu.textureStatsAt >= 10.0)
+        if (const TextureUpscale upscale = textureUpscale(); (upscale.on() || s_textureStats || TextureReplacements::instance().active()) && presentNow - gpu.textureStatsAt >= 10.0)
         {
             gpu.textureStatsAt = presentNow;
             const TextureUpscaler::Stats u = TextureUpscaler::instance().stats();
@@ -1367,6 +1421,11 @@ void main()
                          upscaleFactorName(upscale.factor), upscaleFilterName(upscale.filter), static_cast<unsigned long long>(u.made),
                          u.made ? u.seconds * 1000.0 / static_cast<double>(u.made) : 0.0, u.seconds, static_cast<double>(u.bytes) / 1048576.0,
                          static_cast<unsigned long long>(u.queued - u.made));
+            if (const TextureReplacements::Stats r = TextureReplacements::instance().stats(); r.files)
+                std::fprintf(stderr, "[render] texture replacements: %llu files, %llu loaded (%.1f ms each), %llu refused, %.1f MB kept\n",
+                             static_cast<unsigned long long>(r.files), static_cast<unsigned long long>(r.loaded),
+                             r.loaded ? r.seconds * 1000.0 / static_cast<double>(r.loaded) : 0.0,
+                             static_cast<unsigned long long>(r.refused), static_cast<double>(r.bytes) / 1048576.0);
         }
         gl::GLint viewport[4] = {0, 0, 1, 1};
         g.GetIntegerv(gl::kViewport, viewport);

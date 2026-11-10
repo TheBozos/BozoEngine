@@ -48,6 +48,9 @@ namespace bozo::app::video
         // a second without vsync; above the game's, the renderer draws frames between the game's.
         int frameRate = 0;
         render::TextureUpscale textureUpscale; // texture assets drawn from copies 2 or 4 times as large (live); off by default
+        // Texture replacements (bozo/render/texture_replace.h): a folder of <identity>.png files; "" the user folder's
+        // texture_pack when it exists, "off" none.
+        std::string texturePack;
     };
 
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).
