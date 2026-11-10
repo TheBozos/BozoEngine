@@ -138,6 +138,7 @@ namespace bozo::ee
     constexpr uint32_t kHandlerStackTop = 0x1FFFFF0u; // the stack handlers run on (one 16 KB area per thread)
     constexpr uint32_t kHandlerStackBytes = 0x4000u;
     constexpr uint32_t kHandlerCallAreaBytes = 0x80u; // eight 128-bit argument/home slots
+    constexpr uint32_t kUndeclaredStackBytes = 0x100000u; // a SetupThread of size 0: the stack taken below its top
     constexpr uint64_t kNoCall = ~0ull;
 
     // One guest context the dispatcher can run: a thread's own (depth 0) or a handler stacked on it.
