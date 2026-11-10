@@ -31,6 +31,10 @@ upscaler or hand edits turn them into replacements. Nothing of a game ships with
 
 - Worker threads read and decode the files (cores / 4, one or two threads). Until a replacement is ready, the
   texture is drawn as it was: as it is, or from its upscaled copy. The present thread never waits for a file.
+- The workers of both replacements and texture upscaling run at the lowest thread priority (Windows
+  `THREAD_PRIORITY_LOWEST`, nice 10 elsewhere): they use what the game and the present thread leave.
+- While a replacement is being read, no upscaled copy of the same texture is made (it would be dropped).
+- `PS2X_TEXTURE_STATS` also counts the textures sent to the GPU since the last line (uploads and MB).
 - A replacement takes precedence over texture upscaling (`texture-upscale.md`). Textures without a replacement
   still get upscaled.
 - A larger copy gets the upscaled copy's mip layout: levels 1..k-1 halved from it, level k the texture's own
