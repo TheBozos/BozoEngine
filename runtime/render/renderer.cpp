@@ -159,6 +159,8 @@ namespace bozo::render
                     uint64_t(m.nearest)<<24 | uint64_t(m.frameWidth)<<32 | uint64_t(m.frameHeight)<<48;
                 h=hash::xxh64(&extended,sizeof(extended),h);
             }
+            if(m.frameDepth)
+                h=hash::xxh64(&m.frameDepth,sizeof(m.frameDepth),h);
             if (m.useQ || m.gsBlend || m.colourMask != 0xFu || m.alphaFunc != Material::AlphaFunc::Greater || m.depthGreater)
             {
                 const uint64_t gs = uint64_t(m.useQ) | uint64_t(m.gsBlend) << 1 | uint64_t(m.depthGreater) << 2 | uint64_t(m.alphaFunc) << 8 |
