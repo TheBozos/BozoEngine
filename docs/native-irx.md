@@ -29,7 +29,7 @@ bytes, failures, callback ordering/exclusion/reentry, isolation and reset.
 
 ## Offline pipeline
 
-1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
+1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. `.iopmod` is found by its section type, so an IRX shipped without section names relocates too. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
 2. `python tools/native_irx/recompile.py <output-stem>.json --out <generated-directory>` emits `<library>_iop.cpp`. Link that C++ into the port, with `bozo_runtime_headers`. The translator's only mode is strict: unsupported instructions/targets produce explicit native failures, and unsafe load-delay cases are rejected during generation.
 3. Build `Image` records from the relocated data and import/export metadata, and register them with a per-port `CompiledLibraries` object. Its name, hash, load base and byte length must match a linked generated registration. A native-libsd image routes its sound exports to `audio::Libsd`, and any module's libsd imports reach it with no LIBSD image at all, the note/pitch conversions included.
 
