@@ -6,6 +6,7 @@
 #include <array>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <cstring>
 #include <deque>
 #include <format>
@@ -1511,6 +1512,46 @@ namespace bozo::native::irx
             // only while actual host I/O and the bounded destination copy run.
             if(n==11){ret(!discRequests.empty());return;}
             if(n==8){ret(discError);return;}
+            // Drive commands with nothing to move complete at once; the asynchronous ones notify with their
+            // SCECdFunc code (seek 4, standby 5, stop 6, pause 7) as the read does with 1.
+            auto commandDone=[&](uint32_t code)
+            {
+                if(discCallback)
+                {
+                    if(events.size()>=1024)throw std::runtime_error("native disc notification queue limit");
+                    Event completion{cycle,discCallback,code,0,discCallbackGp};completion.readyDisc=true;
+                    events.push_back(completion);
+                }
+                discError=0;ret(1);
+            };
+            if(n==4 || n==75){ret(1);return;}
+            if(n==7){commandDone(4);return;}
+            if(n==5){commandDone(5);return;}
+            if(n==15){commandDone(6);return;}
+            if(n==38){commandDone(7);return;}
+            if(n==39){ret(1);return;}
+            if(n==12){ret(0x14);return;}
+            if(n==13){ret(2);return;}
+            if(n==28){ret(0x0A);return;}
+            if(n==14)
+            {
+                if(a1)write(a1,0);
+                ret(1);return;
+            }
+            if(n==24)
+            {
+                int sec=0,min=0,hour=12,day=18,month=6,year=1;
+                if(libraries.cd.hostClock)
+                {
+                    const std::time_t t=std::time(nullptr);
+                    if(const std::tm *tm=std::localtime(&t))
+                    {sec=tm->tm_sec;min=tm->tm_min;hour=tm->tm_hour;day=tm->tm_mday;month=tm->tm_mon+1;year=tm->tm_year%100;}
+                }
+                auto bcd=[](int v){return uint8_t(((v/10)<<4)|(v%10));};
+                const uint8_t clock[8]={0,bcd(sec),bcd(min),bcd(hour),0,bcd(day),bcd(month),bcd(year)};
+                std::copy(clock,clock+8,memory.begin()+physical(a0,8));
+                ret(1);return;
+            }
             if(n==37)
             {
                 const bool admitted=std::any_of(images.begin(),images.end(),[&](const auto &image){
