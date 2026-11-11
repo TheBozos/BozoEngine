@@ -14,6 +14,10 @@ There is no drive clock, seek/sector delay, display wait, hardware bank or IRQ.
 The EE `CdState` drive-time fields are neither read nor modified by this policy.
 
 Supported `cdvdman` imports are read (6), error (8), sync (11) and callback (37),
+and the drive commands with nothing to move: init (4), standby (5), seek (7), disk type (12, a PS2 DVD),
+disk ready (13, ready), tray request (14, never moved), stop (15), clock (24, the EE library's clock), status (28,
+paused), pause (38), break (39) and media mode (75). Seek, standby, stop and pause complete at once and notify the
+callback with their `SCECdFunc` code (4, 5, 6, 7) as a read does with 1,
 using the [official SDK ordinal table](https://github.com/ps2dev/ps2sdk/blob/master/iop/cdvd/cdvdman/include/cdvdman.h).
 Zero/oversized requests, non-data sector formats and invalid mapped destinations
 reject. Missing images, host read failures and requests past EOF return failure
