@@ -14,6 +14,10 @@ There is no drive clock, seek/sector delay, display wait, hardware bank or IRQ.
 The EE `CdState` drive-time fields are neither read nor modified by this policy.
 
 Supported `cdvdman` imports are read (6), error (8), sync (11) and callback (37),
+and the drive commands with nothing to move: init (4), standby (5), seek (7), disk type (12, a PS2 DVD),
+disk ready (13, ready), tray request (14, never moved), stop (15), clock (24, the EE library's clock), status (28,
+paused), pause (38), break (39) and media mode (75). Seek, standby, stop and pause complete at once and notify the
+callback with their `SCECdFunc` code (4, 5, 6, 7) as a read does with 1,
 using the [official SDK ordinal table](https://github.com/ps2dev/ps2sdk/blob/master/iop/cdvd/cdvdman/include/cdvdman.h).
 Zero/oversized requests, non-data sector formats and invalid mapped destinations
 reject. Missing images, host read failures and requests past EOF return failure
@@ -29,7 +33,7 @@ bytes, failures, callback ordering/exclusion/reentry, isolation and reset.
 
 ## Offline pipeline
 
-1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
+1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. `.iopmod` is found by its section type, so an IRX shipped without section names relocates too. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
 2. `python tools/native_irx/recompile.py <output-stem>.json --out <generated-directory>` emits `<library>_iop.cpp`. Link that C++ into the port, with `bozo_runtime_headers`. The translator's only mode is strict: unsupported instructions/targets produce explicit native failures, and unsafe load-delay cases are rejected during generation.
 3. Build `Image` records from the relocated data and import/export metadata, and register them with a per-port `CompiledLibraries` object. Its name, hash, load base and byte length must match a linked generated registration. A native-libsd image routes its sound exports to `audio::Libsd`, and any module's libsd imports reach it with no LIBSD image at all, the note/pitch conversions included.
 
@@ -91,6 +95,11 @@ including checked interior subranges. Public allocations and compiled sysmem all
 same ownership check. Spans cannot cross adjacent blocks, alias opaque module handles or address
 images, stacks, freed data or devices. Reset invalidates all views. `library_allocation_views` checks
 real writes, interior ranges, adjacent boundaries, invalid/overflow spans, free, reset and two hosts.
+`sysmem` 7 and 8 (`QueryMaxFreeMemSize`, `QueryTotalFreeMemSize`) answer from that heap: its largest free block and
+the sum of its free blocks.
+
+`sifcmd` 23 (`sceSifGetOtherData`) copies the bytes from EE RAM (either alias) into the module's memory when called
+and returns 0, so a no-wait read is complete too. A source outside EE RAM rejects. `library_heap_queries` checks both.
 
 Compiled `sifcmd:12/13` user replies call the explicit `sif.receiveCommand` native application provider.
 The reply and optional extra data are snapshotted and bounds-checked before delivery. The provider

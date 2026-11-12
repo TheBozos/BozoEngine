@@ -13,13 +13,13 @@ def relocate(path,base,out):
     image=bytearray(size)
     for s in segs: image[s[2]:s[2]+s[4]]=b[s[1]:s[1]+s[4]]
     secs=[S.unpack_from(b,shoff+i*shsize) for i in range(shnum)]
-    names=b[secs[shstr][4]:secs[shstr][4]+secs[shstr][5]]
+    names=b[secs[shstr][4]:secs[shstr][4]+secs[shstr][5]] if shstr<len(secs) else b''
     gp=0; entry=struct.unpack_from('<I',b,24)[0]
     def rd(a): return struct.unpack_from('<I',image,a)[0]
     def wr(a,v): struct.pack_into('<I',image,a,v&0xffffffff)
     for sec in secs:
         name=names[sec[0]:].split(b'\0')[0]
-        if name==b'.iopmod':
+        if sec[1]==0x70000080 or name==b'.iopmod':
             entry,gp=struct.unpack_from('<II',b,sec[4]+4)
         if sec[1]!=9: continue
         pending=[]
