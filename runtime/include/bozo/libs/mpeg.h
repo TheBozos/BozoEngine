@@ -79,6 +79,7 @@ namespace bozo::libs
         std::vector<uint8_t> pending; // bytes [pendingAt, consumed) of the stream
         uint64_t pendingAt = 0;
         uint32_t ring = 0, ringSize = 0, ringBias = 0; // ring address of stream byte x: ring + (x + ringBias) % ringSize
+        uint64_t linearBase = 0; // no ring (sceMpegDemuxPss): stream byte x of the current call at address linearBase + x
         bool programEnd = false;
         // The port says the game aborted the playback (TMB: its videoDecAbort, a skipped movie; the fork's
         // abortMpegPlayback): sceMpegIsEnd answers 1 from then on (libraries.md section 9.5).

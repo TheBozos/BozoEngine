@@ -48,6 +48,9 @@ namespace bozo
         std::set<uint32_t> storePcs;
         // Instructions replaced by a port's native operation ("native 0xADDR"). The original remains for checkers.
         std::set<uint32_t> nativePcs;
+        // Overrides also answer a direct jump, a branch or a fall-through to their address (bozo_tail_call), not only
+        // calls: a port whose game tail-jumps into a function it replaces. Off: the reference build's rule (capture.md).
+        bool overridesTakeJumps = false;
     };
 
     struct EmitStats

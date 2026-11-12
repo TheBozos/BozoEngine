@@ -203,7 +203,8 @@ namespace bozo::libs
                 return;
             const MpegState::Callback &cb = s.strCallbacks[type];
             const uint64_t streamAt = at + payload;
-            const uint32_t pointer = s.ring + static_cast<uint32_t>((streamAt + s.ringBias) % s.ringSize);
+            const uint32_t pointer = s.ring ? s.ring + static_cast<uint32_t>((streamAt + s.ringBias) % s.ringSize)
+                                            : static_cast<uint32_t>(s.linearBase + streamAt);
             // The callback's data: 32 bytes from the game's heap, given back as its handler ends (the reference's; its
             // addresses show where the game's own blocks are).
             const uint32_t entry = l.gameHeap().allocate(0x20);
@@ -372,7 +373,8 @@ namespace bozo::libs
             return static_cast<uint32_t>(s.cuts.size()) + (s.sequenceEnd ? 1u : 0u) + (s.programEnd ? 1u : 0u);
         }
 
-        // sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize): a sector at a time while fewer than kPicturesAhead
+        // sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize): with ring 0 (sceMpegDemuxPss) `data` is read straight
+        // and ringSize is not an argument. A sector at a time while fewer than kPicturesAhead
         // pictures are ahead of the game (ahead(): the coded pictures begun, the sequence end and the program end, less
         // those delivered; nothing after the program end is read); each whole packet of a registered stream gets its
         // callback. Returns the bytes taken.
@@ -381,19 +383,28 @@ namespace bozo::libs
             MpegState &s = state(l);
             const uint32_t data = g.arg(1), bytes = g.arg(2);
             s.ring = g.arg(3);
-            s.ringSize = g.arg(4);
-            if (!s.ringSize)
+            s.ringSize = s.ring ? g.arg(4) : 0;
+            if (s.ring && !s.ringSize)
             {
                 g.ret(0);
                 return;
             }
-            s.ringBias = static_cast<uint32_t>(((data - s.ring) + s.ringSize - (s.consumed % s.ringSize)) % s.ringSize);
+            if (s.ring)
+                s.ringBias = static_cast<uint32_t>(((data - s.ring) + s.ringSize - (s.consumed % s.ringSize)) % s.ringSize);
+            else
+                s.linearBase = data - s.consumed;
             uint32_t taken = 0;
             while (taken + 0x800 <= bytes && ahead(s) < s.delivered + kPicturesAhead)
             {
-                const uint32_t offset = static_cast<uint32_t>((s.consumed + s.ringBias) % s.ringSize);
-                for (uint32_t k = 0; k < 0x800; ++k)
-                    s.pending.push_back(g.read8(s.ring + (offset + k) % s.ringSize));
+                if (s.ring)
+                {
+                    const uint32_t offset = static_cast<uint32_t>((s.consumed + s.ringBias) % s.ringSize);
+                    for (uint32_t k = 0; k < 0x800; ++k)
+                        s.pending.push_back(g.read8(s.ring + (offset + k) % s.ringSize));
+                }
+                else
+                    for (uint32_t k = 0; k < 0x800; ++k)
+                        s.pending.push_back(g.read8(data + taken + k));
                 s.consumed += 0x800;
                 taken += 0x800;
                 parse(l, g, s);
