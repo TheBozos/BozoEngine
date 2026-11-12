@@ -133,8 +133,11 @@ namespace bozo::app
                                    binding.source == input::Source::MouseMove;
                 if (!(mouse && ImGui::GetIO().WantCaptureMouse))
                 {
+                    // config() takes the same (non-recursive) mutex: fetched before the lock, as the other callers do.
+                    // Under the lock it threw "resource deadlock would occur" at the first input after Add.
+                    input::Config &config = input::config();
                     std::lock_guard<std::mutex> lock(input::configMutex());
-                    std::vector<input::Binding> &list = input::config().players[m.controlsPlayer].actions[m.bindingAction];
+                    std::vector<input::Binding> &list = config.players[m.controlsPlayer].actions[m.bindingAction];
                     if (std::find(list.begin(), list.end(), binding) == list.end())
                         list.push_back(binding);
                     m.bindingAction = -1;
