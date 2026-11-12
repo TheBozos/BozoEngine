@@ -363,7 +363,7 @@ replacement/unregistration/busy refusal, ownership isolation and actual dispatch
 private generated ISO. It makes no full-game or other CD command callback claim.
 
 Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdReadIOPm`, `sceCdSync`,
-`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
+`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdStPause`, `sceCdStResume`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
 `sceCdReadDvdDualInfo` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
 A dual-layer DVD (Champions of Norrath's DVD9) holds a second ISO 9660 volume on its second layer: its primary volume
@@ -395,6 +395,7 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | `sceCdGetError()` | the last read's error: 0 |
 | `sceCdStInit(sectors, banks, buffer)` | 1; the ring's size (TMB: 0x50 sectors in 5 banks) |
 | `sceCdStStart(lbn, mode)`, `sceCdStStop()` | 1; the stream starts at `lbn` / stops |
+| `sceCdStPause()`, `sceCdStResume()` | 1; the drive stops reading into the ring (what it holds stays readable) / reads on from that cycle |
 | `sceCdStRead(sectors, buffer, mode, error)` | the next sectors of the stream. Those that have arrived are copied at once; mode 1 (TMB's) waits for the rest: a vblank wait (its result the vblank's parity, -1) with a completion that copies them and sets v0 = sectors as the thread resumes. `*error` = 0; returns the sectors copied |
 
 ### 8.2 The drive's time and waits
