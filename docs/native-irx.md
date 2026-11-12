@@ -95,6 +95,11 @@ including checked interior subranges. Public allocations and compiled sysmem all
 same ownership check. Spans cannot cross adjacent blocks, alias opaque module handles or address
 images, stacks, freed data or devices. Reset invalidates all views. `library_allocation_views` checks
 real writes, interior ranges, adjacent boundaries, invalid/overflow spans, free, reset and two hosts.
+`sysmem` 7 and 8 (`QueryMaxFreeMemSize`, `QueryTotalFreeMemSize`) answer from that heap: its largest free block and
+the sum of its free blocks.
+
+`sifcmd` 23 (`sceSifGetOtherData`) copies the bytes from EE RAM (either alias) into the module's memory when called
+and returns 0, so a no-wait read is complete too. A source outside EE RAM rejects. `library_heap_queries` checks both.
 
 Compiled `sifcmd:12/13` user replies call the explicit `sif.receiveCommand` native application provider.
 The reply and optional extra data are snapshotted and bounds-checked before delivery. The provider
