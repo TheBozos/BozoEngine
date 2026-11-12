@@ -155,6 +155,17 @@ static void cdStream()
     cd.delivered = 0x20;
     eq("reading on from a full ring", static_cast<long long>(cd.readyAt(0x40)),
        1000 + 500 * kSectorCycles + 0x10 * kSectorCycles);
+
+    CdState paused;
+    paused.ringSectors = 0x50;
+    paused.producedAt = 1000;
+    paused.advance(1000 + 4 * kSectorCycles);
+    paused.paused = true;
+    paused.advance(1000 + 40 * kSectorCycles);
+    eq("a paused drive reads nothing", static_cast<long long>(paused.produced), 4);
+    paused.paused = false;
+    paused.advance(1000 + 43 * kSectorCycles);
+    eq("it reads on from its resume", static_cast<long long>(paused.produced), 7);
 }
 
 // The SIF layer and the 989SND driver's rules that need no disc (libraries.md sections 14 and 15): the IOP heap, a

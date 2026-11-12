@@ -1,6 +1,6 @@
 // libcdvd (libraries.md section 8): the disc image's sectors, the stream, the drive's time. What TMB calls: sceCdInit,
 // sceCdMmode, sceCdDiskReady, sceFsReset, sceCdReadClock, sceCdRead, sceCdSync, sceCdGetError, sceCdStInit,
-// sceCdStStart, sceCdStRead, sceCdStStop.
+// sceCdStStart, sceCdStRead, sceCdStStop, sceCdStPause, sceCdStResume.
 #include "bozo/libs/libraries.h"
 
 #include "bozo/ee/dispatcher.h"
@@ -362,6 +362,7 @@ namespace bozo::libs
         {
             CdState &cd = l.cd;
             cd.streaming = true;
+            cd.paused = false;
             cd.streamLbn = g.arg(0);
             cd.delivered = 0;
             cd.produced = 0;
@@ -373,6 +374,23 @@ namespace bozo::libs
         void stStop(Libraries &l, Guest &g)
         {
             l.cd.streaming = false;
+            l.cd.paused = false;
+            g.ret(1);
+        }
+
+        void stPause(Libraries &l, Guest &g)
+        {
+            CdState &cd = l.cd;
+            cd.advance(l.now(g));
+            cd.paused = true;
+            g.ret(1);
+        }
+
+        void stResume(Libraries &l, Guest &g)
+        {
+            CdState &cd = l.cd;
+            cd.advance(l.now(g));
+            cd.paused = false;
             g.ret(1);
         }
 
@@ -532,5 +550,7 @@ namespace bozo::libs
         out.push_back({"sceCdStStart", kCd, stStart});
         out.push_back({"sceCdStRead", kCd, stRead, false, true});
         out.push_back({"sceCdStStop", kCd, stStop});
+        out.push_back({"sceCdStPause", kCd, stPause});
+        out.push_back({"sceCdStResume", kCd, stResume});
     }
 }
