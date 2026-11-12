@@ -62,6 +62,8 @@ namespace bozo::native::irx
             uint32_t attr = 0, option = 0, entry = 0, stack = 0, stackBytes = 0, initialPriority = 0, priority = 0;
             int32_t wakeups = 0;
             int32_t waitingSema = 0;
+            int32_t waitingFlag = 0;
+            uint32_t flagPattern = 0, flagMode = 0, flagResult = 0;
             bool sleeping = false;
             uint64_t due = 0;
             // An RPC request served on this task: its parked RpcLoop state, kept while the handler runs above it.
@@ -128,6 +130,13 @@ namespace bozo::native::irx
         };
         std::map<int32_t, Sema> semas;
         int32_t nextSema = 1;
+        struct EventFlag
+        {
+            uint32_t attr = 0, option = 0, initial = 0, bits = 0;
+            std::deque<int32_t> waiting;
+        };
+        std::map<int32_t, EventFlag> eventFlags;
+        int32_t nextEventFlag = 1;
         explicit Impl(libs::Libraries &l, uint32_t start) : libraries(l), heapStart(start), libsd(mixer, *this)
         {
             if (start >= 0x180000)
@@ -787,6 +796,12 @@ namespace bozo::native::irx
                 ret(a0);
                 return;
             }
+            if (n == 17)
+            {
+                std::memset(memory.data() + physical(a0, a1), 0, a1);
+                ret();
+                return;
+            }
             if (n == 27)
             {
                 ret(static_cast<uint32_t>(string(a0, 0x100000).size()));
@@ -858,6 +873,13 @@ namespace bozo::native::irx
                 for(const auto id:s.waiting)wake(id,-425);
                 semas.erase(found);ret();return;
             }
+            if(n==11 || n==12)
+            {
+                const uint32_t info[]={s.attr,s.option,static_cast<uint32_t>(s.initial),static_cast<uint32_t>(s.max),
+                                       static_cast<uint32_t>(s.count),static_cast<uint32_t>(s.waiting.size())};
+                for(uint32_t i=0;i<6;++i)write(a1+4*i,info[i]);
+                ret();return;
+            }
             if(n==6 || n==7)
             {
                 if(!s.waiting.empty()) {
@@ -879,6 +901,123 @@ namespace bozo::native::irx
                 if(!exclusions.empty())throw std::runtime_error("native semaphore wait with callbacks excluded");
                 auto &t=tasks.at(current);t.waiting=true;t.waitingSema=static_cast<int32_t>(a0);t.sleeping=false;
                 s.waiting.push_back(current);ret();return;
+            }
+        }
+        if (lib == "thevent")
+        {
+            constexpr uint32_t kWaitOr = 1, kWaitMulti = 2;
+            if (n == 4)
+            {
+                EventFlag f;
+                f.attr = read(a0);
+                f.option = read(a0 + 4);
+                f.initial = f.bits = read(a0 + 8);
+                const int32_t id = nextEventFlag++;
+                eventFlags.emplace(id, std::move(f));
+                ret(static_cast<uint32_t>(id));
+                return;
+            }
+            const auto found = eventFlags.find(static_cast<int32_t>(a0));
+            if (found == eventFlags.end())
+            {
+                ret(static_cast<uint32_t>(-409));
+                return;
+            }
+            auto &f = found->second;
+            const auto met = [](uint32_t bits, uint32_t pattern, uint32_t mode) {
+                return (mode & kWaitOr) ? (bits & pattern) != 0 : (bits & pattern) == pattern;
+            };
+            const auto wake = [&](int32_t id, int32_t result) {
+                auto &t = tasks.at(id);
+                if (result == 0 && t.flagResult)
+                    write(t.flagResult, f.bits);
+                t.waiting = false;
+                t.waitingFlag = 0;
+                t.cpu.gpr[2] = static_cast<uint32_t>(result);
+            };
+            if (n == 5)
+            {
+                for (const auto id : f.waiting)
+                    wake(id, -425);
+                eventFlags.erase(found);
+                ret();
+                return;
+            }
+            if (n == 6 || n == 7)
+            {
+                f.bits |= a1;
+                for (auto it = f.waiting.begin(); it != f.waiting.end();)
+                {
+                    const auto &t = tasks.at(*it);
+                    if (!met(f.bits, t.flagPattern, t.flagMode))
+                    {
+                        ++it;
+                        continue;
+                    }
+                    const int32_t id = *it;
+                    it = f.waiting.erase(it);
+                    wake(id, 0);
+                }
+                ret();
+                return;
+            }
+            if (n == 8 || n == 9)
+            {
+                f.bits &= a1;
+                ret();
+                return;
+            }
+            if (n == 10 || n == 11)
+            {
+                if (a2 & ~kWaitOr)
+                    throw std::runtime_error("native event flag waits support AND and OR without clearing only");
+                if (!a1)
+                {
+                    ret(static_cast<uint32_t>(-423));
+                    return;
+                }
+                if (!f.waiting.empty() && !(f.attr & kWaitMulti))
+                {
+                    ret(static_cast<uint32_t>(-422));
+                    return;
+                }
+                if (met(f.bits, a1, a2))
+                {
+                    if (a3)
+                        write(a3, f.bits);
+                    ret();
+                    return;
+                }
+                if (n == 11)
+                {
+                    ret(static_cast<uint32_t>(-421));
+                    return;
+                }
+                if (!current)
+                {
+                    ret(static_cast<uint32_t>(-100));
+                    return;
+                }
+                if (!exclusions.empty())
+                    throw std::runtime_error("native event flag wait with callbacks excluded");
+                auto &t = tasks.at(current);
+                t.waiting = true;
+                t.sleeping = false;
+                t.waitingFlag = static_cast<int32_t>(a0);
+                t.flagPattern = a1;
+                t.flagMode = a2;
+                t.flagResult = a3;
+                f.waiting.push_back(current);
+                ret();
+                return;
+            }
+            if (n == 13 || n == 14)
+            {
+                const uint32_t info[] = {f.attr, f.option, f.initial, f.bits, static_cast<uint32_t>(f.waiting.size())};
+                for (uint32_t i = 0; i < 5; ++i)
+                    write(a1 + 4 * i, info[i]);
+                ret();
+                return;
             }
         }
         if (lib == "thbase")
@@ -929,6 +1068,8 @@ namespace bozo::native::irx
                 }
                 for (auto &[id, sema] : semas)
                     std::erase(sema.waiting, it->first);
+                for (auto &[id, flag] : eventFlags)
+                    std::erase(flag.waiting, it->first);
                 if (n == 5)
                     tasks.erase(it);
                 else
@@ -937,6 +1078,7 @@ namespace bozo::native::irx
                     t.done = true;
                     t.waiting = t.sleeping = false;
                     t.waitingSema = 0;
+                    t.waitingFlag = 0;
                     t.due = 0;
                 }
                 ret();
@@ -1162,6 +1304,11 @@ namespace bozo::native::irx
                     throw std::runtime_error("unbalanced native callback exclusion release");
                 if (a0) exclusions.pop_back();
                 ret();return;
+            }
+            if (n == 23)
+            {
+                ret(current ? 0u : 1u);
+                return;
             }
             if (n == 4)
             {
@@ -1835,6 +1982,7 @@ namespace bozo::native::irx
         p.interrupts.clear();
         p.timers.clear();
         p.semas.clear();
+        p.eventFlags.clear();
         p.started.clear();
         p.libraries.sif.servers.clear();
         p.libraries.sif.bound.clear();
@@ -1842,6 +1990,7 @@ namespace bozo::native::irx
         p.invokeDepth = 0;
         p.nextTask = 1;
         p.nextSema = 1;
+        p.nextEventFlag = 1;
         p.nextTimer = 1;
         p.current = 0;
         p.callbackTask = 0;

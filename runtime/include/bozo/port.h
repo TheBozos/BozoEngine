@@ -56,12 +56,18 @@ namespace bozo::port
         // mode, also after a FlushCache and with no channel in D_PCR, where the condition's TMB rule says "not done".
         void transfersAlwaysDone() { transfersAlwaysDone_ = true; }
         bool transfersAreAlwaysDone() const { return transfersAlwaysDone_; }
+        // The sync-V callback runs at each vblank's start, as libgraph's vblank handler calls it, instead of at the
+        // native frame boundary: for a game whose frame waits on a semaphore the callback signals, so the threads below
+        // the waiting one run until the vblank.
+        void syncVCallbackAtVblank() { syncVAtVblank_ = true; }
+        bool syncVCallbackIsAtVblank() const { return syncVAtVblank_; }
 
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
         std::vector<BozoFunctionEntry> vu0Programs_;
         InstructionHandler instructionHandler_ = nullptr;
         bool transfersAlwaysDone_ = false;
+        bool syncVAtVblank_ = false;
     };
 
     // A port: its game and how to install it. One per executable (BOZO_PORT).

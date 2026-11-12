@@ -892,6 +892,8 @@ namespace bozo::ee
             wake(id, result, t->waitCompletion, kWaitVblank);
         }
         raise(false, kIntcVblankStart);
+        if (vblankHandler_.pc)
+            queue(vblankHandler_);
     }
 
     void Kernel::vblankEnd()
