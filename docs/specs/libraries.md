@@ -128,7 +128,7 @@ replaced only three of their helpers and `sqrt`, which are the out-calls:
 | Function | What the reference returns (settled on its records) |
 |---|---|
 | `sqrt` (float in `f12`, result in `f0`) | the IEEE single square root (correctly rounded): 64,094 calls in match1p |
-| `sqrt` with `Libraries::softDouble` (double in `a0`, result in `v0`, 64-bit) | the IEEE double square root: games whose newlib keeps software doubles (Champions of Norrath; its callers convert with `__extendsfdf2`/`__truncdfsf2` around the call) |
+| `sqrt` with `Libraries::softDouble` (double in `a0`, result in `v0`, 64-bit) | the IEEE double square root: games whose newlib keeps software doubles (Champions of Norrath: its callers convert the float to a double before the call and back after it) |
 | `__ieee754_rem_pio2f(x, y)` | `n` = `x * (float)(2/pi)` rounded to a float, then to the nearest integer, ties to even; `y[0] = (float)((double)x - n * (double)(float)(pi/2))`, `y[1] = 0`; returns `n` |
 | `__kernel_sinf(x, y, iy)` | the reference C runtime's `sinf((float)(x + y))`; `iy` unused |
 | `__kernel_cosf(x, y)` | the reference C runtime's `cosf((float)(x + y))` |
