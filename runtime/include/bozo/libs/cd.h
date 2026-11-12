@@ -69,6 +69,7 @@ namespace bozo::libs
         // Free mode: sectors read into the ring so far, as of `producedAt` (the drive reads at its pace from
         // sceCdStStart and pauses while the ring is full).
         uint64_t produced = 0, producedAt = 0;
+        bool paused = false;
         // A blocked sceCdStRead, finished as its thread resumes.
         uint32_t pendingSectors = 0, pendingBuffer = 0, pendingError = 0;
 
@@ -77,6 +78,11 @@ namespace bozo::libs
         {
             if (cycle <= producedAt)
                 return;
+            if (paused)
+            {
+                producedAt = cycle;
+                return;
+            }
             const uint64_t room = delivered + ringSectors > produced ? delivered + ringSectors - produced : 0;
             const uint64_t n = (cycle - producedAt) / kSectorCycles;
             if (n >= room)
