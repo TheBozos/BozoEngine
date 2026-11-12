@@ -211,10 +211,11 @@ def explore(module, start, limit):
                     # jump leaves the native code there and comes straight back in (it used to be interpreted from
                     # the case up to the next entry, and the code only the cases reach was never recompiled).
                     for target in module.code_pointers():
-                        if start <= target < limit and target not in fn.insns:
+                        if start <= target < limit:
                             fn.labels.add(target)
                             fn.resume.add(target)
-                            work.append(target)
+                            if target not in fn.insns:
+                                work.append(target)
                 break  # jr
             addr += 4
     # A load whose register the next instruction reads: the R3000 would give it the old value (its load delay).
