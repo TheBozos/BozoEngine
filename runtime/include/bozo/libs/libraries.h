@@ -200,6 +200,8 @@ namespace bozo::libs
         // ---- State ----
         Heap heap;
         Rand rand;
+        // sqrt's double in a0 -> v0 (software doubles) instead of a float in f12 -> f0.
+        bool softDouble = false;
         PadState pad;
         McState mc;
         CdState cd;
