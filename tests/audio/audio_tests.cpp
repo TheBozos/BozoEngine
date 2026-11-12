@@ -389,6 +389,22 @@ namespace
         eq("SetEffectModeParams, mode 7: the delay", host.r32(0x9010Cu), 9);
         eq("SetEffectModeParams, mode 7: the feedback", host.r32(0x90110u), 10);
         eq("libsd handles 31 (sceSdCleanEffectWorkArea)", Libsd::handles(31u), 1);
+        // The blocking clear (25) returns when done; the clean (31) reports its end as its DMA channel's transfer
+        // interrupt: channel 1's handler (set above) with its argument. VP2's Csm chains its reverb change on it.
+        const size_t before = host.calls.size();
+        const uint32_t clearArea[5] = {0u, 1u, 7u};
+        eq("sceSdClearEffectWorkArea", sd.call(25u, clearArea, 0u, r) && r == 0u, 1);
+        eq("sceSdClearEffectWorkArea queues no interrupt", static_cast<long long>(host.calls.size() - before), 0);
+        eq("sceSdCleanEffectWorkArea", sd.call(31u, clearArea, 0u, r) && r == 0u, 1);
+        eq("sceSdCleanEffectWorkArea queues its channel's interrupt", static_cast<long long>(host.calls.size() - before), 1);
+        if (host.calls.size() > before)
+        {
+            const auto &end = host.calls.back();
+            eq("clean end: channel 1's handler", end.function, 0x4000);
+            eq("clean end: the channel", end.a0, 1);
+            eq("clean end: the handler's argument", end.a1, 0x77);
+            eq("clean end: delay", end.delay, Libsd::kTransferDelay);
+        }
         eq("libsd handles 13", Libsd::handles(13u), 1);
         eq("libsd does not handle 29", Libsd::handles(29u), 0);
     }
