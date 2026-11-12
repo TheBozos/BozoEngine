@@ -291,6 +291,8 @@ namespace bozo::ee
         // EnableIntc / DisableIntc / EnableDmac / DisableDmac (returns 0, as every call in the logs).
         int32_t causeEnable(bool dmac, uint32_t cause, bool on);
         void queue(const QueuedHandler &h);
+        // A handler queued at each vblank's start, after the vblank's INTC handlers (pc 0: none).
+        void setVblankHandler(const QueuedHandler &h) { vblankHandler_ = h; }
         void fieldRate(uint32_t numerator, uint32_t denominator);
         uint32_t threadSetup(uint32_t stack, uint32_t stackSize, uint32_t gp);
         // A switch the kernel wants happens now (a non-interrupt kernel call's end, the TMB port's switchThread):
@@ -363,6 +365,7 @@ namespace bozo::ee
 
         KernelObserver *observer_ = nullptr;
         KernelObserver defaultObserver_;
+        QueuedHandler vblankHandler_{};
         uint32_t origin_ = kOriginCall;
         uint64_t originCall_ = kNoCall;
         uint32_t depth_ = 0;

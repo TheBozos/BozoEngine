@@ -893,7 +893,7 @@ namespace bozo::ee
                 const uint64_t field = (framesCompleted_ & 1u) << 13;
                 std::memcpy(p, &field, 8);
             }
-        if (syncVCallback_)
+        if (syncVCallback_ && !syncVAtVblank_)
         {
             QueuedHandler h;
             h.kind = kInvokeGsCallback;
@@ -909,7 +909,27 @@ namespace bozo::ee
         const uint32_t old = syncVCallback_;
         syncVCallback_ = pc;
         syncVGp_ = gp;
+        updateVblankHandler();
         return old;
+    }
+
+    void Dispatcher::setSyncVAtVblank(bool on)
+    {
+        syncVAtVblank_ = on;
+        updateVblankHandler();
+    }
+
+    void Dispatcher::updateVblankHandler()
+    {
+        QueuedHandler h;
+        if (syncVAtVblank_ && syncVCallback_)
+        {
+            h.kind = kInvokeGsCallback;
+            h.pc = syncVCallback_;
+            h.a[0] = 2;
+            h.gp = syncVGp_;
+        }
+        kernel_.setVblankHandler(h);
     }
 
     // ---- Kernel calls ------------------------------------------------------------------------------------------

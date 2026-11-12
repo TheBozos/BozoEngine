@@ -36,6 +36,7 @@ namespace bozo::host
         {
             vu0Programs_ = registry->vu0Programs();
             transfersAlwaysDone_ = registry->transfersAreAlwaysDone();
+            d.setSyncVAtVblank(registry->syncVCallbackIsAtVblank());
         }
         if (nativeGraphics())
             std::fprintf(stderr, "[graphics] native submission/completion; retired graphics registers and DMA polls are guarded\n");

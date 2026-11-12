@@ -133,6 +133,8 @@ namespace bozo::ee
         void frameCompleted();
         // sceGsSyncVCallback: returns the callback it replaces (0: none; `pc` 0 removes it).
         uint32_t setSyncVCallback(uint32_t pc, uint32_t gp);
+        // The sync-V callback at each vblank's start instead of at frameCompleted (port::Registry::syncVCallbackAtVblank).
+        void setSyncVAtVblank(bool on);
 
         // ---- EE time ----
         uint64_t cycle() const { return cycle_; }
@@ -272,6 +274,8 @@ namespace bozo::ee
         uint64_t gsImr_ = 0x7F00; // GsPutIMR's mask (no GS behind it): every GS interrupt masked
         uint32_t vsyncFlag_ = 0, vsyncCsr_ = 0; // SetVSyncFlag's addresses
         uint32_t syncVCallback_ = 0, syncVGp_ = 0;
+        bool syncVAtVblank_ = false;
+        void updateVblankHandler();
         uint64_t framesCompleted_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
