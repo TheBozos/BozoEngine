@@ -392,6 +392,21 @@ namespace bozo
         case Op::PMFLO: return d == 0 ? "" : std::format("BZ_Q({0}).ud[0] = ctx->lo; BZ_Q({0}).ud[1] = ctx->lo1;", d);
         case Op::PMTHI: return std::format("ctx->hi = BZ_Q({0}).ud[0]; ctx->hi1 = BZ_Q({0}).ud[1];", s);
         case Op::PMTLO: return std::format("ctx->lo = BZ_Q({0}).ud[0]; ctx->lo1 = BZ_Q({0}).ud[1];", s);
+        case Op::PMFHL_LW:
+        case Op::PMFHL_UW:
+        case Op::PMFHL_SLW:
+        case Op::PMFHL_LH:
+        case Op::PMFHL_SH:
+            return d == 0 ? ""
+                          : std::format("{{ Gpr128 h, l; h.ud[0] = ctx->hi; h.ud[1] = ctx->hi1; l.ud[0] = ctx->lo; l.ud[1] = ctx->lo1; "
+                                        "BZ_Q({}) = bozo::mmi::pmfhl({}u, h, l); }}",
+                                        d, sa);
+        case Op::PMTHL_LW:
+            return std::format("ctx->lo = (ctx->lo & 0xFFFFFFFF00000000ull) | BZ_Q({0}).uw[0]; "
+                               "ctx->hi = (ctx->hi & 0xFFFFFFFF00000000ull) | BZ_Q({0}).uw[1]; "
+                               "ctx->lo1 = (ctx->lo1 & 0xFFFFFFFF00000000ull) | BZ_Q({0}).uw[2]; "
+                               "ctx->hi1 = (ctx->hi1 & 0xFFFFFFFF00000000ull) | BZ_Q({0}).uw[3];",
+                               s);
 
         // ---- COP0 ----
         case Op::MFC0: return toT(std::format("bozo::sx32((ctx->pc = {}, bozo_cop0_read(ctx, rt, {})))", hex(i.addr), cop0Register(i)));
