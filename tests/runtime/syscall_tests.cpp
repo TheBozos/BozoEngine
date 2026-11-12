@@ -279,6 +279,32 @@ namespace
         check(!k.handlerQueued(), "the field clock does not run it");
     }
 
+    void syncVAtVblank()
+    {
+        Rig r;
+        Kernel &k = r.d.kernel();
+        r.d.setSyncVCallback(0x200300, 0x777);
+        r.d.setSyncVAtVblank(true);
+        r.d.frameCompleted();
+        check(!k.handlerQueued(), "at the vblank, the frame boundary does not queue the callback");
+        k.processEvents(k.field() - 1);
+        check(!k.handlerQueued(), "nor does the field before its vblank");
+        k.processEvents(k.field());
+        check(k.handlerQueued(), "the vblank's start queues the callback");
+        Frame &f = k.stackHandler(*k.thread(1));
+        check(f.kind == kInvokeGsCallback && f.pc == 0x200300 && f.gp == 0x777 && f.a[0] == 2, "the callback's frame");
+        k.endHandler(*k.thread(1));
+        r.d.setSyncVCallback(0, 0);
+        k.processEvents(k.field() * 3);
+        check(!k.handlerQueued(), "a removed callback is not queued at the vblank");
+        r.d.setSyncVCallback(0x200300, 0x777);
+        r.d.setSyncVAtVblank(false);
+        k.processEvents(k.field() * 5);
+        check(!k.handlerQueued(), "back at the frame boundary, the vblank does not queue it");
+        r.d.frameCompleted();
+        check(k.handlerQueued(), "and the frame boundary does");
+    }
+
     void librarySyscalls()
     {
         Rig r;
@@ -301,6 +327,7 @@ int main()
     imrHeapOsd();
     alarms();
     frameBoundary();
+    syncVAtVblank();
     librarySyscalls();
     std::printf("%s\n", g_failures ? "FAILED" : "all passed");
     return g_failures ? 1 : 0;
