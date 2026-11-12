@@ -66,6 +66,8 @@ namespace
     {
         // sceMpegDemuxPss is sceMpegDemuxPssRing with ring 0: the data is read where it is, and the fifth argument (a
         // leftover register) is not a ring size.
+        if (!bozo::libs::haveVideoDecoder())
+            return;
         Machine m;
         uint8_t *ram = m.rt->memory.ram();
         const uint32_t data = 0x200000;
