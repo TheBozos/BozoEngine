@@ -234,6 +234,7 @@ namespace bozo::libs
         addGs(functions_);
         addDma(functions_);
         addPad(functions_);
+        addPad2(functions_);
         addMc(functions_);
         addCd(functions_);
         addMpeg(functions_);

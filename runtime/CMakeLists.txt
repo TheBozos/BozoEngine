@@ -27,6 +27,7 @@ add_library(bozo_libs STATIC
   libs/libm.cpp
   libs/gs.cpp
   libs/pad.cpp
+  libs/pad2.cpp
   libs/timer.cpp
   libs/mc.cpp
   libs/cd.cpp
