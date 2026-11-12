@@ -822,6 +822,16 @@ namespace bozo::native::irx
                 ret(heap.release(a0) ? 0 : 0xffffffffu);
                 return;
             }
+            if (n == 7)
+            {
+                ret(heap.largestFree());
+                return;
+            }
+            if (n == 8)
+            {
+                ret(heap.totalFree());
+                return;
+            }
         }
         if (lib == "thsemap")
         {
@@ -1417,6 +1427,18 @@ namespace bozo::native::irx
             if (n == 14)
             {
                 ret();
+                return;
+            }
+            if (n == 23)
+            {
+                auto *dispatcher = libraries.dispatcher();
+                if (!dispatcher) throw std::runtime_error("native EE data read requires attached EE data");
+                auto &ee = dispatcher->runtime().memory;
+                const auto *from = a3 ? ee.hostPointer(a1, a3) : nullptr;
+                if (a3 && (!from || from < ee.ram() || uint64_t(from - ee.ram()) + a3 > 0x2000000u))
+                    throw std::runtime_error("native EE data read source is outside EE RAM");
+                if (a3) copy(a2, from, a3);
+                ret(0);
                 return;
             }
             if (n == 17)

@@ -122,6 +122,22 @@ namespace bozo::libs
         return 0;
     }
 
+    uint32_t Heap::largestFree() const
+    {
+        uint32_t n = 0;
+        for (const auto &[start, size] : free_)
+            n = std::max(n, size);
+        return n;
+    }
+
+    uint32_t Heap::totalFree() const
+    {
+        uint64_t n = 0;
+        for (const auto &[start, size] : free_)
+            n += size;
+        return uint32_t(std::min<uint64_t>(n, UINT32_MAX));
+    }
+
     bool Heap::contains(uint32_t address,uint32_t bytes) const
     {
         for (const auto &[start,size] : used_)
