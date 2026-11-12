@@ -2,6 +2,7 @@
 // save path (the `save` run has no call log), and the heap and rand rules on their own.
 #include "bozo/libs/libraries.h"
 
+#include <bit>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -767,6 +768,16 @@ int main()
     nativeCardDirectories();
     liveScriptInput();
     linearPssDemux();
+    {
+        Machine m;
+        m.ctx.fu[12] = std::bit_cast<uint32_t>(2.25f);
+        m.call("sqrt", {});
+        eq("float sqrt in f0", m.ctx.fu[0], std::bit_cast<uint32_t>(1.5f));
+        m.libs.softDouble = true;
+        m.ctx.r[4].ud[0] = std::bit_cast<uint64_t>(2.25);
+        m.call("sqrt", {});
+        eq("software-double sqrt in v0", static_cast<long long>(m.ctx.r[2].ud[0] == std::bit_cast<uint64_t>(1.5)), 1);
+    }
     {
         // Native graphics must reject the retired graphics paths without blocking movie input, T0 or VU0 data.
         for (uint32_t address : {0x10003000u, 0x10003C00u, 0x10008000u, 0x10009030u, 0x1000A000u,
