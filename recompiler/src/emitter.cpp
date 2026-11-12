@@ -104,7 +104,7 @@ namespace bozo
     bool Emitter::isExternal(uint32_t target, bool call) const
     {
         const auto it = opt_.externals.find(target);
-        return it != opt_.externals.end() && (call || it->second == ExternalKind::Stub);
+        return it != opt_.externals.end() && (call || opt_.overridesTakeJumps || it->second == ExternalKind::Stub);
     }
 
     std::string Emitter::callTo(uint32_t target, bool call)

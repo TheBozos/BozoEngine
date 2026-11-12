@@ -7,7 +7,8 @@
 // .cpp files, default 1 MiB), --files <n> (exactly n .cpp files instead), --externals <file> (addresses the runtime
 // answers: "stub 0xADDR" / "override 0xADDR" lines), --no-comments (no disassembly comment per instruction),
 // --patches <file> (guarded instruction adaptations, analysis image only), --symbols <file> (a symbol map for an ELF
-// without symbols, docs/specs/symbol-map.md),
+// without symbols, docs/specs/symbol-map.md), --overrides-take-jumps (an override also answers a direct jump, a branch or
+// a fall-through to its address),
 // --verbose (list the unresolved jr instructions and the extra entry points).
 #include "analysis.h"
 #include "decoder.h"
@@ -35,7 +36,7 @@ namespace
     {
         std::fprintf(stderr, "usage: bozo-recomp <elf> <out dir> [--prefix name] [--max-file-bytes n] [--files n]\n"
                              "                   [--externals file] [--patches file] [--entries file] [--symbols file]\n"
-                             "                   [--no-elf-symbols] [--report file] [--no-comments] [--verbose]\n"
+                             "                   [--no-elf-symbols] [--report file] [--no-comments] [--overrides-take-jumps] [--verbose]\n"
                              "       bozo-recomp <elf> --census\n");
         return 2;
     }
@@ -133,6 +134,8 @@ int main(int argc, char **argv)
             hideElfSymbols = true;
         else if (a == "--verbose")
             verbose = true;
+        else if (a == "--overrides-take-jumps")
+            options.overridesTakeJumps = true;
         else if (a == "--no-comments")
             options.comments = false;
         else
