@@ -33,4 +33,11 @@ class StrictNative(unittest.TestCase):
             path=self.fixture(temp,[0x8c820000,0x00401821,0x03e00008,0])
             result=subprocess.run([sys.executable,'-I',str(script),str(path),'--out',temp],capture_output=True,text=True)
             self.assertNotEqual(result.returncode,0)
+    def test_switch_case_decoded_before_the_jump_is_an_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=self.fixture(temp,[0x10800003,0,0x03e00008,0,0x01000008,0,0x00001008])
+            module=tool.Module(path)
+            exports,imports=module.tables()
+            functions=tool.find_functions(module,exports,imports,[])
+            self.assertIn(0x1008,functions[0x1000].resume)
 if __name__=='__main__':unittest.main()
