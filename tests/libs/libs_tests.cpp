@@ -6,6 +6,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -60,6 +61,30 @@ namespace
         }
         void string(uint32_t at, const char *s) { std::memcpy(rt->memory.ram() + at, s, std::strlen(s) + 1); }
     };
+
+    void linearPssDemux()
+    {
+        // sceMpegDemuxPss is sceMpegDemuxPssRing with ring 0: the data is read where it is, and the fifth argument (a
+        // leftover register) is not a ring size.
+        Machine m;
+        uint8_t *ram = m.rt->memory.ram();
+        const uint32_t data = 0x200000;
+        const uint8_t payload[] = {0x00, 0x00, 0x01, 0xB3, 0x28, 0x01, 0xE0, 0x13};
+        std::vector<uint8_t> sector(0x800, 0);
+        const uint8_t video[] = {0x00, 0x00, 0x01, 0xE0, 0x00, 0x0B, 0x81, 0x00, 0x00};
+        std::memcpy(&sector[0], video, sizeof(video));
+        std::memcpy(&sector[sizeof(video)], payload, sizeof(payload));
+        const size_t padAt = sizeof(video) + sizeof(payload);
+        const size_t padLength = 0x800 - padAt - 6;
+        const uint8_t padding[] = {0x00, 0x00, 0x01, 0xBE, static_cast<uint8_t>(padLength >> 8), static_cast<uint8_t>(padLength)};
+        std::memcpy(&sector[padAt], padding, sizeof(padding));
+        std::memcpy(ram + data, sector.data(), sector.size());
+        std::memset(ram + 0x300000, 0xEE, 0x800);
+        eq("linear demux takes the sector", m.call("sceMpegDemuxPssRing", {0x100000, data, 0x800, 0, 0x1234}), 0x800);
+        eq("linear demux reads the data where it is", m.libs.mpeg.es.size(), sizeof(payload));
+        eq("linear demux payload", m.libs.mpeg.es.size() == sizeof(payload) &&
+                                       std::memcmp(m.libs.mpeg.es.data(), payload, sizeof(payload)) == 0, 1);
+    }
 
     void memoryCard()
     {
@@ -728,6 +753,7 @@ int main()
     nativeDualLayerIso();
     nativeCardDirectories();
     liveScriptInput();
+    linearPssDemux();
     {
         // Native graphics must reject the retired graphics paths without blocking movie input, T0 or VU0 data.
         for (uint32_t address : {0x10003000u, 0x10003C00u, 0x10008000u, 0x10009030u, 0x1000A000u,
