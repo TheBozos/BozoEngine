@@ -142,6 +142,44 @@ namespace bozo::mmi
     }
     inline V pcpyld(V s, V t) { V d; d.ud[0] = t.ud[0]; d.ud[1] = s.ud[0]; return d; }
     inline V pcpyud(V s, V t) { V d; d.ud[0] = s.ud[1]; d.ud[1] = t.ud[1]; return d; }
+
+    // PMFHL: HI and LO (HI1:HI, LO1:LO as 128 bits) packed into rd by the format in sa: 0 LW, 1 UW, 2 SLW, 3 LH, 4 SH.
+    inline V pmfhl(uint32_t fmt, V h, V l)
+    {
+        V d{};
+        switch (fmt)
+        {
+        case 0:
+            d.uw[0] = l.uw[0], d.uw[1] = h.uw[0], d.uw[2] = l.uw[2], d.uw[3] = h.uw[2];
+            break;
+        case 1:
+            d.uw[0] = l.uw[1], d.uw[1] = h.uw[1], d.uw[2] = l.uw[3], d.uw[3] = h.uw[3];
+            break;
+        case 2:
+            for (int k = 0; k < 2; ++k)
+            {
+                const int64_t v = static_cast<int64_t>((static_cast<uint64_t>(h.uw[2 * k]) << 32) | l.uw[2 * k]);
+                d.sd[k] = satAdd<int64_t>(v, INT32_MIN, INT32_MAX);
+            }
+            break;
+        case 3:
+            d.uh[0] = l.uh[0], d.uh[1] = l.uh[2], d.uh[2] = h.uh[0], d.uh[3] = h.uh[2];
+            d.uh[4] = l.uh[4], d.uh[5] = l.uh[6], d.uh[6] = h.uh[4], d.uh[7] = h.uh[6];
+            break;
+        case 4:
+            for (int k = 0; k < 2; ++k)
+            {
+                d.sh[4 * k + 0] = satAdd<int16_t>(l.sw[2 * k], INT16_MIN, INT16_MAX);
+                d.sh[4 * k + 1] = satAdd<int16_t>(l.sw[2 * k + 1], INT16_MIN, INT16_MAX);
+                d.sh[4 * k + 2] = satAdd<int16_t>(h.sw[2 * k], INT16_MIN, INT16_MAX);
+                d.sh[4 * k + 3] = satAdd<int16_t>(h.sw[2 * k + 1], INT16_MIN, INT16_MAX);
+            }
+            break;
+        default:
+            break;
+        }
+        return d;
+    }
     inline V pcpyh(V t)
     {
         V d;
