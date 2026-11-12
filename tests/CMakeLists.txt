@@ -136,6 +136,7 @@ add_test(NAME reference_records COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT
 add_test(NAME data_objects_in_code COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_data_objects.py $<TARGET_FILE:bozo-recomp>)
 add_test(NAME delay_slot_labels COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_delay_slot_labels.py $<TARGET_FILE:bozo-recomp>)
 add_test(NAME explicit_entries COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_entries.py $<TARGET_FILE:bozo-recomp>)
+add_test(NAME overrides_take_jumps COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native/test_overrides_take_jumps.py $<TARGET_FILE:bozo-recomp>)
 set(entry_gen "${CMAKE_CURRENT_BINARY_DIR}/explicit_entry_gen")
 add_custom_command(
   OUTPUT "${entry_gen}/entries_000.cpp" "${entry_gen}/entries_table.cpp" "${entry_gen}/entries_functions.h"
