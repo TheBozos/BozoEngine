@@ -154,6 +154,12 @@ and never calls them: its delays go through libkernel's own timer library (below
 parity, as FIELD (bit 13), to the 64-bit CSR word, then queues the callback `sceGsSyncVCallback` set (kind GS callback,
 a0 2, the caller's gp). Neither follows the field clock: a game on the PC's clock gets them once per frame it makes.
 
+A port whose frame waits on a semaphore that the callback signals (FFOP: SignalSema, then WaitSema until the callback's
+iSignalSema) declares `Registry::syncVCallbackAtVblank()`. The callback is then queued at each vblank's start, after
+the vblank's INTC handlers, as libgraph's own vblank handler calls it, and never at the frame boundary: the waiting
+thread blocks until the vblank and the lower-priority threads run meanwhile. Without it, the callback signals the
+semaphore at once and no thread below the waiting one ever runs.
+
 **Results.** A kernel call's result is written to v0 as a whole 128-bit register, its upper half cleared (boot frame
 1615, FlushCache).
 
