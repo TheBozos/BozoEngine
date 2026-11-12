@@ -214,7 +214,8 @@ namespace bozo::libs
                 ++n;
             }
             l.mc.directoryCursor[port]+=uint32_t(n);
-            finish(l, kFnGetDir, n ? n : wildcard ? 0 : -4);
+            const bool folderMissing = wildcard && !dir.empty() && !card.find(dir);
+            finish(l, kFnGetDir, n ? n : wildcard && !folderMissing ? 0 : -4);
             g.ret(0);
         }
 

@@ -145,6 +145,9 @@ namespace
         m.string(0x101000, "BASCUS-97101/missing");
         m.call("sceMcOpen", {0, 0, 0x101000, 0x1});
         eq("Open of a missing file", m.result(), -4);
+        m.string(0x101000, "BASLUS-20933SCSYS/*");
+        m.call("sceMcGetDir", {0, 0, 0x101000, 0, 50, 0x102000});
+        eq("a listing in a missing folder", m.result(), -4);
     }
 
     void heapAndRand()
