@@ -100,6 +100,9 @@ namespace bozo::render
         uint8_t fromFrame = 0, target = 0, source = 0;
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
+        // Images 9..15 are auxiliary targets like 1..7 (not the previous frame). An image keeps its pixels until a
+        // draw into it in a later frame: a game's frame snapshot drawn while it fades is copied once, then sampled.
+        static constexpr uint8_t kAuxiliaryImages = 16;
         bool nearest = false;
         // Native colour correction after texturing/fog, before blending:
         // RGB = clamp(gain * max(0, min(RGB, high) - low), 0, 1).
@@ -297,10 +300,10 @@ namespace bozo::render
         void setEnabled(bool on) { m_enabled = on; }
 
         void setTargetSize(uint8_t n, uint16_t width, uint16_t height) {
-            if (n > 0 && n < 8) m_targetSize[n].store(uint32_t(width) << 16 | height);
+            if (n > 0 && n < Material::kAuxiliaryImages && n != Material::kPreviousFrame) m_targetSize[n].store(uint32_t(width) << 16 | height);
         }
         void setTargetSharesDepth(uint8_t n, bool share) {
-            if (n > 0 && n < 8) {
+            if (n > 0 && n < Material::kAuxiliaryImages && n != Material::kPreviousFrame) {
                 if (share) m_sharedDepth.fetch_or(1u << n);
                 else m_sharedDepth.fetch_and(~(1u << n));
             }
@@ -409,7 +412,7 @@ namespace bozo::render
         uint64_t m_group = 0;
         float m_clip[4] = {0, 0, 0, 0};
         std::atomic<uint32_t> m_clearColour{0};
-        std::atomic<uint32_t> m_targetSize[8]{};
+        std::atomic<uint32_t> m_targetSize[Material::kAuxiliaryImages]{};
         std::atomic<uint32_t> m_sharedDepth{0};
         std::atomic<int> m_frameRate{0};
         uint64_t m_key = 0, m_keyBase = 0;

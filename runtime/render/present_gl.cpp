@@ -390,7 +390,7 @@ void main()
             gl::GLuint fbo = 0, colour = 0, depth = 0;
             int width = 0, height = 0;
         };
-        Target auxiliary[8];
+        Target auxiliary[Material::kAuxiliaryImages];
         gl::GLuint previousColour = 0;
         int previousWidth = 0, previousHeight = 0;
         uint64_t previousSerial = 0;
@@ -1738,14 +1738,14 @@ void main()
             return rect;
         };
         bool scissored = false;
-        bool touched[8] = {};
+        bool touched[Material::kAuxiliaryImages] = {};
         uint8_t drawingTarget = 0;
         for (size_t index = 0; index < frame->batches.size(); ++index)
         {
             const Batch &batch = frame->batches[index];
             const float *matrix = !s_lerped.empty() && s_lerped[index].use ? s_lerped[index].matrix : batch.matrix;
             const Material &m = batch.material;
-            if (m.target >= 8 || m.source > Material::kPreviousFrame)
+            if (m.target >= Material::kAuxiliaryImages || m.target == Material::kPreviousFrame || m.source >= Material::kAuxiliaryImages)
                 throw std::runtime_error("native render target index outside supported range");
             const bool explicitResize=m.target && m.targetWidth &&
                 (gpu.auxiliary[m.target].width!=m.targetWidth || gpu.auxiliary[m.target].height!=m.targetHeight);
