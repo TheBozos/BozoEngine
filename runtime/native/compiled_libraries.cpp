@@ -499,7 +499,13 @@ namespace bozo::native::irx
                 if (!ran)
                     return;
             }
-            throw std::runtime_error("native library tasks made no blocking progress");
+            {
+                std::string still;
+                for (const auto &[id, task] : tasks)
+                    if (!task.done && !task.waiting)
+                        still += std::format(" task {} at 0x{:x} (ra 0x{:x})", id, task.cpu.pc, task.cpu.gpr[31]);
+                throw std::runtime_error("native library tasks made no blocking progress:" + still);
+            }
         }
         void service(Environment &env, const Import &import);
         // The SDK's printf family on 32-bit arguments: argument slot k is a0-a3, then the caller's stack from sp + 16.
@@ -1359,10 +1365,12 @@ namespace bozo::native::irx
                 return;
             } // native callbacks are only delivered at safe points
         }
-        if (lib == "vblank" && n == 5)
+        // WaitVblankStart (4), WaitVblankEnd (5) and WaitVblank (6): the task waits for the next native frame tick (no
+        // display: the start and the end of a vblank are the same tick). Jade Cocoon 2's IMODEMAN.IRX polls on 4.
+        if (lib == "vblank" && (n == 4 || n == 5 || n == 6))
         {
             if (!current)
-                throw std::runtime_error("native root WaitVblankEnd");
+                throw std::runtime_error("native root vblank wait");
             if (!exclusions.empty()) throw std::runtime_error("native frame wait with callbacks excluded");
             auto &t = tasks.at(current);
             t.waiting = true;
@@ -1622,6 +1630,7 @@ namespace bozo::native::irx
             if (n == 15)
             {
                 const auto found = libraries.sif.eeServers.find(a1);
+                if (std::getenv("BOZO_NATIVE_IRX_TRACE")) std::fprintf(stderr, "[native-irx:sif] bind EE service 0x%x (client 0x%x, ra 0x%x)\n", a1, a0, c.gpr[31]);
                 write(a0 + 0x24, a1 && found != libraries.sif.eeServers.end() ? a1 : 0);
                 ret();
                 return;
