@@ -1365,6 +1365,13 @@ namespace bozo::native::irx
                 return;
             } // native callbacks are only delivered at safe points
         }
+        // WaitNonVblank (7): there is no display, so never a vblank to wait out: it returns at once. Jade Cocoon 2's
+        // M2SOUND calls it.
+        if (lib == "vblank" && n == 7)
+        {
+            ret();
+            return;
+        }
         // WaitVblankStart (4), WaitVblankEnd (5) and WaitVblank (6): the task waits for the next native frame tick (no
         // display: the start and the end of a vblank are the same tick). Jade Cocoon 2's IMODEMAN.IRX polls on 4.
         if (lib == "vblank" && (n == 4 || n == 5 || n == 6))

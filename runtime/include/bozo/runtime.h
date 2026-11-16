@@ -87,7 +87,13 @@ namespace bozo
         void addModule(uint32_t start, uint32_t end, const uint8_t *resident,
                        std::vector<uint8_t> identity, const BozoFunctionEntry *functions, size_t count,
                        const BozoResumeEntry *resume, size_t resumeCount);
-        void clearModules() { modules_.clear(); }
+        void clearModules()
+        {
+            modules_.clear();
+            modulesLow_ = ~0u;
+            modulesHigh_ = 0;
+            lastModule_ = nullptr;
+        }
 
     private:
         const BozoFunctionEntry *table_ = nullptr;
@@ -106,6 +112,10 @@ namespace bozo
             size_t resumeCount;
         };
         std::vector<Module> modules_;
+        // Lookups are made on every call: the span all modules cover (outside it, no module is asked) and the module found
+        // last (asked first: a module's code calls into itself far more than elsewhere).
+        uint32_t modulesLow_ = ~0u, modulesHigh_ = 0;
+        mutable const Module *lastModule_ = nullptr;
         const Module *moduleAt(uint32_t address, bool &reserved) const;
     };
 
