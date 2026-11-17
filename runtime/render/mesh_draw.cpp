@@ -161,6 +161,8 @@ namespace bozo::render
             Material material;
             material.textured = batch.textured && batch.texture != nullptr;
             material.tex0 = batch.tex0;
+            material.clampU = batch.clampU;
+            material.clampV = batch.clampV;
             material.blend = batch.blended ? meshBlend(gs.alpha) : Material::Blend::Opaque;
             material.depthWrite = !gs.depthMasked;
             const uint32_t atst = (gs.test >> 1) & 7u, aref = (gs.test >> 4) & 0xffu;
