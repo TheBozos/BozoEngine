@@ -59,6 +59,14 @@ namespace bozo::render
             // Zero disables it; reading the draw target itself is rejected.
             uint8_t alphaSource = 0;
             float alphaScale = 1;
+            // A game's blur drawn as GS sprites: a base copy, then lerps C = floor((S - C) * alpha / 128) + C in
+            // 8-bit integers, as the GS blends them. Each step truncates, so no linear kernel gives the same image.
+            // chainTaps > 0 replaces the kernel. The base is the texel under the pixel; sample i is the source at
+            // chainOffset[i] texels (a multiple of 1/16) along step's axis, bilinear with 4-bit weights, edges
+            // clamped. Each is modulated by chainColour (128 = 1), floored and clamped to 255. chainAlpha in 128ths.
+            uint8_t chainTaps = 0;
+            std::array<float,32> chainOffset{}, chainAlpha{};
+            float chainColour = 128;
         };
         std::shared_ptr<const ImageProcessing> imageProcessing;
         // Optional per-draw auxiliary dimensions. Main-frame dimensions follow
