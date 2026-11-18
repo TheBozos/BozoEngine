@@ -462,7 +462,11 @@ namespace bozo::native::irx
         }
         void runReady()
         {
-            if (!exclusions.empty()) return;
+            // Inside a running task (it called the EE, and the EE's handler called back here, an IOP RPC or a SIF
+            // transfer bringing the IOP's clock up): that task waits for its reply on a PS2, and the loop running it
+            // takes the ready tasks once it yields. Running them here would enter tasks nested, the caller itself too
+            // (it is not waiting), on its live state.
+            if (!exclusions.empty() || current) return;
             for (unsigned pass = 0; pass < 32; ++pass)
             {
                 bool ran = false;
