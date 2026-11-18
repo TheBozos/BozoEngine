@@ -27,6 +27,7 @@ namespace bozo::libs
             uint16_t attributes = 0;
             McDate created, modified;
             std::vector<uint8_t> data;
+            uint64_t order = 0; // creation sequence: a card lists a directory in the order its entries were made
         };
 
         // A formatted, empty card; `hostDirectory` non-empty: its files live there (loaded now, written as they
@@ -37,7 +38,8 @@ namespace bozo::libs
         // Paths are the card's ("BASCUS-97101/icon.sys"), without a leading slash.
         Entry *find(const std::string &path);
         bool exists(const std::string &path) { return find(path) != nullptr; }
-        // The entries directly inside a directory ("" for the root), in name order.
+        // The entries directly inside a directory ("" for the root), in creation order (a game may count on it:
+        // JC2's slot list reads entry slot + 6 after icon.sys and three icons).
         std::vector<std::string> list(const std::string &directory) const;
         Entry &create(const std::string &path, bool directory, const McDate &date);
         void changed(const std::string &path); // written back to the host file
@@ -49,6 +51,7 @@ namespace bozo::libs
     private:
         std::map<std::string, Entry> entries_;
         std::string host_;
+        uint64_t next_ = 0;
     };
 
     struct McState

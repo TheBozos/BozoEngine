@@ -325,6 +325,13 @@ void nativeCardDirectories() {
     eq("continued page starts with one",std::strcmp(reinterpret_cast<char *>(m.rt->memory.ram()+0x120000+32),"one"),0);
     m.call("sceMcGetDir",{0,0,0x110000,1,2,0x120000});
     eq("listing terminates",m.result(),0);
+    // Creation order, not name order: a card lists "b" made before "a" first, and a file made again keeps its place.
+    m.libs.mc.card(0).create("ORDER",true,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/b",false,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/a",false,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/b",false,m.libs.mc.date);
+    const auto ordered=m.libs.mc.card(0).list("ORDER");
+    eq("listing in creation order",ordered.size()==2&&ordered[0]=="ORDER/b"&&ordered[1]=="ORDER/a",1);
     m.string(0x110000,"..");
     m.call("sceMcChdir",{0,0,0x110000,0});eq("parent directory",m.result(),0);
     eq("parent restored root",m.libs.mc.currentDirectory[0].empty(),1);
