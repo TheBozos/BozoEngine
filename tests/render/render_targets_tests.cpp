@@ -101,6 +101,30 @@ int main()
     pixel("previous frame", 24, {255, 0, 0});
     renderer.present(0, 0, 32, 32);
     pixel("repeated presentation preserves history", 8, {0, 0, 255});
+    // A kept image (9..15): copied from the previous presentation once, sampled by later frames that do not draw
+    // into it. Its pixels stay, through new frames and a repeated presentation.
+    renderer.beginFrame(screen);
+    quad(plain, 0x80008000);
+    auto keep = copy;
+    keep.target = 12;
+    keep.source = Material::kPreviousFrame;
+    renderer.setTargetSize(12, 16, 16);
+    quad(keep, 0x80808080);
+    present();
+    renderer.beginFrame(screen);
+    quad(plain, 0x80000000);
+    auto kept = copy;
+    kept.source = 12;
+    quad(kept, 0x80808080);
+    present();
+    pixel("kept image top", 24, {255, 0, 0});
+    pixel("kept image bottom", 8, {0, 0, 255});
+    renderer.beginFrame(screen);
+    quad(plain, 0x80000000);
+    quad(kept, 0x80808080, 8, 16);
+    present();
+    renderer.present(0, 0, 32, 32);
+    pixel("kept image in a later frame", 8, {0, 0, 255});
     renderer.beginFrame(screen);
     quad(plain, 0x80008000);
     copy.source = 0;
