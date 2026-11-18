@@ -408,6 +408,7 @@ void main()
         gl::GLuint white = 0;         // 1 x 1 white: an untextured 2D draw
         // The frame's target (raylib's render texture: RGBA8 colour, a depth renderbuffer).
         gl::GLuint fbo = 0, colour = 0, depth = 0;
+        gl::GLuint presentTo = 0; // the framebuffer present() was called with (the window's, or a capture's own)
         gl::GLuint imageDepth=0;
         int imageDepthWidth=0,imageDepthHeight=0;
         int targetWidth = 0, targetHeight = 0;
@@ -894,7 +895,7 @@ void main()
             g.FramebufferTexture2D(gl::kFramebuffer, gl::kColorAttachment0, gl::kTexture2D, colour, 0);
             g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthStencilAttachment, gl::kRenderbuffer, depth);
             const bool complete = g.CheckFramebufferStatus(gl::kFramebuffer) == gl::kFramebufferComplete;
-            g.BindFramebuffer(gl::kFramebuffer, 0);
+            g.BindFramebuffer(gl::kFramebuffer, presentTo);
             if (!complete)
             {
                 std::fprintf(stderr, "[renderer] the %d x %d target is incomplete\n", width, height);
@@ -1536,6 +1537,13 @@ void main()
             }
         }
         Gpu &gpu = *m_gpu;
+        {
+            // The caller's framebuffer (GL_FRAMEBUFFER_BINDING): the window's, or a capture's offscreen one. The frame's
+            // target is drawn, then the picture goes there.
+            gl::GLint bound = 0;
+            g.GetIntegerv(0x8CA6, &bound);
+            gpu.presentTo = static_cast<gl::GLuint>(bound);
+        }
         gpu.largeUploads = 0;
         static const bool s_textureStats = [] { const char *v = std::getenv("PS2X_TEXTURE_STATS"); return v && *v && *v != '0'; }();
         if (const TextureUpscale upscale = textureUpscale(); (upscale.on() || s_textureStats || TextureReplacements::instance().active()) && presentNow - gpu.textureStatsAt >= 10.0)
@@ -1845,7 +1853,11 @@ void main()
             {
                 g.Enable(gl::kStencilTest);
                 g.StencilFunc(gl::kAlways, 0, 0xFFu);
-                g.StencilOp(gl::kKeep, gl::kKeep, m.stencilOp == Material::StencilOp::IncrementWrap ? gl::kIncrWrap : gl::kDecrWrap);
+                const gl::GLenum count = m.stencilOp == Material::StencilOp::IncrementWrap ? gl::kIncrWrap : gl::kDecrWrap;
+                if (m.stencilDepthFail)
+                    g.StencilOp(gl::kKeep, count, gl::kKeep);
+                else
+                    g.StencilOp(gl::kKeep, gl::kKeep, count);
             }
             else if (m.stencilNotZero)
             {
@@ -2034,7 +2046,7 @@ void main()
             readDepthTiles(w, h, screen);
         g.DepthMask(gl::kTrue);
         g.Disable(gl::kDepthTest);
-        g.BindFramebuffer(gl::kFramebuffer, 0);
+        g.BindFramebuffer(gl::kFramebuffer, gpu.presentTo);
         g.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
         // Under the frame, as the display merges it: the picture the game shows through circuit 2 (a menu's movie frame,
