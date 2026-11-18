@@ -81,6 +81,18 @@ int main() {
     host.l.cd.readEnd=0;
     check(call("sceCdCallback",{0})==0x155004 && host.l.cd.callback==0);
     check(call("sceCdCallback",{0x155000})==0);
+    // Timed completion: the read returns without the drive's time and its callback waits on a kernel deadline at
+    // the read's end, not on the handler queue.
+    host.l.cd.timedCompletion=true;
+    {
+        c.r[4].uw[0]=22;c.r[5].uw[0]=1;c.r[6].uw[0]=0x110000;
+        libs::Guest g(d.runtime(),&c);const uint64_t before=host.l.now(g);
+        host.l.find("sceCdRead")->handler(host.l,g);
+        check(c.r[2].sw[0]==1 && g.cycles<libs::kSectorCycles && !d.kernel().handlerQueued());
+        check(host.l.cd.readEnd==before+g.cycles+libs::kSectorCycles && d.kernel().nextEvent()<=host.l.cd.readEnd);
+        check(call("sceCdSync",{1})==1 && d.kernel().cancelDeadline(libs::kReadDoneKey));
+    }
+    host.l.cd.timedCompletion=false;host.l.cd.readEnd=0;
     libs::Libraries independent;check(!independent.cd.callback && !independent.cd.callbackConfigured);
     const BozoFunctionEntry funcs[]={{0x100000,mainThread},{0x155000,callback}};
     const BozoResumeEntry resumes[]={{0x100000,0x100010,mainThread},{0x155000,0x155010,callback}};

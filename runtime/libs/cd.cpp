@@ -288,16 +288,20 @@ namespace bozo::libs
             CdState &cd = l.cd;
             cd.error = ok ? 0 : -1;
             cd.readBytes=ok?n*kSectorBytes:0;
-            g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
-            cd.readEnd = l.now(g) + g.cycles;
+            const uint64_t drive = static_cast<uint64_t>(n) * kSectorCycles;
+            g.cycles = l.callCycles(cd.timedCompletion ? 0 : drive);
+            cd.readEnd = l.now(g) + (cd.timedCompletion ? g.cycles + drive : g.cycles);
             if(ok && cd.callback)
             {
                 if(!l.dispatcher()) throw std::runtime_error("CD callback requires native dispatcher");
                 ee::QueuedHandler h;h.kind=ee::kInvokeLibraryCall;h.pc=cd.callback;
                 h.gp=cd.callbackGp;h.sp=cd.callbackStack;h.a[0]=1; // SCECdFuncRead
-                // The existing native read returns after charging its full
-                // read duration; this callback cannot execute inside that call.
-                l.queueHandler(h,{});
+                if(cd.timedCompletion)
+                    l.dispatcher()->kernel().scheduleDeadline(kReadDoneKey, cd.readEnd, h);
+                else
+                    // The read returns after charging its full duration; this callback cannot execute inside that
+                    // call.
+                    l.queueHandler(h,{});
             }
             g.ret(ok ? 1 : 0);
         }
