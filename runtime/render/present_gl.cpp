@@ -182,6 +182,9 @@ uniform vec4 uImageWeights[64];
 uniform vec4 uImageSize;
 uniform int uImageAlpha;
 uniform sampler2D uImageAlphaTex;
+uniform int uImageChain;
+uniform vec4 uImageChainTaps[16]; // (offset, alpha) pairs
+uniform float uImageChainColour;
 out vec4 fragColor;
 vec2 atlasUv(vec2 uv)
 {
@@ -189,9 +192,33 @@ vec2 atlasUv(vec2 uv)
         return clamp(uv, uUvBounds.xy, uUvBounds.zw);
     return uv;
 }
+vec3 chainModulate(vec3 bytes)
+{
+    return min(floor(bytes * uImageChainColour / 128.0), vec3(255.0));
+}
 vec4 sampled()
 {
     vec2 uv = atlasUv(vUv);
+    if (uImageChain != 0) {
+        // GS lerp chain in byte units: base copy, then C = floor((S - C) * a / 128) + C per tap.
+        ivec2 size = textureSize(uTex, 0);
+        ivec2 base = clamp(ivec2(floor(uv * vec2(size))), ivec2(0), size - 1);
+        ivec2 axis = ivec2(sign(uImageStep.xy));
+        vec4 centre = texelFetch(uTex, base, 0);
+        vec3 c = chainModulate(floor(centre.rgb * 255.0 + 0.5));
+        for (int i = 0; i < 32; ++i) {
+            if (i >= uImageChain) break;
+            vec2 tap = (i % 2) == 0 ? uImageChainTaps[i / 2].xy : uImageChainTaps[i / 2].zw;
+            float position = tap.x * 16.0;
+            float whole = floor(position / 16.0), fraction = position - whole * 16.0;
+            ivec2 a = clamp(base + axis * int(whole), ivec2(0), size - 1);
+            ivec2 b = clamp(base + axis * (int(whole) + 1), ivec2(0), size - 1);
+            vec3 t0 = floor(texelFetch(uTex, a, 0).rgb * 255.0 + 0.5), t1 = floor(texelFetch(uTex, b, 0).rgb * 255.0 + 0.5);
+            vec3 s = chainModulate((t0 * (16.0 - fraction) + t1 * fraction) / 16.0);
+            c = floor((s - c) * tap.y / 128.0) + c;
+        }
+        return vec4(c / 255.0, centre.a);
+    }
     if (uImageRadius != 0) {
         vec4 sum=textureLod(uTex,uv,0.0)*uImageKernel[0][0];
         for(int i=1;i<=16;++i) {
@@ -369,6 +396,7 @@ void main()
                   locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
                   locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthTex=-1,
                   locImageWeights=-1,locImageSize=-1,locImageAlpha=-1,locImageAlphaTex=-1,
+                  locImageChain=-1,locImageChainTaps=-1,locImageChainColour=-1,
                   locLodMode = -1, locLodScale = -1, locLodBias = -1;
         gl::GLuint vao = 0, vbo = 0;
         size_t vboBytes = 0;
@@ -759,6 +787,9 @@ void main()
             locImageSize=g.GetUniformLocation(shader,"uImageSize");
             locImageAlpha=g.GetUniformLocation(shader,"uImageAlpha");
             locImageAlphaTex=g.GetUniformLocation(shader,"uImageAlphaTex");
+            locImageChain=g.GetUniformLocation(shader,"uImageChain");
+            locImageChainTaps=g.GetUniformLocation(shader,"uImageChainTaps[0]");
+            locImageChainColour=g.GetUniformLocation(shader,"uImageChainColour");
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locLodMode = g.GetUniformLocation(shader, "uLodMode");
@@ -1850,6 +1881,12 @@ void main()
             g.Uniform1i(gpu.locImageRadius,processing?processing->radius:0);
             g.Uniform1i(gpu.locImageDepth,processing && processing->depthLookup);
             g.Uniform1i(gpu.locImageAlpha,processing && processing->alphaSource);
+            g.Uniform1i(gpu.locImageChain,processing?processing->chainTaps:0);
+            if(processing && processing->chainTaps){
+                float taps[64]={};
+                for(unsigned i=0;i<processing->chainTaps;++i){taps[2*i]=processing->chainOffset[i];taps[2*i+1]=processing->chainAlpha[i];}
+                g.Uniform4fv(gpu.locImageChainTaps,16,taps);g.Uniform1f(gpu.locImageChainColour,processing->chainColour);
+            }
             if(processing){
                 float kernel[20]={};std::copy(processing->weights.begin(),processing->weights.end(),kernel);
                 const float step[4]={processing->step[0],processing->step[1],0,0};
