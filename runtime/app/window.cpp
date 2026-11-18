@@ -196,6 +196,8 @@ namespace bozo::app
         Panel panel;
         if (options.panel)
             panel.init(window, context);
+        if (game.saveState && game.loadState)
+            registerStateTab(game.saveState, game.loadState);
 
         GameThread thread;
         thread.game = &game;
@@ -284,7 +286,16 @@ namespace bozo::app
                     quit = true;
                 else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
                 {
-                    if (event.key.scancode == SDL_SCANCODE_F8 && sequenceLeft == 0)
+                    if (event.key.scancode == SDL_SCANCODE_F5 && game.saveState)
+                        game.saveState(stateSlot());
+                    else if (event.key.scancode == SDL_SCANCODE_F7 && game.loadState)
+                        game.loadState(stateSlot());
+                    else if (event.key.scancode == SDL_SCANCODE_F6 && game.saveState)
+                    {
+                        setStateSlot(stateSlot() + ((event.key.mod & SDL_KMOD_SHIFT) ? -1 : 1));
+                        notify(stateSlotSummary(stateSlot()));
+                    }
+                    else if (event.key.scancode == SDL_SCANCODE_F8 && sequenceLeft == 0)
                         sequenceLeft = -1; // starts at this present
                     else if (event.key.scancode == SDL_SCANCODE_F9)
                     {

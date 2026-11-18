@@ -14,7 +14,9 @@
 #include "bozo/ee/kernel.h"
 #include "bozo/runtime.h"
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -125,6 +127,14 @@ namespace bozo::ee
 
         // The main thread starts at `entry` with sp `sp`; the dispatcher then runs until the host ends the run.
         void boot(uint32_t entry, uint32_t sp);
+        // Save states (bozo/state.h): `safePoint` runs at the top of the dispatch loop once `safePointDue` is set (from
+        // any thread). There no guest code is on the host stack: every thread's registers are in its kernel frame, so
+        // the state can be saved or replaced there.
+        std::function<void()> safePoint;
+        std::atomic<bool> safePointDue{false};
+        // The dispatcher's state with the kernel's and guest memory. Only at the safe point.
+        void serialize(state::Archive &a);
+        std::string unsaveable() const;
         void run();
 
         // ---- The native frame boundary (kernel.md section 2) ----

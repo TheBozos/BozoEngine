@@ -3,6 +3,8 @@
 // docs/specs/libraries.md section 7.
 #pragma once
 
+#include "bozo/state.h"
+
 #include <array>
 #include <cstdint>
 #include <map>
@@ -47,6 +49,7 @@ namespace bozo::libs
         void rename(const std::string &from, const std::string &to);
         void erase(); // every entry, on the host as well
         uint32_t freeClusters() const;
+        void serialize(state::Archive &a); // the entries (the host folder stays the runtime's)
 
     private:
         std::map<std::string, Entry> entries_;

@@ -11,6 +11,7 @@
 #pragma once
 
 #include "bozo/runtime.h"
+#include "bozo/state.h"
 
 #include <cstdint>
 #include <string>
@@ -107,6 +108,8 @@ namespace bozo::port
         // that calls the original (calling the guest code there would run the game's own library, which the
         // reference never did). False when nothing native answers there.
         virtual bool callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address) = 0;
+        // Where a port adds its own part of a save state (bozo/state.h); null when the host has no save states.
+        virtual state::Sections *stateSections() { return nullptr; }
     };
 
     // ---- What overrides use while they run --------------------------------------------------------------------------

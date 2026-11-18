@@ -705,6 +705,12 @@ namespace bozo::ee
     {
         for (;;)
         {
+            if (safePointDue.load(std::memory_order_relaxed))
+            {
+                safePointDue.store(false, std::memory_order_relaxed);
+                if (safePoint)
+                    safePoint();
+            }
             kernel_.setOrigin(kOriginEvents);
             if (pinned)
                 while (eventDue(nullptr, cycle_))
@@ -1141,5 +1147,32 @@ namespace bozo::ee
                                              : std::format("kernel call {} at 0x{:x}: not implemented yet", static_cast<int>(call), ctx->pc));
             return false;
         }
+    }
+}
+
+namespace bozo::ee
+{
+    std::string Dispatcher::unsaveable() const
+    {
+        if (inGuest_ || current_ || outcallDepth_ || syscall_ || rt_.stopDeferred || stopJump_)
+            return "guest code is running (not at the dispatcher's safe point)";
+        return kernel_.unsaveable();
+    }
+
+    void Dispatcher::serialize(state::Archive &a)
+    {
+        if (const std::string why = unsaveable(); !why.empty())
+            throw state::Error("save state: " + why);
+        a.begin("memory");
+        a.raw(rt_.memory.flat(), kFlatBytes);
+        a.end();
+        a.begin("dispatcher");
+        state::fields(a, rt_.cop0Status, osdConfig, osdConfig2, cycle_, pccr_, pcr_, perfSince_, epc_, errorEpc_,
+                      heapStart_, heapSize_, gsImr_, vsyncFlag_, vsyncCsr_, syncVCallback_, syncVGp_, syncVAtVblank_,
+                      framesCompleted_, checkpoints_, sliceStart_, timerPending_, outcallCheckpoints_, recentPcs_,
+                      recentNext_, lastThread_, lastDepth_, lastHandlerEnded_, started_, deferredPc_, dispatches, stops,
+                      handlersRun, jumps);
+        a.end();
+        kernel_.serialize(a);
     }
 }

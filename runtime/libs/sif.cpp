@@ -152,7 +152,7 @@ namespace bozo::libs
                         ee::QueuedHandler handler;
                         handler.kind=ee::kInvokeRpcCallback; handler.pc=callback;
                         handler.a[0]=g.arg(8); handler.gp=g.context()->r[28].uw[0];
-                        l.queueHandler(handler,{});
+                        l.queueHandler(handler, Resume{});
                     }
                     g.ret(0); return;
                 }

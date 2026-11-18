@@ -138,6 +138,7 @@ namespace bozo::host
         std::memcpy(&entry, elf.bytes().data() + 24, 4);
         d.boot(entry, 0x1FFFFF0u);
         d.kernel().useOwnedHandlerStacks();
+        d.safePoint = [this] { atSafePoint(); };
         if (!opt_.out.empty())
         {
             reference::Header h;
@@ -154,6 +155,8 @@ namespace bozo::host
 
     uint64_t FreeHost::run()
     {
+        if (!opt_.loadState.empty() && !opt_.loadStateFrame)
+            requestLoad(opt_.loadState);
         startSoundWatcher();
         try
         {
@@ -565,6 +568,13 @@ namespace bozo::host
         libs_.framesEnded = static_cast<uint32_t>(stats_.frames);
         det::frameCounter().store(stats_.frames, std::memory_order_relaxed);
         d_->frameCompleted();
+        if (!opt_.saveState.empty() && stats_.frames == opt_.saveStateFrame)
+            requestSave(opt_.saveState);
+        if (!opt_.loadState.empty() && opt_.loadStateFrame && stats_.frames == opt_.loadStateFrame)
+        {
+            requestLoad(opt_.loadState);
+            opt_.loadStateFrame = 0; // once (the loaded state may pass this frame again)
+        }
         if (onFrame)
             onFrame(frame, ctx);
         if (opt_.frames && stats_.frames >= opt_.frames)
@@ -576,6 +586,148 @@ namespace bozo::host
         {
             endReason_ = "stopped";
             throw ee::EndRun{};
+        }
+    }
+}
+
+namespace bozo::host
+{
+    // ---- Save states ----
+    void FreeHost::requestSave(const std::string &path)
+    {
+        {
+            std::lock_guard lock(stateMutex_);
+            saveTo_ = path;
+            saveWaiting_.clear();
+        }
+        if (d_)
+            d_->safePointDue.store(true, std::memory_order_relaxed);
+    }
+
+    void FreeHost::requestLoad(const std::string &path)
+    {
+        {
+            std::lock_guard lock(stateMutex_);
+            loadFrom_ = path;
+        }
+        if (d_)
+            d_->safePointDue.store(true, std::memory_order_relaxed);
+    }
+
+    std::string FreeHost::unsaveable()
+    {
+        if (insideDepth_)
+            return "a port override is running";
+        if (std::string why = d_->unsaveable(); !why.empty())
+            return why;
+        if (std::string why = libs_.unsaveable(); !why.empty())
+            return why;
+        for (const state::Section &s : sections_.all())
+            if (s.unsaveable)
+                if (std::string why = s.unsaveable(); !why.empty())
+                    return s.name + ": " + why;
+        return {};
+    }
+
+    void FreeHost::serializeAll(state::Archive &a)
+    {
+        d_->serialize(a);
+        libs_.serialize(a);
+        a.begin("host");
+        state::fields(a, stats_.frames, lastFrameCycle_);
+        a.end();
+        for (state::Section &s : sections_.all())
+        {
+            a.begin(s.name.c_str());
+            s.serialize(a);
+            a.end();
+        }
+        if (!a.atEnd() && a.loading())
+            throw state::Error("save state: the file has sections this runtime does not know");
+        if (a.loading())
+        {
+            framesEnded_.store(stats_.frames, std::memory_order_relaxed);
+            libs_.framesEnded = static_cast<uint32_t>(stats_.frames);
+            det::frameCounter().store(stats_.frames, std::memory_order_relaxed);
+            audio_.clear();
+            render::Renderer::instance().takeFrameDraws();
+            frameEndNs_.store(steadyNs(), std::memory_order_relaxed);
+        }
+    }
+
+    void FreeHost::atSafePoint()
+    {
+        std::string save, load;
+        {
+            std::lock_guard lock(stateMutex_);
+            std::swap(save, saveTo_);
+            std::swap(load, loadFrom_);
+        }
+        auto report = [this](bool ok, const std::string &message) {
+            if (onStateMessage)
+                onStateMessage(ok, message);
+            else
+                std::fprintf(stderr, "[state] %s\n", message.c_str());
+        };
+        if (!load.empty())
+        {
+            state::Archive backup;
+            bool backedUp = false;
+            try
+            {
+                state::Archive file = state::readFile(load, opt_.gameTag);
+                if (unsaveable().empty())
+                {
+                    serializeAll(backup);
+                    backedUp = true;
+                }
+                serializeAll(file);
+                report(true, std::format("loaded {} (frame {})", load, stats_.frames));
+            }
+            catch (const std::exception &e)
+            {
+                if (backedUp)
+                {
+                    state::Archive restore(backup.data());
+                    serializeAll(restore);
+                    report(false, std::format("{}; the state was put back as it was", e.what()));
+                }
+                else
+                {
+                    // Nothing to go back to (a run that loads before its first frame): the run ends.
+                    report(false, e.what());
+                    endReason_ = std::string("FAULT: ") + e.what();
+                    throw ee::EndRun{};
+                }
+            }
+        }
+        if (!save.empty())
+        {
+            if (const std::string why = unsaveable(); !why.empty())
+            {
+                // Tried again at the next safe point.
+                std::lock_guard lock(stateMutex_);
+                if (saveTo_.empty())
+                    saveTo_ = save;
+                if (saveWaiting_ != why)
+                {
+                    saveWaiting_ = why;
+                    report(false, std::format("save to {} waits: {}", save, why));
+                }
+                d_->safePointDue.store(true, std::memory_order_relaxed);
+                return;
+            }
+            try
+            {
+                state::Archive a;
+                serializeAll(a);
+                state::writeFile(save, opt_.gameTag, a);
+                report(true, std::format("saved {} (frame {}, {} MB)", save, stats_.frames, a.data().size() >> 20));
+            }
+            catch (const std::exception &e)
+            {
+                report(false, e.what());
+            }
         }
     }
 }

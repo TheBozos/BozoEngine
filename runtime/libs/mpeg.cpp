@@ -418,7 +418,7 @@ namespace bozo::libs
             for (const MpegState::DueCallback &c : s.callbacksDue)
             {
                 const uint32_t entry = c.entry;
-                l.queueHandler(c.handler, [entry](Libraries &l2, Guest &) { l2.gameHeap().release(entry); });
+                l.queueHandler(c.handler, Resume{kResumeMpegRelease, {entry}});
             }
             s.callbacksDue.clear();
             g.ret(static_cast<int32_t>(taken));
@@ -517,18 +517,10 @@ namespace bozo::libs
                 h.completion = true;
                 const int32_t thread = k.running();
                 // Its end wakes the thread, unless a demux already did.
-                l.queueHandler(h, [thread, entry](Libraries &l2, Guest &) {
-                    l2.gameHeap().release(entry);
-                    MpegState &s2 = state(l2);
-                    if (s2.waiting == thread)
-                    {
-                        s2.waiting = 0;
-                        l2.dispatcher()->kernel().wake(thread, 0, true, ee::kWaitMpeg);
-                    }
-                });
+                l.queueHandler(h, Resume{kResumeMpegNodataEnd, {static_cast<uint32_t>(thread), entry}});
                 l.io.ipuDemand = true; // the IPU's input was taken (libraries.md section 11)
                 s.waiting = thread;
-                l.waitFor(ee::kWaitMpeg, 1, s.mp, 0, [rgb, mbcount](Libraries &l2, Guest &g2) { getPictureOn(l2, g2, rgb, mbcount); });
+                l.waitFor(ee::kWaitMpeg, 1, s.mp, 0, Resume{kResumeMpegGetPicture, {rgb, mbcount}});
                 return;
             }
             if (s.delivered > 0 && !(ended(s) && s.delivered >= s.pictureStarts)) // the empty delivery is not paced
@@ -536,7 +528,7 @@ namespace bozo::libs
                 const uint64_t due = s.base + kFieldsPerPicture * s.delivered;
                 if (k.vblankCount() <= due)
                 {
-                    l.waitVblank(due, -1, [rgb, mbcount](Libraries &l2, Guest &g2) { deliver(l2, g2, rgb, mbcount); });
+                    l.waitVblank(due, -1, Resume{kResumeMpegDeliver, {rgb, mbcount}});
                     return;
                 }
             }
@@ -546,6 +538,35 @@ namespace bozo::libs
         // The reference's stub of TMB's videoCallback (the game's own, 0x1ec2c8): 1, nothing copied (the decoder takes
         // the video from the demux).
         void videoCallback(Libraries &, Guest &g) { g.ret(1); }
+    }
+
+    // The movie library's continuations (libraries.h ResumeKind).
+    void mpegResume(Libraries &l, Guest &g, const Resume &r)
+    {
+        switch (r.kind)
+        {
+        case kResumeMpegRelease:
+            l.gameHeap().release(r.a[0]);
+            break;
+        case kResumeMpegNodataEnd:
+        {
+            const int32_t thread = static_cast<int32_t>(r.a[0]);
+            l.gameHeap().release(r.a[1]);
+            MpegState &s = state(l);
+            if (s.waiting == thread)
+            {
+                s.waiting = 0;
+                l.dispatcher()->kernel().wake(thread, 0, true, ee::kWaitMpeg);
+            }
+            break;
+        }
+        case kResumeMpegGetPicture:
+            getPictureOn(l, g, r.a[0], r.a[1]);
+            break;
+        case kResumeMpegDeliver:
+            deliver(l, g, r.a[0], r.a[1]);
+            break;
+        }
     }
 
     void addMpeg(std::vector<Function> &out)
