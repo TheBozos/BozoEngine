@@ -609,6 +609,8 @@ static void pad2Calls()
     eq("deleted socket has no pad", m.call("scePad2Read", {static_cast<uint32_t>(first), 0x100500}), -1);
     eq("end", m.call("scePad2End", {}), 1);
     eq("dbc end", m.call("sceDbcEnd", {}), 1);
+}
+
 // libmpeg off the reference layout (MpegOptions, a game on the SDK's model): the SDK's results, nothing written outside
 // the work area, sceMpegAddBs taking ((bytes + 19) >> 4) << 4 bytes of coded video, sceMpegIsEnd from the stream alone.
 static void mpegSdkModel()
