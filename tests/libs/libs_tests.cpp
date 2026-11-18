@@ -616,6 +616,13 @@ static void pad2Calls()
 static void mpegSdkModel()
 {
     Machine m;
+    // libmpeg's native functions exist only in builds with FFmpeg (runtime/CMakeLists.txt; CI builds without it).
+    if (!m.libs.find("sceMpegInit"))
+    {
+        std::printf("libmpeg SDK model: skipped (no FFmpeg in this build)
+");
+        return;
+    }
     m.libs.mpegOptions.referenceLayout = false;
     m.libs.mpegOptions.paced = false;
     m.libs.mpegOptions.sdkNodata = true;
