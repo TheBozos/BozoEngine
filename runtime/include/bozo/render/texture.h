@@ -22,6 +22,9 @@ namespace bozo::render
         std::vector<std::pair<uint32_t, uint32_t>> pages; // (page, generation) the texture was decoded from
         // Mip levels 1.. as the game stores them, each max(1, width >> n) x max(1, height >> n), same texel layout as rgba.
         std::vector<std::vector<uint32_t>> levels;
+        // Decoded from the game's own texture data (a pack, the disc), not a picture made at run time: texture upscaling may
+        // scale it (bozo/render/texture_upscale.h).
+        bool asset = false;
     };
 
     // Index of palette entry `index` in a CSM1 palette stored as a 16-pixel-wide CT32 / CT16 image: (x, y).

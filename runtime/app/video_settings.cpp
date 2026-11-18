@@ -10,6 +10,7 @@
 
 #include "bozo/app/app.h"
 #include "bozo/render/renderer.h"
+#include "bozo/render/texture_replace.h"
 
 #include <SDL3/SDL.h>
 
@@ -22,6 +23,8 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
+#include <chrono>
+#include <thread>
 
 namespace bozo::app::video
 {
@@ -92,6 +95,10 @@ namespace bozo::app::video
                 settings.frameRate = -1;
             settings.renderScale = std::clamp(settings.renderScale, 0.25f, 4.0f);
             settings.gsScale = std::clamp(settings.gsScale, 1, 4);
+            if (settings.textureUpscale.factor != 2u && settings.textureUpscale.factor != 4u)
+                settings.textureUpscale.factor = 1u;
+            if (settings.textureUpscale.filter != render::UpscaleFilter::Smooth)
+                settings.textureUpscale.filter = render::UpscaleFilter::Edge;
         }
 
         void load(Settings &settings)
@@ -117,6 +124,36 @@ namespace bozo::app::video
                     settings.gsScale = std::atoi(value.c_str());
                 else if (name == "frame_rate")
                     parseFrameRate(value.c_str(), settings.frameRate);
+                else if (name == "texture_upscale")
+                    render::parseUpscaleFactor(value, settings.textureUpscale.factor);
+                else if (name == "texture_filter")
+                    render::parseUpscaleFilter(value, settings.textureUpscale.filter);
+                else if (name == "texture_pack")
+                    settings.texturePack = value;
+            }
+        }
+
+        // The replacements' folder from the setting ("" the user folder's texture_pack if it exists, "off" none), and with
+        // PS2X_TEXTURE_PACK_RELOAD=1 a thread that lists it again every 2 s (changed files drawn again: development).
+        void applyTexturePack(const std::string &setting)
+        {
+            const std::string folder = texturePackFolder(setting);
+            render::TextureReplacements::instance().setFolder(folder);
+            const char *reload = std::getenv("PS2X_TEXTURE_PACK_RELOAD");
+            static bool s_watching = false;
+            if (!folder.empty() && reload && *reload == '1' && !s_watching)
+            {
+                s_watching = true;
+                std::thread([]
+                            {
+                                for (;;)
+                                {
+                                    std::this_thread::sleep_for(std::chrono::seconds(2));
+                                    if (render::TextureReplacements::instance().rescan())
+                                        std::fprintf(stderr, "[render] texture replacements changed: drawn again\n");
+                                }
+                            })
+                    .detach();
             }
         }
 
@@ -225,6 +262,12 @@ namespace bozo::app::video
             settings.renderScale = static_cast<float>(std::atof(scale));
         if (const char *rate = std::getenv("PS2X_FRAME_RATE"); rate && *rate)
             parseFrameRate(rate, settings.frameRate);
+        if (const char *upscale = std::getenv("PS2X_TEXTURE_UPSCALE"); upscale && *upscale)
+            render::parseUpscaleFactor(upscale, settings.textureUpscale.factor);
+        if (const char *filter = std::getenv("PS2X_TEXTURE_FILTER"); filter && *filter)
+            render::parseUpscaleFilter(filter, settings.textureUpscale.filter);
+        if (const char *pack = std::getenv("PS2X_TEXTURE_PACK"); pack && *pack)
+            settings.texturePack = pack;
         sanitize(settings);
         g_current = settings;
         g_current.mode = WindowMode::Windowed; // the window opens as a window; applyAtStartup goes on from there
@@ -240,10 +283,14 @@ namespace bozo::app::video
             applyWindow(g_current, target);
         render::Renderer::instance().setRenderScale(target.renderScale);
         render::Renderer::instance().setFrameRate(target.frameRate);
+        render::Renderer::instance().setTextureUpscale(target.textureUpscale);
+        applyTexturePack(target.texturePack);
         g_current = target;
         publish();
-        std::fprintf(stderr, "[video] %dx%d %s, render scale %.2f, frame rate %s (%s)\n", g_current.width, g_current.height,
-                     modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), configPath().c_str());
+        std::fprintf(stderr, "[video] %dx%d %s, render scale %.2f, frame rate %s, texture upscale %s%s%s (%s)\n", g_current.width,
+                     g_current.height, modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(),
+                     render::upscaleFactorName(g_current.textureUpscale.factor), g_current.textureUpscale.on() ? " " : "",
+                     g_current.textureUpscale.on() ? render::upscaleFilterName(g_current.textureUpscale.filter) : "", configPath().c_str());
     }
 
     void detach()
@@ -347,6 +394,17 @@ namespace bozo::app::video
 
     void requestApply() { g_applyPending = true; }
 
+    std::string texturePackFolder(const std::string &setting)
+    {
+        if (setting == "off" || setting == "0")
+            return std::string();
+        if (!setting.empty())
+            return setting;
+        std::error_code ec;
+        const std::filesystem::path &user = userDirectory();
+        return !user.empty() && std::filesystem::is_directory(user / "texture_pack", ec) ? (user / "texture_pack").string() : std::string();
+    }
+
     const Settings &current() { return g_current; }
     Settings &edited() { return g_edited; }
 
@@ -357,11 +415,17 @@ namespace bozo::app::video
             applyWindow(g_current, g_edited);
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
         render::Renderer::instance().setFrameRate(g_edited.frameRate);
+        render::Renderer::instance().setTextureUpscale(g_edited.textureUpscale);
+        if (g_edited.texturePack != g_current.texturePack)
+            applyTexturePack(g_edited.texturePack);
         g_current = g_edited;
         publish();
         const auto [w, h] = windowSize();
-        std::fprintf(stderr, "[video] applied %dx%d %s, render scale %.2f, frame rate %s (window %dx%d)\n", g_current.width,
-                     g_current.height, modeName(g_current.mode), g_current.renderScale, frameRateName(g_current.frameRate).c_str(), w, h);
+        std::fprintf(stderr, "[video] applied %dx%d %s, render scale %.2f, frame rate %s, texture upscale %s%s%s (window %dx%d)\n",
+                     g_current.width, g_current.height, modeName(g_current.mode), g_current.renderScale,
+                     frameRateName(g_current.frameRate).c_str(), render::upscaleFactorName(g_current.textureUpscale.factor),
+                     g_current.textureUpscale.on() ? " " : "",
+                     g_current.textureUpscale.on() ? render::upscaleFilterName(g_current.textureUpscale.filter) : "", w, h);
     }
 
     bool save()
@@ -378,13 +442,21 @@ namespace bozo::app::video
                 "# that many times the window's size each way (0.25 to 4). gs_scale: the PS2Recomp build's GS renderer scale\n"
                 "# (1 to 4; BozoEngine has no GS and keeps it as it is). frame_rate: game (60, each game frame shown once),\n"
                 "# monitor (the monitor's refresh with vsync, the frames between the game's drawn interpolated, one game frame\n"
-                "# later) or a number (that many a second, interpolated, without vsync).\n"
+                "# later) or a number (that many a second, interpolated, without vsync). texture_upscale: the game's textures\n"
+                "# drawn from copies made 2x or 4x as large (off, 2x or 4x; PS2X_TEXTURE_UPSCALE), texture_filter: how they are\n"
+                "# made (edge: sharp edges kept, smooth: bicubic; PS2X_TEXTURE_FILTER). texture_pack: a folder of texture\n"
+                "# replacements, <identity>.png files the player made (off: none; unset: texture_pack in this folder when it\n"
+                "# exists; PS2X_TEXTURE_PACK, PS2X_TEXTURE_PACK_RELOAD=1 to read changed files again while playing).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
              << "render_scale = " << scale << "\n"
              << "gs_scale = " << s.gsScale << "\n"
-             << "frame_rate = " << frameRateName(s.frameRate) << "\n";
+             << "frame_rate = " << frameRateName(s.frameRate) << "\n"
+             << "texture_upscale = " << render::upscaleFactorName(s.textureUpscale.factor) << "\n"
+             << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n";
+        if (!s.texturePack.empty())
+            file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);
     }
 

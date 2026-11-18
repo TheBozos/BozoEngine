@@ -179,6 +179,64 @@ namespace
         }
     };
 
+    // sceSdInit's mixes: every voice of both cores dry and wet, MMIX 0xFF0 / 0xFFC.
+    void testInitMixing()
+    {
+        Mixer m;
+        Host host;
+        Libsd sd(m, host);
+        m.setClocked(true);
+        m.advanceTo(0u);
+        uint32_t r = 0;
+        const uint32_t none[5] = {};
+        sd.call(4u, none, 0u, r);
+        for (uint32_t core = 0; core < 2u; ++core)
+            for (uint32_t sw : {0x1800u, 0x1900u, 0x1A00u, 0x1B00u})
+            {
+                const uint32_t get[5] = {sw | core};
+                sd.call(8u, get, 0u, r);
+                eq("sceSdInit's VMIX switches", r, 0xFFFFFF);
+            }
+        const uint32_t mmix0[5] = {0x0800u}, mmix1[5] = {0x0801u};
+        sd.call(6u, mmix0, 0u, r);
+        eq("sceSdInit's core 0 MMIX", r, 0xFF0);
+        sd.call(6u, mmix1, 0u, r);
+        eq("sceSdInit's core 1 MMIX", r, 0xFFC);
+
+        auto peakOfCore0Voice = [&](bool clearDry)
+        {
+            writeTone(m, 0x5000u, 400u, true);
+            const uint32_t voice = 2u << 1u;
+            const uint32_t params[][2] = {{0x0000u | voice, 0x3FFFu}, {0x0100u | voice, 0x3FFFu}, {0x0200u | voice, 0x1000u},
+                                          {0x0300u | voice, 0x00FFu}, {0x0400u | voice, 0x1FC0u}, {0x0980u, 0x3FFFu},
+                                          {0x0A80u, 0x3FFFu},         {0x0981u, 0x3FFFu},         {0x0A81u, 0x3FFFu}};
+            for (const auto &p : params)
+            {
+                const uint32_t a[5] = {p[0], p[1]};
+                sd.call(5u, a, 0u, r);
+            }
+            const uint32_t ssa[5] = {0x2040u | voice, 0x5000u};
+            sd.call(9u, ssa, 0u, r);
+            if (clearDry)
+                for (uint32_t sw : {0x1800u, 0x1A00u})
+                {
+                    const uint32_t a[5] = {sw, 0u};
+                    sd.call(7u, a, 0u, r);
+                }
+            const uint32_t kon[5] = {0x1500u, 1u << 2u};
+            sd.call(7u, kon, 0u, r);
+            m.stats();
+            m.advanceTo(768u * 200u);
+            std::vector<int16_t> out(2u * 400u);
+            m.take(out.data(), 400u);
+            return static_cast<long long>(m.stats().peak);
+        };
+        eq("a core-0 voice after sceSdInit alone is heard", peakOfCore0Voice(false) > 0, 1);
+        sd.call(4u, none, 0u, r);
+        m.advanceTo(0u);
+        eq("the same voice with core 0's dry switches cleared is silent", peakOfCore0Voice(true), 0);
+    }
+
     void testLibsd()
     {
         Mixer m;
@@ -388,6 +446,7 @@ int main()
     testEnd(true);
     testRelease();
     testClock();
+    testInitMixing();
     testLibsd();
     testReference();
     if (g_failures != 0)

@@ -100,6 +100,25 @@ int main() {
         k.setRunning(childId);k.parkThreadStack(child.top().ctx.r[29].uw[0]);
         k.terminateThread(childId,false,false);
         check(k.startThread(childId,0,false)==childId && child.top().parkedStack==0);
+        // SetupThread with a size of 0 (TMB's crt0): the address is the top; the stack below it is owned, the call's
+        // result (the stack pointer) unchanged.
+        {
+            Kernel top; top.boot(0x100000,0x1fffff0); top.useOwnedHandlerStacks();
+            check(top.threadSetup(0x8ff800,0,0)==0x8ff800);
+            auto &t=*top.thread(1);
+            check(t.stack==0x8ff800-kUndeclaredStackBytes && t.stackSize==kUndeclaredStackBytes);
+            t.frames.back()->ctx.r[29].uw[0]=0x8ff7c0;
+            top.queue(h); check(top.stackHandler(t).sp==0x8ff740);
+            top.endHandler(t);
+            // The guest moving SP off its stack (as data) and parking the real one first.
+            top.setRunning(1); top.parkThreadStack(0x8ff7c0); t.top().ctx.r[29].uw[0]=0;
+            top.queue(h); check(top.stackHandler(t).sp==0x8ff740);
+            top.endHandler(t); t.top().ctx.r[29].uw[0]=0x8ff7c0; top.resumeThreadStack(0x8ff7c0);
+            // Too low a top keeps the declaration as given (no bounds: rejected, as before).
+            Kernel low; low.boot(0x100000,0x1fffff0); low.useOwnedHandlerStacks();
+            low.threadSetup(0x80000,0,0);
+            check(low.thread(1)->stack==0x80000 && low.thread(1)->stackSize==0);
+        }
         // Recorded hosts retain their historical stack convention by default.
         Kernel recorded; recorded.boot(0x100000,0x90000);
         recorded.queue(h);

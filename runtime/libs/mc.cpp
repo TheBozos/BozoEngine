@@ -7,6 +7,11 @@
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace bozo::libs
 {
@@ -17,6 +22,18 @@ namespace bozo::libs
         constexpr uint32_t kCardClusters = 0x2000; // 8 MB in 1 KB clusters: what an empty card reports free
         constexpr uint16_t kAttrDirectory = 0x80a3;  // as the reference reports "." and ".."
         constexpr uint16_t kAttrFile = 0x8497;       // read, write, execute, closed, file, exists (not in the logs)
+
+        // A host file's creation time (Windows keeps one), else its write time: the card order of a kept card.
+        int64_t creationTime(const fs::path &p)
+        {
+#ifdef _WIN32
+            WIN32_FILE_ATTRIBUTE_DATA data;
+            if (GetFileAttributesExW(p.wstring().c_str(), GetFileExInfoStandard, &data))
+                return static_cast<int64_t>(uint64_t(data.ftCreationTime.dwHighDateTime) << 32 | data.ftCreationTime.dwLowDateTime);
+#endif
+            std::error_code ec;
+            return static_cast<int64_t>(fs::last_write_time(p, ec).time_since_epoch().count());
+        }
 
         std::string normalize(const std::string &name)
         {
@@ -214,7 +231,8 @@ namespace bozo::libs
                 ++n;
             }
             l.mc.directoryCursor[port]+=uint32_t(n);
-            finish(l, kFnGetDir, n ? n : wildcard ? 0 : -4);
+            const bool folderMissing = wildcard && !dir.empty() && !card.find(dir);
+            finish(l, kFnGetDir, n ? n : wildcard && !folderMissing ? 0 : -4);
             g.ret(0);
         }
 
@@ -327,6 +345,9 @@ namespace bozo::libs
                 {
                     const uint32_t at = it->second.position, size = g.arg(2);
                     const uint32_t n = at < e->data.size() ? std::min<uint32_t>(size, static_cast<uint32_t>(e->data.size()) - at) : 0;
+                    if (std::getenv("BOZO_TRACE_MC"))
+                        std::fprintf(stderr, "[mc] read fd=%d at=%u size=%u buffer=%x ra=%x\n", static_cast<int>(g.arg(0)), at,
+                                     size, g.arg(1), g.context()->r[31].uw[0]);
                     if (n)
                         g.write(g.arg(1), e->data.data() + at, n);
                     it->second.position += n;
@@ -540,17 +561,38 @@ namespace bozo::libs
             return;
         std::error_code ec;
         fs::create_directories(host_, ec);
-        // Load what the host folder holds (a card kept across runs).
+        // Load what the host folder holds (a card kept across runs), in the order its files were created (their
+        // creation time where the host keeps one, else their write time; then their name).
+        struct Found
+        {
+            std::string path;
+            fs::path host;
+            int64_t created = 0;
+            bool directory = false;
+        };
+        std::vector<Found> found;
         for (auto it = fs::recursive_directory_iterator(host_, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
         {
-            const std::string path = fs::relative(it->path(), host_, ec).generic_string();
-            Entry &e = entries_[path];
+            Found f;
+            f.path = fs::relative(it->path(), host_, ec).generic_string();
+            f.host = it->path();
+            f.directory = it->is_directory(ec);
+            f.created = creationTime(it->path());
+            found.push_back(std::move(f));
+        }
+        std::stable_sort(found.begin(), found.end(), [](const Found &a, const Found &b) {
+            return a.created != b.created ? a.created < b.created : a.path < b.path;
+        });
+        for (const Found &f : found)
+        {
+            Entry &e = entries_[f.path];
             e.created = e.modified = date;
-            e.directory = it->is_directory(ec);
+            e.directory = f.directory;
             e.attributes = e.directory ? kAttrDirectory : kAttrFile;
+            e.order = ++next_;
             if (!e.directory)
             {
-                std::ifstream in(it->path(), std::ios::binary);
+                std::ifstream in(f.host, std::ios::binary);
                 e.data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
             }
         }
@@ -564,17 +606,23 @@ namespace bozo::libs
 
     std::vector<std::string> McCard::list(const std::string &directory) const
     {
-        std::vector<std::string> out;
+        std::vector<std::pair<uint64_t, std::string>> found;
         for (const auto &[path, e] : entries_)
             if (parentOf(path) == directory)
-                out.push_back(path);
+                found.emplace_back(e.order, path);
+        std::sort(found.begin(), found.end());
+        std::vector<std::string> out;
+        for (auto &f : found)
+            out.push_back(std::move(f.second));
         return out;
     }
 
     McCard::Entry &McCard::create(const std::string &path, bool directory, const McDate &date)
     {
         Entry &e = entries_[path];
+        const uint64_t order = e.order ? e.order : ++next_; // a file made again keeps its place
         e = Entry{};
+        e.order = order;
         e.directory = directory;
         e.created = e.modified = date;
         return e;

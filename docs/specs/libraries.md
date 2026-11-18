@@ -128,6 +128,7 @@ replaced only three of their helpers and `sqrt`, which are the out-calls:
 | Function | What the reference returns (settled on its records) |
 |---|---|
 | `sqrt` (float in `f12`, result in `f0`) | the IEEE single square root (correctly rounded): 64,094 calls in match1p |
+| `sqrt` with `Libraries::softDouble` (double in `a0`, result in `v0`, 64-bit) | the IEEE double square root: games whose newlib keeps software doubles (Champions of Norrath: its callers convert the float to a double before the call and back after it) |
 | `__ieee754_rem_pio2f(x, y)` | `n` = `x * (float)(2/pi)` rounded to a float, then to the nearest integer, ties to even; `y[0] = (float)((double)x - n * (double)(float)(pi/2))`, `y[1] = 0`; returns `n` |
 | `__kernel_sinf(x, y, iy)` | the reference C runtime's `sinf((float)(x + y))`; `iy` unused |
 | `__kernel_cosf(x, y)` | the reference C runtime's `cosf((float)(x + y))` |
@@ -308,7 +309,7 @@ result over.
 |---|---|
 | `sceMcInit` | 0; the cards count as new again (next) |
 | `sceMcGetInfo(port, slot, type, free, format)` | 0; writes type 2 (PS2 card), the free clusters (`0x2000` on an empty 8 MB card), format 1 at once (each pointer when not null); its result is -1 at the first call on a port after `sceMcInit` (and before it), 0 after |
-| `sceMcGetDir(port, slot, name, mode, maxent, table)` | 0; writes the matching entries at once (64-byte `sceMcTblGetDir`: created and modified dates, size, attributes, name); a listing with a wildcard starts with `.` and `..` (attributes `0x80a3`, the date 2001-06-18 12:00:00: the reference's deterministic clock, as `sceCdReadClock`); its result is the count, -4 when nothing matches |
+| `sceMcGetDir(port, slot, name, mode, maxent, table)` | 0; writes the matching entries at once (64-byte `sceMcTblGetDir`: created and modified dates, size, attributes, name); a listing with a wildcard starts with `.` and `..` (attributes `0x80a3`, the date 2001-06-18 12:00:00: the reference's deterministic clock, as `sceCdReadClock`); its result is the count, -4 when nothing matches (a folder that is not there included), 0 for a continued listing past its end |
 | `sceMcSync(mode, cmd, result)` | 1; writes the last operation's result (not `cmd`) |
 
 What TMB does at boot, on the fresh cards: `GetInfo` on both ports (-1, then 0), `GetDir("*")` on the root (`.` and
@@ -363,7 +364,7 @@ replacement/unregistration/busy refusal, ownership isolation and actual dispatch
 private generated ISO. It makes no full-game or other CD command callback claim.
 
 Native: `sceCdInit`, `sceCdMmode`, `sceCdDiskReady`, `sceFsReset`, `sceCdReadClock`, `sceCdRead`, `sceCdReadIOPm`, `sceCdSync`,
-`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
+`sceCdGetError`, `sceCdStInit`, `sceCdStStart`, `sceCdStRead`, `sceCdStStop`, `sceCdStPause`, `sceCdStResume`, `sceCdSearchFile`, `sceCdLayerSearchFile`,
 `sceCdReadDvdDualInfo` (`bozo/libs/cd.h`, `libs/cd.cpp`).
 
 A dual-layer DVD (Champions of Norrath's DVD9) holds a second ISO 9660 volume on its second layer: its primary volume
@@ -395,6 +396,7 @@ LBN, so the image is required. Every sector a call wrote in the logs equals the 
 | `sceCdGetError()` | the last read's error: 0 |
 | `sceCdStInit(sectors, banks, buffer)` | 1; the ring's size (TMB: 0x50 sectors in 5 banks) |
 | `sceCdStStart(lbn, mode)`, `sceCdStStop()` | 1; the stream starts at `lbn` / stops |
+| `sceCdStPause()`, `sceCdStResume()` | 1; the drive stops reading into the ring (what it holds stays readable) / reads on from that cycle |
 | `sceCdStRead(sectors, buffer, mode, error)` | the next sectors of the stream. Those that have arrived are copied at once; mode 1 (TMB's) waits for the rest: a vblank wait (its result the vblank's parity, -1) with a completion that copies them and sets v0 = sectors as the thread resumes. `*error` = 0; returns the sectors copied |
 
 ### 8.2 The drive's time and waits
@@ -1374,6 +1376,9 @@ sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffe
 256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
 address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
 8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
+sceSdInit leaves the mixes as the SDK's init writes them (Fighting for One Piece's LIBSD.IRX, 0x1638): VMIXL, VMIXEL,
+VMIXR and VMIXER 0xFFFFFF on both cores, MMIX 0xFF0 on core 0 and 0xFFC on core 1, so a voice a driver keys on without
+writing its own VMIX bits is heard.
 
 The exports added for modules with no LIBSD image: 13 and 14 are the SDK's equal-temperament arithmetic on two tables computed at start, floor(32768 * 2^(i / 12)) for the 12 semitones and floor(32768 * 2^(i / 1536)) for the 128 fine steps, one after the other. 0x1000 is the center note, and indexes outside both tables (only a center fine plus fine under -127) fail explicitly. Their integer results were compared with Soulcalibur III's LIBSD.IRX exports, statically compiled, on 10,254,800 arguments with no difference. 28 returns the argument given to 26. 30 stops the channel's input (voice transfers are already complete) and returns 0.
 

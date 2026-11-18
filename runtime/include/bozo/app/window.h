@@ -48,7 +48,19 @@ namespace bozo::app
         std::function<int()> run;                // the game thread's body: runs until the game ends (its exit code)
         std::function<void()> stop;              // any thread: asks the game to end
         std::function<uint64_t()> framesEnded;   // any thread: the game frames ended so far
+        // Save states (bozo/state.h), from the window's thread, by slot (0-9): F6 / Shift+F6 picks the slot, F5 saves
+        // it, F7 loads it (unset: no keys). A FreeHost port sets them to requestSave / requestLoad of stateSlotPath(slot).
+        std::function<void(int slot)> saveState, loadState;
     };
+
+    // A save state slot's file: the user folder's states/slotN.state (made when missing), or the current folder's
+    // when there is no user folder.
+    std::string stateSlotPath(int slot);
+    constexpr int kStateSlots = 10;
+    // "Slot 3: saved 2026-11-18 14:02" or "Slot 3: empty".
+    std::string stateSlotSummary(int slot);
+    // A short line shown over the game for a few seconds (any thread): a save state's result.
+    void notify(const std::string &text);
 
     // Opens the window, runs the game on its own thread (a 256 MB stack: recompiled code nests deeply), presents until
     // the window closes or the game ends, then ends the game and closes. Returns the game's exit code (3 when the

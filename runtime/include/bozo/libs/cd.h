@@ -16,6 +16,7 @@ namespace bozo::libs
     // reference/tmb/README.md, the Midtown Suburbs freeze).
     constexpr uint64_t kSectorCycles = 114400;
     constexpr uint64_t kSeekCycles = 29491200; // 100 ms
+    constexpr uint32_t kReadDoneKey = 0x84000000u; // the kernel deadline a timed read's callback waits on
 
     // The game's disc: an ISO 9660 image of 2048-byte sectors (the user's own copy of the game).
     class DiscImage
@@ -60,6 +61,10 @@ namespace bozo::libs
         // Native SDK completion registration; no private SDK worker/semaphores.
         uint32_t callback = 0, callbackGp = 0, callbackStack = 0;
         bool callbackConfigured = false;
+        // Off (the reference's timing): sceCdRead charges the drive's time to its caller and queues the callback as
+        // it returns. On: sceCdRead returns at once and the callback runs when the drive's time has passed, as on a
+        // PS2; the caller's other threads run meanwhile (JC2's menu clears a pointer the read's callback then sets).
+        bool timedCompletion = false;
 
         // The stream (sceCdStInit / sceCdStStart / sceCdStRead / sceCdStStop).
         uint32_t ringSectors = 0, banks = 0, iopBuffer = 0;
@@ -69,6 +74,7 @@ namespace bozo::libs
         // Free mode: sectors read into the ring so far, as of `producedAt` (the drive reads at its pace from
         // sceCdStStart and pauses while the ring is full).
         uint64_t produced = 0, producedAt = 0;
+        bool paused = false;
         // A blocked sceCdStRead, finished as its thread resumes.
         uint32_t pendingSectors = 0, pendingBuffer = 0, pendingError = 0;
 
@@ -77,6 +83,11 @@ namespace bozo::libs
         {
             if (cycle <= producedAt)
                 return;
+            if (paused)
+            {
+                producedAt = cycle;
+                return;
+            }
             const uint64_t room = delivered + ringSectors > produced ? delivered + ringSectors - produced : 0;
             const uint64_t n = (cycle - producedAt) / kSectorCycles;
             if (n >= room)

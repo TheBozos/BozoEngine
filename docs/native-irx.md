@@ -14,6 +14,10 @@ There is no drive clock, seek/sector delay, display wait, hardware bank or IRQ.
 The EE `CdState` drive-time fields are neither read nor modified by this policy.
 
 Supported `cdvdman` imports are read (6), error (8), sync (11) and callback (37),
+and the drive commands with nothing to move: init (4), standby (5), seek (7), disk type (12, a PS2 DVD),
+disk ready (13, ready), tray request (14, never moved), stop (15), clock (24, the EE library's clock), status (28,
+paused), pause (38), break (39) and media mode (75). Seek, standby, stop and pause complete at once and notify the
+callback with their `SCECdFunc` code (4, 5, 6, 7) as a read does with 1,
 using the [official SDK ordinal table](https://github.com/ps2dev/ps2sdk/blob/master/iop/cdvd/cdvdman/include/cdvdman.h).
 Zero/oversized requests, non-data sector formats and invalid mapped destinations
 reject. Missing images, host read failures and requests past EOF return failure
@@ -29,7 +33,7 @@ bytes, failures, callback ordering/exclusion/reentry, isolation and reset.
 
 ## Offline pipeline
 
-1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
+1. `python tools/native_irx/relocate.py library.irx <base> <output-stem>` relocates a little-endian ELF32 IRX into a `.bin` plus `.json` metadata. Supported relocations are NONE, 16, 32, REL32, 26, HI16 and LO16. `.iopmod` is found by its section type, so an IRX shipped without section names relocates too. Unknown formats/relocations fail. Bases are chosen by the port and must not overlap.
 2. `python tools/native_irx/recompile.py <output-stem>.json --out <generated-directory>` emits `<library>_iop.cpp`. Link that C++ into the port, with `bozo_runtime_headers`. The translator's only mode is strict: unsupported instructions/targets produce explicit native failures, and unsafe load-delay cases are rejected during generation.
 3. Build `Image` records from the relocated data and import/export metadata, and register them with a per-port `CompiledLibraries` object. Its name, hash, load base and byte length must match a linked generated registration. A native-libsd image routes its sound exports to `audio::Libsd`, and any module's libsd imports reach it with no LIBSD image at all, the note/pitch conversions included.
 
@@ -91,6 +95,11 @@ including checked interior subranges. Public allocations and compiled sysmem all
 same ownership check. Spans cannot cross adjacent blocks, alias opaque module handles or address
 images, stacks, freed data or devices. Reset invalidates all views. `library_allocation_views` checks
 real writes, interior ranges, adjacent boundaries, invalid/overflow spans, free, reset and two hosts.
+`sysmem` 7 and 8 (`QueryMaxFreeMemSize`, `QueryTotalFreeMemSize`) answer from that heap: its largest free block and
+the sum of its free blocks.
+
+`sifcmd` 23 (`sceSifGetOtherData`) copies the bytes from EE RAM (either alias) into the module's memory when called
+and returns 0, so a no-wait read is complete too. A source outside EE RAM rejects. `library_heap_queries` checks both.
 
 Compiled `sifcmd:12/13` user replies call the explicit `sif.receiveCommand` native application provider.
 The reply and optional extra data are snapshotted and bounds-checked before delivery. The provider
@@ -127,6 +136,8 @@ returns -104, `CancelAlarm` of an unknown or ended one -105. `USec2SysClock` (39
 `intrman` 17 and 18 (`CpuSuspendIntr`, `CpuResumeIntr`) are one flag, not a stack: the state a suspend writes is the flag it found, -102 and 0 when it was already held, and a resume sets the flag back from its state, so resuming 1 ends the exclusion whatever nested suspends never resumed. CRI_ADXI's lock works this way: it keeps the first state and resumes only that one.
 
 Host services for modules whose start or shutdown path needs them: `sysclib` 11, 19, 20, 22, 23, 30 (`memcmp`, `sprintf`, `strcat`, `strcmp`, `strcpy`, `strncpy`), with `printf` and `Kprintf` formatting through the same 32-bit formatter as `sprintf`; `loadcore` 7 (`ReleaseLibraryEntries`, native linking has nothing to release); `thbase` 5, 8, 10, 27, 28 (`DeleteThread`, `ExitThread`, `TerminateThread`, `CancelWakeupThread`, `iCancelWakeupThread`). A dormant task is one not started, exited or terminated: `StartThread` restarts it from its entry, `DeleteThread` of a live one returns -414, `TerminateThread` of a dormant one -413, unknown ids -407, the caller's own -406. `timrman` 10 (`GetTimerCounter`) gives the clocks since the period began, 0 when stopped.
+
+Event flags (`thevent` 4-11, 13, 14: `CreateEventFlag`, `DeleteEventFlag`, `SetEventFlag`, `iSetEventFlag`, `ClearEventFlag`, `iClearEventFlag`, `WaitEventFlag`, `PollEventFlag`, `ReferEventFlagStatus`, `iReferEventFlagStatus`) are native host objects. A set wakes every waiter whose pattern it meets, in the order they waited, and writes the flag's bits to the waiter's result word; a clear keeps only the bits it is given. Waits take AND (0) and OR (1); the clearing modes fail explicitly. A pattern of no bits returns -423, an unmet poll -421, a second waiter on a flag without the multiple-waiter attribute (2) -422, an unknown id -409, and a delete releases its waiters with -425. `intrman` 23 (`QueryIntrContext`) is 1 outside any task (root calls and callbacks) and 0 in a task: the native host has no interrupt level, and a module only picks the `i` or plain form of a call with it, which do the same here. `sysclib` 17 (`bzero`) clears its range; `thsemap` 11, 12 (`ReferSemaStatus`, `iReferSemaStatus`) write the attribute, option, initial, maximum and current counts and the number of waiters. ABI declarations and error values were checked against PS2SDK's thevent, intrman, sysclib, thsemap and kerr headers. `library_event_flags` checks them.
 
 `vblank` 5 (`WaitVblankEnd`) parks the task until the next 60 Hz tick of the library clock. It is a host job on that clock with no display, field or interrupt behind it, unrelated to the game's frames (`useNativeFrameCallbacks`), and a late waiter waits for one tick and never catches up. Waking follows `DelayThread`: the first safe advance at or after the tick. `library_host_services` checks these.
 

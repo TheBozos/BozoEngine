@@ -10,6 +10,7 @@
 //    (fdlibm's float polynomials) give other bits on 17% of the reference's calls, a correctly rounded sine on 0.06%.
 #include "bozo/libs/libraries.h"
 
+#include <bit>
 #include <cmath>
 #include <cstring>
 
@@ -70,7 +71,18 @@ namespace bozo::libs
             return m.cosf ? m.cosf(x) : static_cast<float>(std::cos(static_cast<double>(x)));
         }
 
-        void sqrt_(Libraries &, Guest &g) { g.retFloat(bits(std::sqrt(asFloat(g.floatArg(0))))); }
+        void sqrt_(Libraries &l, Guest &g)
+        {
+            if (!l.softDouble)
+            {
+                g.retFloat(bits(std::sqrt(asFloat(g.floatArg(0)))));
+                return;
+            }
+            const double x = std::bit_cast<double>(g.arg64(0));
+            R5900Context *ctx = g.context();
+            ctx->r[2].ud[0] = std::bit_cast<uint64_t>(std::sqrt(x));
+            ctx->r[2].ud[1] = 0;
+        }
 
         void kernelSinf(Libraries &, Guest &g)
         {

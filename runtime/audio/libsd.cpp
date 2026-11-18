@@ -257,6 +257,12 @@ namespace bozo::audio
         sync();
         m_mixer.reset();
         m_state = State{};
+        for (int core = 0; core < 2; ++core)
+            for (int side = 0; side < 2; ++side)
+            {
+                m_mixer.setDryMask(core, side, 0xFFFFFFu);
+                m_mixer.setWetMask(core, side, 0xFFFFFFu);
+            }
     }
 
     void Libsd::quit()

@@ -2,10 +2,12 @@
 // save path (the `save` run has no call log), and the heap and rand rules on their own.
 #include "bozo/libs/libraries.h"
 
+#include <bit>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -60,6 +62,32 @@ namespace
         }
         void string(uint32_t at, const char *s) { std::memcpy(rt->memory.ram() + at, s, std::strlen(s) + 1); }
     };
+
+    void linearPssDemux()
+    {
+        // sceMpegDemuxPss is sceMpegDemuxPssRing with ring 0: the data is read where it is, and the fifth argument (a
+        // leftover register) is not a ring size.
+        if (!bozo::libs::haveVideoDecoder())
+            return;
+        Machine m;
+        uint8_t *ram = m.rt->memory.ram();
+        const uint32_t data = 0x200000;
+        const uint8_t payload[] = {0x00, 0x00, 0x01, 0xB3, 0x28, 0x01, 0xE0, 0x13};
+        std::vector<uint8_t> sector(0x800, 0);
+        const uint8_t video[] = {0x00, 0x00, 0x01, 0xE0, 0x00, 0x0B, 0x81, 0x00, 0x00};
+        std::memcpy(&sector[0], video, sizeof(video));
+        std::memcpy(&sector[sizeof(video)], payload, sizeof(payload));
+        const size_t padAt = sizeof(video) + sizeof(payload);
+        const size_t padLength = 0x800 - padAt - 6;
+        const uint8_t padding[] = {0x00, 0x00, 0x01, 0xBE, static_cast<uint8_t>(padLength >> 8), static_cast<uint8_t>(padLength)};
+        std::memcpy(&sector[padAt], padding, sizeof(padding));
+        std::memcpy(ram + data, sector.data(), sector.size());
+        std::memset(ram + 0x300000, 0xEE, 0x800);
+        eq("linear demux takes the sector", m.call("sceMpegDemuxPssRing", {0x100000, data, 0x800, 0, 0x1234}), 0x800);
+        eq("linear demux reads the data where it is", m.libs.mpeg.es.size(), sizeof(payload));
+        eq("linear demux payload", m.libs.mpeg.es.size() == sizeof(payload) &&
+                                       std::memcmp(m.libs.mpeg.es.data(), payload, sizeof(payload)) == 0, 1);
+    }
 
     void memoryCard()
     {
@@ -118,6 +146,9 @@ namespace
         m.string(0x101000, "BASCUS-97101/missing");
         m.call("sceMcOpen", {0, 0, 0x101000, 0x1});
         eq("Open of a missing file", m.result(), -4);
+        m.string(0x101000, "BASLUS-20933SCSYS/*");
+        m.call("sceMcGetDir", {0, 0, 0x101000, 0, 50, 0x102000});
+        eq("a listing in a missing folder", m.result(), -4);
     }
 
     void heapAndRand()
@@ -155,6 +186,17 @@ static void cdStream()
     cd.delivered = 0x20;
     eq("reading on from a full ring", static_cast<long long>(cd.readyAt(0x40)),
        1000 + 500 * kSectorCycles + 0x10 * kSectorCycles);
+
+    CdState paused;
+    paused.ringSectors = 0x50;
+    paused.producedAt = 1000;
+    paused.advance(1000 + 4 * kSectorCycles);
+    paused.paused = true;
+    paused.advance(1000 + 40 * kSectorCycles);
+    eq("a paused drive reads nothing", static_cast<long long>(paused.produced), 4);
+    paused.paused = false;
+    paused.advance(1000 + 43 * kSectorCycles);
+    eq("it reads on from its resume", static_cast<long long>(paused.produced), 7);
 }
 
 // The SIF layer and the 989SND driver's rules that need no disc (libraries.md sections 14 and 15): the IOP heap, a
@@ -283,6 +325,13 @@ void nativeCardDirectories() {
     eq("continued page starts with one",std::strcmp(reinterpret_cast<char *>(m.rt->memory.ram()+0x120000+32),"one"),0);
     m.call("sceMcGetDir",{0,0,0x110000,1,2,0x120000});
     eq("listing terminates",m.result(),0);
+    // Creation order, not name order: a card lists "b" made before "a" first, and a file made again keeps its place.
+    m.libs.mc.card(0).create("ORDER",true,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/b",false,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/a",false,m.libs.mc.date);
+    m.libs.mc.card(0).create("ORDER/b",false,m.libs.mc.date);
+    const auto ordered=m.libs.mc.card(0).list("ORDER");
+    eq("listing in creation order",ordered.size()==2&&ordered[0]=="ORDER/b"&&ordered[1]=="ORDER/a",1);
     m.string(0x110000,"..");
     m.call("sceMcChdir",{0,0,0x110000,0});eq("parent directory",m.result(),0);
     eq("parent restored root",m.libs.mc.currentDirectory[0].empty(),1);
@@ -821,6 +870,17 @@ int main()
     nativeDualLayerIso();
     nativeCardDirectories();
     liveScriptInput();
+    linearPssDemux();
+    {
+        Machine m;
+        m.ctx.fu[12] = std::bit_cast<uint32_t>(2.25f);
+        m.call("sqrt", {});
+        eq("float sqrt in f0", m.ctx.fu[0], std::bit_cast<uint32_t>(1.5f));
+        m.libs.softDouble = true;
+        m.ctx.r[4].ud[0] = std::bit_cast<uint64_t>(2.25);
+        m.call("sqrt", {});
+        eq("software-double sqrt in v0", static_cast<long long>(m.ctx.r[2].ud[0] == std::bit_cast<uint64_t>(1.5)), 1);
+    }
     {
         // Native graphics must reject the retired graphics paths without blocking movie input, T0 or VU0 data.
         for (uint32_t address : {0x10003000u, 0x10003C00u, 0x10008000u, 0x10009030u, 0x1000A000u,

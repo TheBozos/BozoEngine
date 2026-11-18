@@ -987,6 +987,30 @@ namespace itest
                     k.eq("hi", get(c, t0), 5);
                     k.eq("hi1", get(c, t1), 6);
                 });
+            add("pmfhl lw / uw / lh / sh (saturating) and pmthl.lw", {pmtlo(a0), pmthi(a1), pmfhl(v0, 0), pmfhl(v1, 1), pmfhl(t0, 3),
+                                                                     pmfhl(t1, 4), pmthl_lw(a2), pmflo(t2), pmfhi(t3)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    setQ(c, a0, 0x1111222233334444ull, 0x5555666677778888ull);
+                    setQ(c, a1, 0x9999AAAABBBBCCCCull, 0xDDDDEEEEFFFF0000ull);
+                    setQ(c, a2, 0xA1A1A1A1A0A0A0A0ull, 0xA3A3A3A3A2A2A2A2ull);
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    eqQ(k, "pmfhl.lw", c, v0, 0xBBBBCCCC33334444ull, 0xFFFF000077778888ull);
+                    eqQ(k, "pmfhl.uw", c, v1, 0x9999AAAA11112222ull, 0xDDDDEEEE55556666ull);
+                    eqQ(k, "pmfhl.lh", c, t0, 0xAAAACCCC22224444ull, 0xEEEE000066668888ull);
+                    eqQ(k, "pmfhl.sh saturates", c, t1, 0x800080007FFF7FFFull, 0x800080007FFF7FFFull);
+                    eqQ(k, "pmthl.lw lo", c, t2, 0x11112222A0A0A0A0ull, 0x55556666A2A2A2A2ull);
+                    eqQ(k, "pmthl.lw hi", c, t3, 0x9999AAAAA1A1A1A1ull, 0xDDDDEEEEA3A3A3A3ull);
+                });
+            add("pmfhl slw and sh in range", {pmtlo(a0), pmthi(a1), pmfhl(v0, 2), pmfhl(v1, 4)},
+                [](Ctx &c, uint8_t *, Runtime &) {
+                    setQ(c, a0, 0xFFFFFFFE00001234ull, 0x0000000580000001ull);
+                    setQ(c, a1, 0xFFFF800000000000ull, 0x00007FFFFFFFFFFFull);
+                },
+                [](Checker &k, Ctx &c, uint8_t *, Runtime &) {
+                    eqQ(k, "pmfhl.slw", c, v0, 0x1234ull, 0xFFFFFFFF80000001ull);
+                    eqQ(k, "pmfhl.sh", c, v1, 0x80000000FFFE1234ull, 0x7FFFFFFF00058000ull);
+                });
             add("plzcw counts leading sign bits minus one", {plzcw(v0, a0)},
                 [](Ctx &c, uint8_t *, Runtime &) { setQ(c, a0, 0xFFFFFFFF00000001ull, 0); },
                 [](Checker &k, Ctx &c, uint8_t *, Runtime &) { k.eq("words", get(c, v0), (31ull << 32) | 30ull); });

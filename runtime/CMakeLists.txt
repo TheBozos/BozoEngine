@@ -3,6 +3,7 @@
 # per-frame reference record (bozo/reference.h); the native libraries (bozo/libs/).
 add_library(bozo_runtime_core STATIC
   core/runtime_core.cpp
+  core/state.cpp
   ee/kernel.cpp
   ee/dispatcher.cpp
   harness/reference.cpp)
@@ -23,6 +24,8 @@ target_compile_options(bozo_audio PRIVATE -Wall -Wextra -ffp-contract=off)
 add_library(bozo_libs STATIC
   native/compiled_libraries.cpp
   libs/libraries.cpp
+  libs/libraries_state.cpp
+  audio/audio_state.cpp
   libs/libc.cpp
   libs/libm.cpp
   libs/gs.cpp
@@ -50,6 +53,10 @@ add_library(bozo_render STATIC
   render/present_gl.cpp
   render/gl.cpp
   render/texture_pack.cpp
+  render/texture_upscale.cpp
+  render/texture_replace.cpp
+  render/png_read.cpp
+  render/worker_priority.cpp
   render/mesh_pack.cpp
   render/mesh_draw.cpp)
 target_link_libraries(bozo_render PUBLIC bozo_runtime_headers)

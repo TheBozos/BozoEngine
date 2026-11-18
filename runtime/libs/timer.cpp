@@ -53,8 +53,8 @@ namespace bozo::libs
             if (t.hostClock && c.hostDue > t.hostClock())
             {
                 const auto left = static_cast<uint64_t>(c.hostDue - t.hostClock());
-                l.dispatcher()->kernel().scheduleNative(kCounterKeys | slot, due + left * (kEeHz / 1000) / 1000000,
-                                                        [&l, slot, tag](uint64_t at) { fire(l, slot, tag, at); });
+                l.scheduleDeadline(kCounterKeys | slot, due + left * (kEeHz / 1000) / 1000000, kDeadlineTimerFire,
+                                   {slot, tag, 0});
                 return;
             }
             const int32_t id = idOf(slot, c);
@@ -72,29 +72,7 @@ namespace bozo::libs
             h.gp = c.gp;
             h.completion = true;
             t.inHandler = id;
-            l.queueHandler(h, [slot, tag, id](Libraries &l2, Guest &g) {
-                TimerState &s = l2.timers;
-                if (s.inHandler == id)
-                    s.inHandler = -1;
-                TimerState::Counter &counter = s.counters[slot];
-                if (counter.tag != tag)
-                    return;
-                const uint64_t r = g.context()->r[2].ud[0];
-                if (r == ~0ull || (r == 0 && counter.alarm >= 0))
-                {
-                    if (counter.alarm >= 0)
-                        s.alarms[static_cast<size_t>(counter.alarm)] = -1;
-                    counter = {};
-                    --s.used;
-                }
-                else if (r == 0)
-                    counter.armed = false;
-                else
-                {
-                    counter.compare += std::max(r, kMinimumPeriod);
-                    arm(l2, slot, l2.now(g));
-                }
-            });
+            l.queueHandler(h, Resume{kResumeTimerHandlerEnd, {slot, tag, static_cast<uint32_t>(id)}});
         }
 
         void arm(Libraries &l, uint32_t slot, uint64_t cycle)
@@ -109,8 +87,7 @@ namespace bozo::libs
             const uint64_t left = c.compare > count ? c.compare - count : 0;
             const uint32_t tag = c.tag;
             c.hostDue = t.hostClock ? t.hostClock() + static_cast<int64_t>(static_cast<double>(left) * 1e9 / kBusHz) : 0;
-            k.scheduleNative(kCounterKeys | slot, cycle + left * 2,
-                             [&l, slot, tag](uint64_t at) { fire(l, slot, tag, at); });
+            l.scheduleDeadline(kCounterKeys | slot, cycle + left * 2, kDeadlineTimerFire, {slot, tag, 0});
         }
 
         void release(Libraries &l, uint32_t slot)
@@ -429,8 +406,8 @@ namespace bozo::libs
             if (t.hostClock && d->second > t.hostClock())
             {
                 const auto left = static_cast<uint64_t>(d->second - t.hostClock());
-                k.scheduleNative(kDelayKeys | static_cast<uint32_t>(thread), due + left * (kEeHz / 1000) / 1000000,
-                                 [&l, thread](uint64_t at) { delayDue(l, thread, at); });
+                l.scheduleDeadline(kDelayKeys | static_cast<uint32_t>(thread), due + left * (kEeHz / 1000) / 1000000,
+                                   kDeadlineDelayDue, {static_cast<uint32_t>(thread), 0, 0});
                 return;
             }
             t.delays.erase(d);
@@ -453,8 +430,8 @@ namespace bozo::libs
             l.timers.delays[thread] =
                 l.timers.hostClock ? l.timers.hostClock() + static_cast<int64_t>(microseconds * 1000) : 0;
             k.block(thread, ee::kWaitDelay, 0, 0, 0, false, 0, 0);
-            k.scheduleNative(kDelayKeys | static_cast<uint32_t>(thread), l.now(g) + microseconds * kEeHz / 1000000,
-                             [&l, thread](uint64_t at) { delayDue(l, thread, at); });
+            l.scheduleDeadline(kDelayKeys | static_cast<uint32_t>(thread), l.now(g) + microseconds * kEeHz / 1000000,
+                               kDeadlineDelayDue, {static_cast<uint32_t>(thread), 0, 0});
             g.ret(0);
         }
 
@@ -475,6 +452,40 @@ namespace bozo::libs
         if (left <= 0)
             return 0;
         return std::min<int64_t>(left, static_cast<int64_t>(static_cast<double>(to - from) * 1e9 / kEeHz));
+    }
+
+    // A counter handler's end (its v0: stop, keep or re-arm the counter).
+    void timerResume(Libraries &l, Guest &g, const Resume &r)
+    {
+        const uint32_t slot = r.a[0], tag = r.a[1];
+        const int32_t id = static_cast<int32_t>(r.a[2]);
+        TimerState &s = l.timers;
+        if (s.inHandler == id)
+            s.inHandler = -1;
+        TimerState::Counter &counter = s.counters[slot];
+        if (counter.tag != tag)
+            return;
+        const uint64_t v0 = g.context()->r[2].ud[0];
+        if (v0 == ~0ull || (v0 == 0 && counter.alarm >= 0))
+        {
+            if (counter.alarm >= 0)
+                s.alarms[static_cast<size_t>(counter.alarm)] = -1;
+            counter = {};
+            --s.used;
+        }
+        else if (v0 == 0)
+            counter.armed = false;
+        else
+        {
+            counter.compare += std::max(v0, kMinimumPeriod);
+            arm(l, slot, l.now(g));
+        }
+    }
+
+    void timerDeadline(Libraries &l, const std::array<uint32_t, 3> &args, uint64_t due) { fire(l, args[0], args[1], due); }
+    void delayDeadline(Libraries &l, const std::array<uint32_t, 3> &args, uint64_t due)
+    {
+        delayDue(l, static_cast<int32_t>(args[0]), due);
     }
 
     void addTimer(std::vector<Function> &out)

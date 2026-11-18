@@ -11,6 +11,7 @@
 #pragma once
 
 #include "bozo/runtime.h"
+#include "bozo/state.h"
 
 #include <cstdint>
 #include <string>
@@ -56,12 +57,18 @@ namespace bozo::port
         // mode, also after a FlushCache and with no channel in D_PCR, where the condition's TMB rule says "not done".
         void transfersAlwaysDone() { transfersAlwaysDone_ = true; }
         bool transfersAreAlwaysDone() const { return transfersAlwaysDone_; }
+        // The sync-V callback runs at each vblank's start, as libgraph's vblank handler calls it, instead of at the
+        // native frame boundary: for a game whose frame waits on a semaphore the callback signals, so the threads below
+        // the waiting one run until the vblank.
+        void syncVCallbackAtVblank() { syncVAtVblank_ = true; }
+        bool syncVCallbackIsAtVblank() const { return syncVAtVblank_; }
 
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
         std::vector<BozoFunctionEntry> vu0Programs_;
         InstructionHandler instructionHandler_ = nullptr;
         bool transfersAlwaysDone_ = false;
+        bool syncVAtVblank_ = false;
     };
 
     // A port: its game and how to install it. One per executable (BOZO_PORT).
@@ -101,6 +108,8 @@ namespace bozo::port
         // that calls the original (calling the guest code there would run the game's own library, which the
         // reference never did). False when nothing native answers there.
         virtual bool callLibrary(Runtime *rt, R5900Context *ctx, uint32_t address) = 0;
+        // Where a port adds its own part of a save state (bozo/state.h); null when the host has no save states.
+        virtual state::Sections *stateSections() { return nullptr; }
     };
 
     // ---- What overrides use while they run --------------------------------------------------------------------------

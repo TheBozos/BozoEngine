@@ -159,6 +159,9 @@ namespace tasm
     constexpr uint32_t pxor(uint32_t rd, uint32_t rs, uint32_t rt) { return mmi2(19, rd, rs, rt); }
     constexpr uint32_t prot3w(uint32_t rd, uint32_t rt) { return mmi2(31, rd, 0, rt); }
     constexpr uint32_t pmthi(uint32_t rs) { return mmi3(8, 0, rs, 0); }
+    constexpr uint32_t pmtlo(uint32_t rs) { return mmi3(9, 0, rs, 0); }
+    constexpr uint32_t pmfhl(uint32_t rd, uint32_t fmt) { return mmi(rd, 0, 0, fmt, 48); }
+    constexpr uint32_t pmthl_lw(uint32_t rs) { return mmi(0, rs, 0, 0, 49); }
     constexpr uint32_t pcpyud(uint32_t rd, uint32_t rs, uint32_t rt) { return mmi3(14, rd, rs, rt); }
     constexpr uint32_t por(uint32_t rd, uint32_t rs, uint32_t rt) { return mmi3(18, rd, rs, rt); }
     constexpr uint32_t pnor(uint32_t rd, uint32_t rs, uint32_t rt) { return mmi3(19, rd, rs, rt); }

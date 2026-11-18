@@ -27,6 +27,11 @@
 #include <mutex>
 #include <vector>
 
+namespace bozo::state
+{
+    class Archive;
+}
+
 namespace bozo::audio
 {
     class PortStream;
@@ -138,6 +143,9 @@ namespace bozo::audio
             int voicesPlaying = 0;
         };
         Stats stats();
+        // Save states (bozo/state.h; audio_state.cpp): voices, effects, sound memory. An input playing from host
+        // memory is saved as its offset from `inputBase` (the IOP memory it plays from).
+        void serialize(state::Archive &a, const uint8_t *inputBase, size_t inputBytes);
 
     private:
         struct Volume

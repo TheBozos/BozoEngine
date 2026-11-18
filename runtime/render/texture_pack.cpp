@@ -101,6 +101,7 @@ namespace bozo::render::packs
         const bool indexed = psmIndexed(psm);
         out.width = width;
         out.height = height;
+        out.asset = true;
         out.rgba.resize(static_cast<size_t>(width) * height);
         for (uint32_t y = 0; y < height; ++y)
             for (uint32_t x = 0; x < width; ++x)

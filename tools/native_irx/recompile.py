@@ -211,10 +211,11 @@ def explore(module, start, limit):
                     # jump leaves the native code there and comes straight back in (it used to be interpreted from
                     # the case up to the next entry, and the code only the cases reach was never recompiled).
                     for target in module.code_pointers():
-                        if start <= target < limit and target not in fn.insns:
+                        if start <= target < limit:
                             fn.labels.add(target)
                             fn.resume.add(target)
-                            work.append(target)
+                            if target not in fn.insns:
+                                work.append(target)
                 break  # jr
             addr += 4
     # A load whose register the next instruction reads: the R3000 would give it the old value (its load delay).
@@ -284,7 +285,8 @@ def pointer_seeds(module):
 
 def find_functions(module, exports, imports, extra=()):
     code_end = module.base + module.size
-    seeds = {module.entry} | set(exports) | pointer_seeds(module) | set(extra)
+    guessed = pointer_seeds(module)
+    seeds = {module.entry} | set(exports) | guessed | set(extra)
     functions = {}
     while True:
         bounds = sorted(seeds)
@@ -308,6 +310,22 @@ def find_functions(module, exports, imports, extra=()):
             fn = functions.get(start)
             if fn and any(addr >= limit for addr in fn.insns):
                 del functions[start]
+    # pointer_seeds guesses from data words: a word that happens to hold an address right after a function's end is
+    # taken for a pointer to a leaf. A guess that is not code (it cannot be recompiled) and that no recompiled function
+    # calls is data, not a function: it is left out instead of failing the module (Jade Cocoon 2's IMODEMAN.IRX,
+    # 0x84c10 at base 0x6a100). The entry, the exports and --entry addresses are never dropped.
+    certain = {module.entry} | set(exports) | set(extra)
+    while True:
+        called = set()
+        for fn in functions.values():
+            if not fn.unsafe:
+                called |= set(fn.calls)
+        dropped = [start for start, fn in functions.items()
+                   if fn.unsafe and start in guessed and start not in certain and start not in called]
+        if not dropped:
+            break
+        for start in dropped:
+            del functions[start]
     return functions
 
 

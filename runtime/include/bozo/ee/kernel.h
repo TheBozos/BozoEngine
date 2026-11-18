@@ -6,6 +6,8 @@
 // contexts the kernel keeps for every thread and stacked handler.
 #pragma once
 
+#include "bozo/state.h"
+
 #include "bozo/context.h"
 #include "bozo/context_words.h"
 
@@ -15,6 +17,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace bozo::ee
@@ -138,6 +141,7 @@ namespace bozo::ee
     constexpr uint32_t kHandlerStackTop = 0x1FFFFF0u; // the stack handlers run on (one 16 KB area per thread)
     constexpr uint32_t kHandlerStackBytes = 0x4000u;
     constexpr uint32_t kHandlerCallAreaBytes = 0x80u; // eight 128-bit argument/home slots
+    constexpr uint32_t kUndeclaredStackBytes = 0x100000u; // a SetupThread of size 0: the stack taken below its top
     constexpr uint64_t kNoCall = ~0ull;
 
     // One guest context the dispatcher can run: a thread's own (depth 0) or a handler stacked on it.
@@ -183,6 +187,9 @@ namespace bozo::ee
         bool completion = false;
         uint64_t sequence = 0, tag = 0;
     };
+
+    // Save states: a queued handler's fields (kernel.cpp).
+    void io(state::Archive &a, QueuedHandler &h);
 
     struct InterruptHandler
     {
@@ -290,6 +297,8 @@ namespace bozo::ee
         // EnableIntc / DisableIntc / EnableDmac / DisableDmac (returns 0, as every call in the logs).
         int32_t causeEnable(bool dmac, uint32_t cause, bool on);
         void queue(const QueuedHandler &h);
+        // A handler queued at each vblank's start, after the vblank's INTC handlers (pc 0: none).
+        void setVblankHandler(const QueuedHandler &h) { vblankHandler_ = h; }
         void fieldRate(uint32_t numerator, uint32_t denominator);
         uint32_t threadSetup(uint32_t stack, uint32_t stackSize, uint32_t gp);
         // A switch the kernel wants happens now (a non-interrupt kernel call's end, the TMB port's switchThread):
@@ -332,6 +341,16 @@ namespace bozo::ee
         bool cancelDeadline(uint32_t key);
         // The same deadline for native code: `fn` runs with the cycle it was due at, when events are taken.
         void scheduleNative(uint32_t key, uint64_t cycle, std::function<void(uint64_t)> fn);
+        // The same, saveable: `kind` and `args` say what `fn` does, so a loaded state rebuilds it (nativeRebuild).
+        // A deadline made without a kind keeps the runtime from saving its state while it is pending.
+        void scheduleNative(uint32_t key, uint64_t cycle, uint32_t kind, std::array<uint32_t, 3> args,
+                            std::function<void(uint64_t)> fn);
+        using NativeRebuild = std::function<std::function<void(uint64_t)>(uint32_t kind, const std::array<uint32_t, 3> &)>;
+        NativeRebuild nativeRebuild;
+        // Save states (bozo/state.h): every field, at a dispatcher safe point. Loading replaces the kernel's state.
+        void serialize(state::Archive &a);
+        // Why the state cannot be saved now (empty: it can).
+        std::string unsaveable() const;
         // SetAlarm / ReleaseAlarm on the deadlines above: `due` is an absolute EE cycle; the handler runs as
         // handler(id, the horizontal blank count at `due`, arg). Returns the alarm's id (at most kAlarms pending),
         // -1 when every one is pending. ReleaseAlarm returns 0 while it is pending, else -1.
@@ -362,6 +381,7 @@ namespace bozo::ee
 
         KernelObserver *observer_ = nullptr;
         KernelObserver defaultObserver_;
+        QueuedHandler vblankHandler_{};
         uint32_t origin_ = kOriginCall;
         uint64_t originCall_ = kNoCall;
         uint32_t depth_ = 0;
@@ -393,7 +413,14 @@ namespace bozo::ee
         uint64_t fieldCycles_ = 0;
         uint32_t lines_ = 525;
         uint64_t nextStart_ = 0, nextEnd_ = 0;
-        struct Deadline { uint64_t cycle; QueuedHandler handler; std::function<void(uint64_t)> native; };
+        struct Deadline
+        {
+            uint64_t cycle = 0;
+            QueuedHandler handler;
+            std::function<void(uint64_t)> native;
+            uint32_t nativeKind = 0; // 0: none, or a native deadline that cannot be saved
+            std::array<uint32_t, 3> nativeArgs{};
+        };
         std::map<uint32_t, Deadline> deadlines_;
     };
 }

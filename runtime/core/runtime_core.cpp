@@ -70,10 +70,21 @@ namespace bozo
             (count && !functions) || (resumeCount && !resume))
             throw std::invalid_argument("invalid native module registration");
         modules_.push_back({start, end, resident, std::move(identity), functions, count, resume, resumeCount});
+        modulesLow_ = std::min(modulesLow_, start);
+        modulesHigh_ = std::max(modulesHigh_, end);
+        lastModule_ = nullptr; // the vector may have moved
     }
 
     const FunctionTable::Module *FunctionTable::moduleAt(uint32_t address, bool &reserved) const
     {
+        if (address < modulesLow_ || address >= modulesHigh_)
+            return nullptr;
+        if (const Module *last = lastModule_; last && address >= last->start && address < last->end &&
+            std::memcmp(last->resident, last->identity.data(), last->identity.size()) == 0)
+        {
+            reserved = true;
+            return last;
+        }
         const Module *active = nullptr;
         for (const Module &module : modules_)
         {
@@ -86,6 +97,8 @@ namespace bozo
                 throw std::runtime_error("ambiguous native module identity");
             active = &module;
         }
+        if (active)
+            lastModule_ = active;
         return active;
     }
 

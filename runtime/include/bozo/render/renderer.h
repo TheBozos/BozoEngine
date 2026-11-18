@@ -15,6 +15,7 @@
 #pragma once
 
 #include "bozo/render/texture.h"
+#include "bozo/render/texture_upscale.h"
 
 #include <algorithm>
 #include <array>
@@ -350,6 +351,17 @@ namespace bozo::render
         // The 3D's own resolution against the window rectangle's (0.25 to 4), drawn at that size then filtered to it.
         void setRenderScale(float scale) { m_renderScale.store(std::clamp(scale, 0.25f, 4.0f), std::memory_order_relaxed); }
         float renderScale() const { return m_renderScale.load(std::memory_order_relaxed); }
+        // Texture assets (Texture::asset) drawn from scaled copies (bozo/render/texture_upscale.h); off (factor 1) by default.
+        // Independent of the render scale. A copy not made yet draws the texture as it is meanwhile.
+        void setTextureUpscale(TextureUpscale upscale)
+        {
+            m_textureUpscale.store(static_cast<uint32_t>(upscale.factor) | static_cast<uint32_t>(upscale.filter) << 8, std::memory_order_relaxed);
+        }
+        TextureUpscale textureUpscale() const
+        {
+            const uint32_t packed = m_textureUpscale.load(std::memory_order_relaxed);
+            return TextureUpscale{static_cast<uint8_t>(packed & 0xffu), static_cast<UpscaleFilter>(packed >> 8)};
+        }
         // Present thread: frees the GPU objects (before the context goes).
         void releaseGpu();
 
@@ -409,6 +421,7 @@ namespace bozo::render
         std::condition_variable m_publishedChanged;
         FrameDraws m_draws;
         std::atomic<float> m_renderScale{1.0f};
+        std::atomic<uint32_t> m_textureUpscale{1u};
 
         // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.
         std::deque<std::shared_ptr<const Frame>> m_history;

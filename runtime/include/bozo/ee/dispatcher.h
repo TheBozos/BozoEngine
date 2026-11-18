@@ -14,7 +14,9 @@
 #include "bozo/ee/kernel.h"
 #include "bozo/runtime.h"
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -125,6 +127,14 @@ namespace bozo::ee
 
         // The main thread starts at `entry` with sp `sp`; the dispatcher then runs until the host ends the run.
         void boot(uint32_t entry, uint32_t sp);
+        // Save states (bozo/state.h): `safePoint` runs at the top of the dispatch loop once `safePointDue` is set (from
+        // any thread). There no guest code is on the host stack: every thread's registers are in its kernel frame, so
+        // the state can be saved or replaced there.
+        std::function<void()> safePoint;
+        std::atomic<bool> safePointDue{false};
+        // The dispatcher's state with the kernel's and guest memory. Only at the safe point.
+        void serialize(state::Archive &a);
+        std::string unsaveable() const;
         void run();
 
         // ---- The native frame boundary (kernel.md section 2) ----
@@ -133,6 +143,8 @@ namespace bozo::ee
         void frameCompleted();
         // sceGsSyncVCallback: returns the callback it replaces (0: none; `pc` 0 removes it).
         uint32_t setSyncVCallback(uint32_t pc, uint32_t gp);
+        // The sync-V callback at each vblank's start instead of at frameCompleted (port::Registry::syncVCallbackAtVblank).
+        void setSyncVAtVblank(bool on);
 
         // ---- EE time ----
         uint64_t cycle() const { return cycle_; }
@@ -178,10 +190,12 @@ namespace bozo::ee
         bool insideOutcall() const { return outcallDepth_ != 0; }
         // Guest code an override runs on a context of its own (a copy: TMB's TMB_KILL_ENEMIES calls the game's
         // vehicleTakeHit on one) is not the thread's: it cannot stop or leave (nothing would run it on from its pc),
-        // so it runs to its return, no event taken and no stop made there (kernel.md section 3b).
+        // so it runs to its return, no event taken and no stop made there (kernel.md section 3b). Outside guest code
+        // (a host's out-call between threads: JC2's IOP modules calling the game's RPC handler as the IOP's clock is
+        // brought up) no thread's context is running, so every context an out-call runs is its own.
         bool ownContext(const R5900Context *ctx) const
         {
-            return outcallDepth_ && inGuest_ && currentFrame_ && ctx != &currentFrame_->ctx;
+            return outcallDepth_ && (!inGuest_ || !currentFrame_ || ctx != &currentFrame_->ctx);
         }
         // Leave guest code at `pc`: inside an out-call deferred (returns), else stop (does not return).
         void leave(R5900Context *ctx, uint32_t pc);
@@ -272,6 +286,8 @@ namespace bozo::ee
         uint64_t gsImr_ = 0x7F00; // GsPutIMR's mask (no GS behind it): every GS interrupt masked
         uint32_t vsyncFlag_ = 0, vsyncCsr_ = 0; // SetVSyncFlag's addresses
         uint32_t syncVCallback_ = 0, syncVGp_ = 0;
+        bool syncVAtVblank_ = false;
+        void updateVblankHandler();
         uint64_t framesCompleted_ = 0;
         uint64_t checkpoints_ = 0; // checkpoints passed (while guest code runs: its context's count)
         uint64_t sliceStart_ = 0;  // the running thread's time slice began here
