@@ -98,6 +98,10 @@ namespace bozo::render
         // fromFrame != 0 samples source; its value is the main-frame mipmap LOD bias.
         // Aux/previous sources have no LOD bias. A same-target source is snapshotted before drawing.
         uint8_t fromFrame = 0, target = 0, source = 0;
+        // This draw's auxiliary target (target != 0) tests and writes the main frame's depth buffer instead of its
+        // own, as a GS draw into another frame address with the same ZBUF would: a game's depth planes compared
+        // with the scene into an image. The target takes the main frame's dimensions; its colour is its own.
+        bool frameDepth = false;
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
         bool nearest = false;

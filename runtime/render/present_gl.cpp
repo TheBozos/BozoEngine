@@ -1740,6 +1740,7 @@ void main()
         bool scissored = false;
         bool touched[8] = {};
         uint8_t drawingTarget = 0;
+        bool drawingFrameDepth = false;
         for (size_t index = 0; index < frame->batches.size(); ++index)
         {
             const Batch &batch = frame->batches[index];
@@ -1749,12 +1750,15 @@ void main()
                 throw std::runtime_error("native render target index outside supported range");
             const bool explicitResize=m.target && m.targetWidth &&
                 (gpu.auxiliary[m.target].width!=m.targetWidth || gpu.auxiliary[m.target].height!=m.targetHeight);
-            if (m.target != drawingTarget || explicitResize) {
+            if (m.frameDepth && !m.target)
+                throw std::runtime_error("native frame-depth draw requires an auxiliary target");
+            if (m.target != drawingTarget || explicitResize || (m.target && m.frameDepth != drawingFrameDepth)) {
                 drawingTarget=m.target;
+                drawingFrameDepth=m.target && m.frameDepth;
                 drawWidth=w; drawHeight=h;
                 if (drawingTarget) {
                     const uint32_t size=m_targetSize[drawingTarget].load();
-                    const bool shared=(m_sharedDepth.load() & (1u << drawingTarget)) != 0;
+                    const bool shared=m.frameDepth || (m_sharedDepth.load() & (1u << drawingTarget)) != 0;
                     if(shared && m.targetWidth && (m.targetWidth!=w || m.targetHeight!=h))
                         throw std::runtime_error("native shared depth requires matching image dimensions");
                     if (size && !shared) { drawWidth=size >> 16; drawHeight=size & 0xffff; }

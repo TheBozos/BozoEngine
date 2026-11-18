@@ -49,8 +49,26 @@ int main(){try{
         composite.imageProcessing=opacity;quad(composite,0x80808080);present();
         for(unsigned x:{8u,24u,40u,56u}){expect(x,36,64);expect(x,12,191);}
     }
+    // Frame depth: a plane between the two scene depths, drawn into an image with the main frame's depth buffer,
+    // passes (GEQUAL, larger nearer) only over the farther half. The main depth is unchanged (no depth write), so a
+    // second plane farther than both halves passes nowhere; a later ordinary draw into the same image has its own
+    // depth again and fills it.
+    for(unsigned repeat=0;repeat<2;++repeat){
+        r.beginFrame(screen);auto geometry=plain;geometry.depthWrite=true;
+        quad(geometry,0x80000000,0,0,64,24,screen.depthMax*0.25f);
+        quad(geometry,0x80000000,0,24,64,24,screen.depthMax*0.75f);
+        auto plane=plain;plane.target=1;plane.frameDepth=true;plane.depthTest=true;plane.depthWrite=false;
+        quad(plane,0x80808080,0,0,64,48,screen.depthMax*0.5f);
+        quad(plane,0x80404040,0,0,64,48,screen.depthMax*0.125f);
+        auto copy=plain;copy.fromFrame=1;copy.source=1;copy.nearest=true;quad(copy,0x80808080);present();
+        for(unsigned x:{8u,24u,40u,56u}){expect(x,36,255);expect(x,12,0);} // readback rows count from the bottom
+        r.beginFrame(screen);quad(geometry,0x80000000,0,0,64,48,screen.depthMax);
+        auto own=plain;own.target=1;own.depthTest=true;own.depthWrite=false;quad(own,0x80606060,0,0,64,48,screen.depthMax*0.5f);
+        quad(copy,0x80808080);present();
+        for(unsigned x:{8u,24u,40u,56u}){expect(x,12,191);expect(x,36,191);}
+    }
     // Optional shader state must reset on the next ordinary draw/frame.
     r.beginFrame(screen);quad(plain,0x80202020);present();expect(32,24,64);
     r.releaseGpu();SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::printf("native blur/depth lookup/alpha images/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
+    std::printf("native blur/depth lookup/alpha images/frame depth/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
 }catch(const std::exception &e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
