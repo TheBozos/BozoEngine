@@ -36,7 +36,7 @@ namespace bozo::libs
         kLibc = 1u << 0, // memcpy, memset, the string functions, sprintf/printf, malloc/free, rand/srand
         kLibm = 1u << 1, // sqrt and the float sine/cosine kernels
         kGs = 1u << 2,   // the GS library (display and draw environments, uploads, syncs)
-        kPad = 1u << 3,  // libpad
+        kPad = 1u << 3,  // libpad, libpad2 and libvib
         kMc = 1u << 4,   // libmc
         kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
         kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
@@ -89,7 +89,7 @@ namespace bozo::libs
         kResumeNone = 0,
         kResumeCdStreamRead = 1, // a[0]: the sectors asked for
         kResumeMpegRelease = 2,  // a[0]: the heap entry
-        kResumeMpegNodataEnd = 3, // a[0]: the waiting thread, a[1]: the heap entry
+        kResumeMpegNodataEnd = 3, // a[0]: the waiting thread, a[1]: the entry, a[2]: 1 work area (no release), 2 SDK callback
         kResumeMpegGetPicture = 4, // a[0]: rgb, a[1]: mbcount
         kResumeMpegDeliver = 5,    // a[0]: rgb, a[1]: mbcount
         kResumeTimerHandlerEnd = 6, // a[0]: slot, a[1]: tag, a[2]: id
@@ -257,6 +257,7 @@ namespace bozo::libs
         // turn it into DMA controller registers or execute a hardware environment.
         std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
+        MpegOptions mpegOptions;
         SifState sif;
         TimerState timers;
         SndDriver snd;
@@ -301,6 +302,7 @@ namespace bozo::libs
     void addGs(std::vector<Function> &out);
     void addDma(std::vector<Function> &out);
     void addPad(std::vector<Function> &out);
+    void addPad2(std::vector<Function> &out);
     void addMc(std::vector<Function> &out);
     void addCd(std::vector<Function> &out);
     void addMpeg(std::vector<Function> &out); // nothing without a video decoder (FFmpeg)

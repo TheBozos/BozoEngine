@@ -548,6 +548,97 @@ static void padCalls()
     eq("req name", std::strcmp(reinterpret_cast<const char *>(m.rt->memory.ram() + 0x100300), "BUSY"), 0);
 }
 
+// libpad2 and libvib (pad2.cpp): sockets on libpad's controllers, the 18-byte report, the profile and the motors.
+static void pad2Calls()
+{
+    struct Recorder final : bozo::libs::PadInput
+    {
+        void read(uint32_t, int player, bozo::libs::PadInputState &out) override
+        {
+            out = bozo::libs::PadInputState{};
+            out.connected = player == 0;
+            if (player != 0)
+                return;
+            out.buttons = bozo::libs::kPadCross | bozo::libs::kPadR1 | bozo::libs::kPadSelect;
+            out.lx = 0x10;
+            out.ry = 0xF0;
+            for (int i = 0; i < 12; ++i)
+                out.pressure[static_cast<size_t>(i)] = (out.buttons & bozo::libs::kPadPressureOrder[i]) ? 0xC8 : 0x00;
+        }
+        void rumble(int player, bool small, uint8_t large) override { last = {player, small, large}; }
+        struct { int player = -1; bool small = false; uint8_t large = 0; } last;
+    } input;
+    Machine m;
+    m.libs.pad.input = &input;
+    eq("dbc init", m.call("sceDbcInit", {}), 1);
+    eq("pad2 init", m.call("scePad2Init", {0}), 1);
+    auto words = [&](uint32_t at, std::initializer_list<uint32_t> values)
+    {
+        for (uint32_t v : values) { std::memcpy(m.rt->memory.ram() + at, &v, 4); at += 4; }
+    };
+    words(0x100000, {2, 0, 0, 0x5A5A}); // flag, port 0, slot 0, an uninitialised number
+    words(0x100040, {2, 1, 0, 0});      // port 1
+    eq("unaligned buffer", m.call("scePad2CreateSocket", {0x100000, 0x100204}), -1);
+    const int32_t first = m.call("scePad2CreateSocket", {0x100000, 0x100200});
+    const int32_t second = m.call("scePad2CreateSocket", {0x100040, 0x100300});
+    eq("socket numbers", first >= 0 && second >= 0 && first != second, 1);
+    eq("a connected pad is stable", m.call("scePad2GetState", {static_cast<uint32_t>(first)}), 1);
+    eq("port 2's pad is there, idle", m.call("scePad2GetState", {static_cast<uint32_t>(second)}), 1);
+    eq("no such socket", m.call("scePad2GetState", {99}), 0);
+    eq("profile size", m.call("scePad2GetButtonProfile", {static_cast<uint32_t>(first), 0x100400}), 4);
+    eq("every button id", m.rt->memory.ram()[0x100400] & m.rt->memory.ram()[0x100403], 0xFF);
+    eq("report size", m.call("scePad2Read", {static_cast<uint32_t>(first), 0x100500}), 18);
+    const uint8_t *d = m.rt->memory.ram() + 0x100500;
+    eq("buttons active low, SELECT bit 0", d[0], 0xFE);
+    eq("R1 and CROSS clear in the second byte", d[1], 0xFF & ~((bozo::libs::kPadR1 | bozo::libs::kPadCross) >> 8));
+    eq("sticks RX RY LX LY", d[2] == 0x80 && d[3] == 0xF0 && d[4] == 0x10 && d[5] == 0x80, 1);
+    eq("cross pressure in the controller's place (byte 12)", d[12], 0xC8);
+    eq("R1 pressure after L1 (byte 15)", d[15], 0xC8);
+    eq("L2 pressure (byte 16)", d[16], 0x00);
+    eq("button info: cross (id 14) pressed", m.call("scePad2GetButtonInfo", {0, 0x100500, 14}), 1);
+    eq("button info: start (id 3) released", m.call("scePad2GetButtonInfo", {0, 0x100500, 3}), 0);
+    eq("button info: LX (id 18)", m.call("scePad2GetButtonInfo", {0, 0x100500, 18}), 0x10);
+    eq("button info: no id 32", m.call("scePad2GetButtonInfo", {0, 0x100500, 32}), -1);
+    eq("vibration profile", m.call("sceVibGetProfile", {static_cast<uint32_t>(first), 0x100600}), 1);
+    eq("two motors", m.rt->memory.ram()[0x100600], 3);
+    m.rt->memory.ram()[0x100700] = 0x01 | (0x55 << 1); // small on, large 0xD5's low seven bits
+    m.rt->memory.ram()[0x100701] = 0x01;                // large bit 7
+    eq("motors set", m.call("sceVibSetActParam", {static_cast<uint32_t>(first), 1, 0x100600, 2, 0x100700}), 1);
+    eq("rumble to player 1", input.last.player == 0 && input.last.small && input.last.large == 0xD5, 1);
+    eq("delete", m.call("scePad2DeleteSocket", {static_cast<uint32_t>(first)}), 1);
+    eq("deleted socket has no pad", m.call("scePad2Read", {static_cast<uint32_t>(first), 0x100500}), -1);
+    eq("end", m.call("scePad2End", {}), 1);
+    eq("dbc end", m.call("sceDbcEnd", {}), 1);
+// libmpeg off the reference layout (MpegOptions, a game on the SDK's model): the SDK's results, nothing written outside
+// the work area, sceMpegAddBs taking ((bytes + 19) >> 4) << 4 bytes of coded video, sceMpegIsEnd from the stream alone.
+static void mpegSdkModel()
+{
+    Machine m;
+    m.libs.mpegOptions.referenceLayout = false;
+    m.libs.mpegOptions.paced = false;
+    m.libs.mpegOptions.sdkNodata = true;
+    const uint32_t tmbWord = 0x1717BC;
+    std::memset(m.rt->memory.ram() + tmbWord, 0xAB, 4);
+    eq("init (SDK)", m.call("sceMpegInit", {}), 1);
+    eq("create (SDK)", m.call("sceMpegCreate", {0x100000, 0x110000, 0x122800}), 1);
+    eq("no write to TMB's address", m.rt->memory.ram()[tmbWord], 0xAB);
+    eq("first callback: none before", m.call("sceMpegAddCallback", {0x100000, 1, 0x1BE698, 0x200000}), 0);
+    eq("again: the previous one", m.call("sceMpegAddCallback", {0x100000, 1, 0x1BE6A0, 0x200000}), 0x1BE698);
+    // A sequence header and a picture start, 0xFB0 bytes given: 0xFC0 taken, as the SDK sends to the IPU.
+    uint8_t *bs = m.rt->memory.ram() + 0x120000;
+    std::memset(bs, 0, 0x1000);
+    const uint8_t seq[] = {0, 0, 1, 0xB3}, pic[] = {0, 0, 1, 0x00};
+    std::memcpy(bs, seq, 4);
+    std::memcpy(bs + 0x40, pic, 4);
+    eq("add bs", m.call("sceMpegAddBs", {0x100000, 0x120000, 0xFB0}), 1);
+    eq("rounded up to 16 with the 19", m.libs.mpeg.es.size(), 0xFC0);
+    eq("its picture counted", m.libs.mpeg.pictureStarts, 1);
+    eq("not the end while input may come", m.call("sceMpegIsEnd", {0x100000}), 0);
+    m.call("sceMpegReset", {0x100000});
+    eq("reset leaves TMB's static word alone", m.rt->memory.ram()[0x171904], 0);
+    eq("delete (SDK)", m.call("sceMpegDelete", {0x100000}), 1);
+}
+
 static void cardCalls()
 {
     Machine m;
@@ -765,6 +856,8 @@ static void debugCalls()
 int main()
 {
     padCalls();
+    pad2Calls();
+    mpegSdkModel();
     cardCalls();
     dmaCalls();
     sifCalls();
