@@ -180,10 +180,12 @@ namespace bozo::ee
         bool insideOutcall() const { return outcallDepth_ != 0; }
         // Guest code an override runs on a context of its own (a copy: TMB's TMB_KILL_ENEMIES calls the game's
         // vehicleTakeHit on one) is not the thread's: it cannot stop or leave (nothing would run it on from its pc),
-        // so it runs to its return, no event taken and no stop made there (kernel.md section 3b).
+        // so it runs to its return, no event taken and no stop made there (kernel.md section 3b). Outside guest code
+        // (a host's out-call between threads: JC2's IOP modules calling the game's RPC handler as the IOP's clock is
+        // brought up) no thread's context is running, so every context an out-call runs is its own.
         bool ownContext(const R5900Context *ctx) const
         {
-            return outcallDepth_ && inGuest_ && currentFrame_ && ctx != &currentFrame_->ctx;
+            return outcallDepth_ && (!inGuest_ || !currentFrame_ || ctx != &currentFrame_->ctx);
         }
         // Leave guest code at `pc`: inside an out-call deferred (returns), else stop (does not return).
         void leave(R5900Context *ctx, uint32_t pc);
