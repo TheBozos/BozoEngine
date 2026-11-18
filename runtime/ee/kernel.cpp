@@ -995,3 +995,88 @@ namespace bozo::ee
             vblankEnd();
     }
 }
+
+namespace bozo::ee
+{
+    void Kernel::scheduleNative(uint32_t key, uint64_t cycle, uint32_t kind, std::array<uint32_t, 3> args,
+                                std::function<void(uint64_t)> fn)
+    {
+        scheduleNative(key, cycle, std::move(fn));
+        deadlines_[key].nativeKind = kind;
+        deadlines_[key].nativeArgs = args;
+    }
+
+    // ---- Save states ----
+    void io(state::Archive &a, QueuedHandler &h)
+    {
+        state::fields(a, h.kind, h.pc, h.a, h.gp, h.sp, h.ra, h.aHigh, h.completion, h.sequence, h.tag);
+    }
+    void io(state::Archive &a, Frame &f)
+    {
+        state::pod(a, f.ctx);
+        state::pod(a, f.last);
+        state::fields(a, f.status, f.ran, f.parkedStack, f.kind, f.pc, f.a, f.gp, f.sp, f.ra, f.completion, f.sequence,
+                      f.tag);
+    }
+    void io(state::Archive &a, Thread &t)
+    {
+        state::fields(a, t.id, t.state, t.priority, t.initPriority, t.entry, t.stack, t.stackSize, t.gp, t.attr, t.option,
+                      t.arg, t.waitReason, t.waitObject, t.flagBits, t.flagMode, t.waitToken, t.fixedResult,
+                      t.waitCompletion, t.completionDue, t.wakeupCount, t.pseudo, t.handlerSlot, t.frames);
+    }
+    void io(state::Archive &a, InterruptHandler &h)
+    {
+        state::fields(a, h.id, h.cause, h.pc, h.arg, h.gp, h.sp, h.enabled);
+    }
+    void io(state::Archive &a, Semaphore &s)
+    {
+        state::fields(a, s.id, s.count, s.max, s.init, s.attr, s.option, s.waiters);
+    }
+
+    std::string Kernel::unsaveable() const
+    {
+        if (depth_)
+            return "inside a kernel operation";
+        for (const auto &[key, d] : deadlines_)
+            if (d.native && !d.nativeKind)
+                return "a native deadline (key 0x" + std::to_string(key) + ") has no saveable kind";
+        return {};
+    }
+
+    void Kernel::serialize(state::Archive &a)
+    {
+        a.begin("kernel");
+        state::fields(a, vblankHandler_, origin_, originCall_, threads_, ready_, readyMask_, running_, switchRequested_,
+                      picks_, nextPseudo_, handlerSlots_, ownedHandlerStacks_, nextThreadId_, nextSemaId_,
+                      nextIntcHandler_, nextDmacHandler_, semas_, intc_, dmac_, nextHandlerId_, intcMask_, dmacMask_,
+                      intcPending_, dmacPending_, queued_, sequence_, vblankCount_, fieldCycles_, lines_, nextStart_,
+                      nextEnd_);
+        uint64_t n = state::count(a, deadlines_.size());
+        if (!a.loading())
+            for (auto &[key, d] : deadlines_)
+            {
+                uint32_t k = key;
+                state::fields(a, k, d.cycle, d.handler, d.nativeKind, d.nativeArgs);
+            }
+        else
+        {
+            deadlines_.clear();
+            for (uint64_t i = 0; i < n; ++i)
+            {
+                uint32_t key = 0;
+                Deadline d;
+                state::fields(a, key, d.cycle, d.handler, d.nativeKind, d.nativeArgs);
+                if (d.nativeKind)
+                {
+                    if (!nativeRebuild)
+                        throw state::Error("save state: a native deadline but no rebuilder");
+                    d.native = nativeRebuild(d.nativeKind, d.nativeArgs);
+                    if (!d.native)
+                        throw state::Error("save state: unknown native deadline kind " + std::to_string(d.nativeKind));
+                }
+                deadlines_[key] = std::move(d);
+            }
+        }
+        a.end();
+    }
+}

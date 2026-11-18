@@ -137,6 +137,39 @@ namespace bozo::native::irx
         };
         std::map<int32_t, EventFlag> eventFlags;
         int32_t nextEventFlag = 1;
+        // The RPC servers IOP code registered (sceSifRegisterRpc): kept as data so a loaded state registers them again.
+        struct RpcServer
+        {
+            uint32_t function = 0, buffer = 0, gp = 0;
+            int32_t owner = 0;
+        };
+        std::map<uint32_t, RpcServer> rpcServers;
+        void registerServer(uint32_t id, const RpcServer &server)
+        {
+            rpcServers[id] = server;
+            libraries.sif.servers[id] = [this, function = server.function, buffer = server.buffer, gp = server.gp,
+                                         ownerTask = server.owner](libs::Libraries &, libs::Guest &guest,
+                                                                         const libs::NativeRpcRequest &request)
+                {
+                    syncEe(libraries.now(guest));
+                    copy(buffer, guest.in(request.send, request.sendBytes), request.sendBytes);
+                    const uint32_t reply = serve(ownerTask, function, gp, request.command, buffer, request.sendBytes);
+                    if (request.receiveBytes)
+                    {
+                        try
+                        {
+                            guest.write(request.receive, memory.data() + physical(reply, request.receiveBytes),
+                                        request.receiveBytes);
+                        }
+                        catch (const std::runtime_error &error)
+                        {
+                            throw std::runtime_error(std::format("{}; RPC command {} handler 0x{:x} returned 0x{:x}",
+                                                                 error.what(), request.command, function, reply));
+                        }
+                    }
+                    runReady();
+                };
+        }
         explicit Impl(libs::Libraries &l, uint32_t start) : libraries(l), heapStart(start), libsd(mixer, *this)
         {
             if (start >= 0x180000)
@@ -462,7 +495,11 @@ namespace bozo::native::irx
         }
         void runReady()
         {
-            if (!exclusions.empty()) return;
+            // Inside a running task (it called the EE, and the EE's handler called back here, an IOP RPC or a SIF
+            // transfer bringing the IOP's clock up): that task waits for its reply on a PS2, and the loop running it
+            // takes the ready tasks once it yields. Running them here would enter tasks nested, the caller itself too
+            // (it is not waiting), on its live state.
+            if (!exclusions.empty() || current) return;
             for (unsigned pass = 0; pass < 32; ++pass)
             {
                 bool ran = false;
@@ -499,7 +536,13 @@ namespace bozo::native::irx
                 if (!ran)
                     return;
             }
-            throw std::runtime_error("native library tasks made no blocking progress");
+            {
+                std::string still;
+                for (const auto &[id, task] : tasks)
+                    if (!task.done && !task.waiting)
+                        still += std::format(" task {} at 0x{:x} (ra 0x{:x})", id, task.cpu.pc, task.cpu.gpr[31]);
+                throw std::runtime_error("native library tasks made no blocking progress:" + still);
+            }
         }
         void service(Environment &env, const Import &import);
         // The SDK's printf family on 32-bit arguments: argument slot k is a0-a3, then the caller's stack from sp + 16.
@@ -1359,10 +1402,19 @@ namespace bozo::native::irx
                 return;
             } // native callbacks are only delivered at safe points
         }
-        if (lib == "vblank" && n == 5)
+        // WaitNonVblank (7): there is no display, so never a vblank to wait out: it returns at once. Jade Cocoon 2's
+        // M2SOUND calls it.
+        if (lib == "vblank" && n == 7)
+        {
+            ret();
+            return;
+        }
+        // WaitVblankStart (4), WaitVblankEnd (5) and WaitVblank (6): the task waits for the next native frame tick (no
+        // display: the start and the end of a vblank are the same tick). Jade Cocoon 2's IMODEMAN.IRX polls on 4.
+        if (lib == "vblank" && (n == 4 || n == 5 || n == 6))
         {
             if (!current)
-                throw std::runtime_error("native root WaitVblankEnd");
+                throw std::runtime_error("native root vblank wait");
             if (!exclusions.empty()) throw std::runtime_error("native frame wait with callbacks excluded");
             auto &t = tasks.at(current);
             t.waiting = true;
@@ -1592,27 +1644,7 @@ namespace bozo::native::irx
             {
                 const uint32_t function = a2, buffer = a3, gp = c.gpr[28];
                 const int32_t ownerTask = logicalTask();
-                libraries.sif.servers[a1] = [this, function, buffer, gp, ownerTask](libs::Libraries &, libs::Guest &guest,
-                                                                         const libs::NativeRpcRequest &request)
-                {
-                    syncEe(libraries.now(guest));
-                    copy(buffer, guest.in(request.send, request.sendBytes), request.sendBytes);
-                    const uint32_t reply = serve(ownerTask, function, gp, request.command, buffer, request.sendBytes);
-                    if (request.receiveBytes)
-                    {
-                        try
-                        {
-                            guest.write(request.receive, memory.data() + physical(reply, request.receiveBytes),
-                                        request.receiveBytes);
-                        }
-                        catch (const std::runtime_error &error)
-                        {
-                            throw std::runtime_error(std::format("{}; RPC command {} handler 0x{:x} returned 0x{:x}",
-                                                                 error.what(), request.command, function, reply));
-                        }
-                    }
-                    runReady();
-                };
+                registerServer(a1, {function, buffer, gp, ownerTask});
                 write(a0 + 0x20, a1);
                 write(a0 + 0x28, a2);
                 write(a0 + 0x2c, a3);
@@ -1622,6 +1654,7 @@ namespace bozo::native::irx
             if (n == 15)
             {
                 const auto found = libraries.sif.eeServers.find(a1);
+                if (std::getenv("BOZO_NATIVE_IRX_TRACE")) std::fprintf(stderr, "[native-irx:sif] bind EE service 0x%x (client 0x%x, ra 0x%x)\n", a1, a0, c.gpr[31]);
                 write(a0 + 0x24, a1 && found != libraries.sif.eeServers.end() ? a1 : 0);
                 ret();
                 return;
@@ -1985,6 +2018,7 @@ namespace bozo::native::irx
         p.eventFlags.clear();
         p.started.clear();
         p.libraries.sif.servers.clear();
+        p.rpcServers.clear();
         p.libraries.sif.bound.clear();
         p.nextStack = 0x1fe000;
         p.invokeDepth = 0;
@@ -2027,3 +2061,114 @@ namespace bozo::native::irx
     }
     uint64_t CompiledLibraries::nativeCalls() const { return impl_->calls; }
 } // namespace bozo::native::irx
+
+namespace bozo::native::irx
+{
+    // ---- Save states ----
+    std::string CompiledLibraries::unsaveable() const
+    {
+        const auto &p = *impl_;
+        if (p.current || p.invokeDepth || !p.exclusions.empty() || p.deliveringReadyAudio || p.deliveringReadyDisc ||
+            p.deliveringFrames)
+            return "native IOP code is running";
+        return {};
+    }
+
+    void CompiledLibraries::serialize(state::Archive &a)
+    {
+        using state::fields;
+        using state::pod;
+        if (const std::string why = unsaveable(); !why.empty())
+            throw state::Error("save state: " + why);
+        auto &p = *impl_;
+        using Impl = CompiledLibraries::Impl;
+        a.begin("iop");
+        fields(a, p.memory, p.cycle, p.eeOrigin, p.calls, p.origin, p.started, p.nextTask, p.callbackTask,
+               p.deferredTarget, p.transferSerial, p.nextStack, p.nextTimer, p.readyAudioCompletions,
+               p.discRequestSerial, p.discRequests, p.discError, p.discCallback, p.discCallbackGp,
+               p.completedFrames, p.frameListenerSerial, p.commandBuffer, p.commandCapacity, p.commandSerial,
+               p.nextSema, p.nextEventFlag);
+        p.heap.serialize(a);
+        // Tasks
+        uint64_t n = state::count(a, p.tasks.size());
+        auto task = [&](Impl::Task &t) {
+            pod(a, t.cpu);
+            pod(a, t.parked);
+            fields(a, t.waiting, t.done, t.started, t.attr, t.option, t.entry, t.stack, t.stackBytes, t.initialPriority,
+                   t.priority, t.wakeups, t.waitingSema, t.waitingFlag, t.flagPattern, t.flagMode, t.flagResult,
+                   t.sleeping, t.due, t.serving, t.replied, t.reply);
+        };
+        if (!a.loading())
+            for (auto &[id, t] : p.tasks)
+            {
+                int32_t k = id;
+                fields(a, k);
+                task(t);
+            }
+        else
+        {
+            p.tasks.clear();
+            for (uint64_t i = 0; i < n; ++i)
+            {
+                int32_t k = 0;
+                fields(a, k);
+                task(p.tasks[k]);
+            }
+        }
+        auto interrupt = [&](Impl::Interrupt &i) { fields(a, i.function, i.argument, i.gp, i.enabled); };
+        auto each = [&](auto &map, auto &&walk) {
+            using Map = std::remove_reference_t<decltype(map)>;
+            uint64_t c = state::count(a, map.size());
+            if (!a.loading())
+                for (auto &[key, value] : map)
+                {
+                    typename Map::key_type k = key;
+                    fields(a, k);
+                    walk(value);
+                }
+            else
+            {
+                map.clear();
+                for (uint64_t i = 0; i < c; ++i)
+                {
+                    typename Map::key_type k{};
+                    fields(a, k);
+                    walk(map[k]);
+                }
+            }
+        };
+        each(p.interrupts, interrupt);
+        each(p.timers, [&](Impl::Timer &t) {
+            fields(a, t.compare, t.mode, t.cause, t.rate, t.prescale, t.due, t.configured, t.direct, t.alarm, t.revision);
+            interrupt(t.handler);
+        });
+        each(p.frameListeners, [&](Impl::FrameListener &f) {
+            interrupt(f.callback);
+            fields(a, f.priority, f.order);
+        });
+        each(p.commandHandlers, interrupt);
+        each(p.semas, [&](Impl::Sema &s) { fields(a, s.count, s.initial, s.max, s.attr, s.option, s.waiting); });
+        each(p.eventFlags, [&](Impl::EventFlag &f) { fields(a, f.attr, f.option, f.initial, f.bits, f.waiting); });
+        n = state::count(a, p.events.size());
+        if (a.loading())
+            p.events.resize(n);
+        for (auto &e : p.events)
+            fields(a, e.due, e.function, e.a0, e.a1, e.gp, e.readyAudio, e.ownedBuffer, e.readyDisc);
+        if (a.loading()) // the servers this run's IOP code registered are dropped first
+            for (const auto &[id, server] : p.rpcServers)
+                p.libraries.sif.servers.erase(id);
+        each(p.rpcServers, [&](Impl::RpcServer &r) { fields(a, r.function, r.buffer, r.gp, r.owner); });
+        if (a.loading())
+        {
+            p.current = 0;
+            p.invokeDepth = 0;
+            p.exclusions.clear();
+            const auto servers = p.rpcServers;
+            for (const auto &[id, server] : servers)
+                p.registerServer(id, server);
+        }
+        p.mixer.serialize(a, p.memory.data(), p.memory.size());
+        p.libsd.serialize(a);
+        a.end();
+    }
+}

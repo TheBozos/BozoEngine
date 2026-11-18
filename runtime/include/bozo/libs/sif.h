@@ -4,6 +4,8 @@
 // allocator handed out (989SND's banks and buffers come from it too).
 #pragma once
 
+#include "bozo/state.h"
+
 #include <cstdint>
 #include <map>
 #include <functional>
@@ -35,6 +37,7 @@ namespace bozo::libs
         uint32_t blockAt(uint32_t address) const;
         uint32_t largestFree() const;
         uint32_t totalFree() const;
+        void serialize(state::Archive &a);
 
     private:
         std::map<uint32_t, uint32_t> free_; // start -> bytes

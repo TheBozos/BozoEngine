@@ -6,6 +6,8 @@
 // contexts the kernel keeps for every thread and stacked handler.
 #pragma once
 
+#include "bozo/state.h"
+
 #include "bozo/context.h"
 #include "bozo/context_words.h"
 
@@ -15,6 +17,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace bozo::ee
@@ -185,6 +188,9 @@ namespace bozo::ee
         uint64_t sequence = 0, tag = 0;
     };
 
+    // Save states: a queued handler's fields (kernel.cpp).
+    void io(state::Archive &a, QueuedHandler &h);
+
     struct InterruptHandler
     {
         int32_t id = 0;
@@ -335,6 +341,16 @@ namespace bozo::ee
         bool cancelDeadline(uint32_t key);
         // The same deadline for native code: `fn` runs with the cycle it was due at, when events are taken.
         void scheduleNative(uint32_t key, uint64_t cycle, std::function<void(uint64_t)> fn);
+        // The same, saveable: `kind` and `args` say what `fn` does, so a loaded state rebuilds it (nativeRebuild).
+        // A deadline made without a kind keeps the runtime from saving its state while it is pending.
+        void scheduleNative(uint32_t key, uint64_t cycle, uint32_t kind, std::array<uint32_t, 3> args,
+                            std::function<void(uint64_t)> fn);
+        using NativeRebuild = std::function<std::function<void(uint64_t)>(uint32_t kind, const std::array<uint32_t, 3> &)>;
+        NativeRebuild nativeRebuild;
+        // Save states (bozo/state.h): every field, at a dispatcher safe point. Loading replaces the kernel's state.
+        void serialize(state::Archive &a);
+        // Why the state cannot be saved now (empty: it can).
+        std::string unsaveable() const;
         // SetAlarm / ReleaseAlarm on the deadlines above: `due` is an absolute EE cycle; the handler runs as
         // handler(id, the horizontal blank count at `due`, arg). Returns the alarm's id (at most kAlarms pending),
         // -1 when every one is pending. ReleaseAlarm returns 0 while it is pending, else -1.
@@ -397,7 +413,14 @@ namespace bozo::ee
         uint64_t fieldCycles_ = 0;
         uint32_t lines_ = 525;
         uint64_t nextStart_ = 0, nextEnd_ = 0;
-        struct Deadline { uint64_t cycle; QueuedHandler handler; std::function<void(uint64_t)> native; };
+        struct Deadline
+        {
+            uint64_t cycle = 0;
+            QueuedHandler handler;
+            std::function<void(uint64_t)> native;
+            uint32_t nativeKind = 0; // 0: none, or a native deadline that cannot be saved
+            std::array<uint32_t, 3> nativeArgs{};
+        };
         std::map<uint32_t, Deadline> deadlines_;
     };
 }

@@ -399,3 +399,11 @@ if(MINGW)
 endif()
 add_test(NAME library_heap_queries COMMAND bozo-library-heap-queries-tests)
 set_tests_properties(library_heap_queries PROPERTIES TIMEOUT 10)
+
+# Save states (bozo/state.h): archives, files, a dispatcher saved and loaded.
+add_executable(bozo-state-tests runtime/state_tests.cpp)
+target_link_libraries(bozo-state-tests PRIVATE bozo_runtime_core)
+if(MINGW)
+  target_link_options(bozo-state-tests PRIVATE -static)
+endif()
+add_test(NAME state COMMAND bozo-state-tests)

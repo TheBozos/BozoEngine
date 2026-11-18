@@ -63,6 +63,10 @@ namespace bozo::native::irx
         // stack, opaque module handle, device address or freed block.
         std::span<uint8_t> allocatedBuffer(uint32_t address,uint32_t bytes);
         uint64_t nativeCalls() const;
+        // Save states (bozo/state.h): the IOP's memory, tasks, kernel objects, sound mixer and libsd, at the EE
+        // dispatcher's safe point (no native task running). The images and bindings are set up again by the port.
+        std::string unsaveable() const;
+        void serialize(state::Archive &a);
 
       private:
         struct Impl;
