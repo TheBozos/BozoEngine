@@ -16,6 +16,11 @@
 
 #include "bozo/libs/snd989.h"
 
+namespace bozo::state
+{
+    class Archive;
+}
+
 namespace bozo::libs
 {
     class Libraries;
@@ -138,6 +143,9 @@ namespace bozo::libs
         void advanceAudio(Libraries &l, uint64_t ee);
         // sceSifSetDma's data for the IOP's RAM (the movie's PCM): to the engine's RAM at EE cycle `ee`.
         void iopWrite(Libraries &l, uint64_t ee, uint32_t address, const uint8_t *data, uint32_t bytes);
+        // Save states (bozo/state.h; libraries_state.cpp): the driver's state and its engine (made on a load that needs
+        // one). A real-time clock's anchor is the host's, so a load anchors it again.
+        void serialize(state::Archive &a, Libraries &l);
         // The engine's mixer (null before the engine is made).
         audio::Mixer *mixer() { return engine ? &engine->mixer() : nullptr; }
 

@@ -27,6 +27,62 @@ namespace bozo::libs
     }
     void io(state::Archive &a, Resume &r) { fields(a, r.kind, r.a); }
 
+    void io(state::Archive &a, SndTone &t) { pod(a, t); }
+    void io(state::Archive &a, SndSound &s) { pod(a, s); }
+    void io(state::Archive &a, SndBank &b)
+    {
+        fields(a, b.address, b.block, b.midiBlock, b.lbn, b.id, b.sounds, b.programs, b.samples, b.midi, b.header);
+    }
+    void io(state::Archive &a, SndDriver::Handle &h)
+    {
+        fields(a, h.handle, h.bank, h.sound, h.type, h.stopped, h.ended, h.start, h.seconds);
+    }
+
+    void SndDriver::serialize(state::Archive &a, Libraries &l)
+    {
+        a.begin("snd");
+        fields(a, banks, handles, last, masterVolume, masterSet, playbackMode, movieBuffer, streamBlock, unseen_, recvFor_,
+               toEngine_, recentPlays_, engineValid_, engineGame_, movieAlloc_, freeTiming);
+        pod(a, stats);
+        pod(a, timing);
+        uint64_t n = state::count(a, slots_.size());
+        if (!a.loading())
+            for (auto &[pool, slots] : slots_)
+            {
+                uint32_t key = pool;
+                io(a, key);
+                state::count(a, slots.size());
+                for (Slot &slot : slots)
+                    fields(a, slot.generation, slot.occupant);
+            }
+        else
+        {
+            slots_.clear();
+            for (uint64_t i = 0; i < n; ++i)
+            {
+                uint32_t key = 0;
+                io(a, key);
+                std::vector<Slot> slots(state::count(a, 0));
+                for (Slot &slot : slots)
+                    fields(a, slot.generation, slot.occupant);
+                slots_[key] = std::move(slots);
+            }
+            clockAnchored_ = false; // the host's clock: anchored again at the next sync
+        }
+        bool made = engine != nullptr;
+        io(a, made);
+        if (a.loading())
+        {
+            if (made)
+                makeEngine(l);
+            else
+                engine.reset();
+        }
+        if (made)
+            engine->serialize(a);
+        a.end();
+    }
+
     std::string Libraries::unsaveable() const
     {
         for (const auto &[thread, p] : continuations_)
@@ -37,8 +93,6 @@ namespace bozo::libs
                 return "a queued handler has a library completion that cannot be saved";
         if (mpeg.decoder || !mpeg.decoded.empty())
             return "a movie is playing";
-        if (snd.engine || !snd.banks.empty() || !snd.handles.empty())
-            return "the 989SND driver's state is not covered by save states yet";
         return {};
     }
 
@@ -131,6 +185,8 @@ namespace bozo::libs
         fields(a, sif.rpcId, sif.bindAttempts, sif.bound, sif.sreg, sif.dmaId, sif.modules);
         sif.heap.serialize(a);
         a.end();
+
+        snd.serialize(a, *this);
 
         a.begin("timers");
         TimerState &t = timers;

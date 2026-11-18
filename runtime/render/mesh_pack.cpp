@@ -230,6 +230,18 @@ namespace bozo::render::packs
         m_images.clear();
     }
 
+    std::vector<LoadedImages::Image> LoadedImages::images() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_images;
+    }
+
+    void LoadedImages::restore(std::vector<Image> images)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_images = std::move(images);
+    }
+
     bool LoadedImages::find(uint32_t address, Image &out) const
     {
         std::lock_guard<std::mutex> lock(m_mutex);
