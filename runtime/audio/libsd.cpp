@@ -537,6 +537,16 @@ namespace bozo::audio
         return 0u;
     }
 
+    // sceSdCleanEffectWorkArea starts the clear on a DMA channel and returns; its end arrives as that channel's
+    // transfer interrupt (handler, else callback), exactly like a voice transfer's. A driver that chains work on
+    // that interrupt (VP2's Csm reverb change clears core 0, then core 1, then releases its lock) waits for it.
+    uint32_t Libsd::cleanEffectWorkArea(uint32_t core, uint32_t channel, uint32_t mode)
+    {
+        clearEffectWorkArea(core, channel, mode);
+        transferDone(channel & 1u);
+        return 0u;
+    }
+
     uint32_t Libsd::transIntrHandlerArgument(uint32_t channel)
     {
         return m_state.transHandler[channel & 1u].argument;
@@ -639,7 +649,7 @@ namespace bozo::audio
         case 23u: result = setEffectAttr(a[0], a[1]); return true;
         case 24u: result = getEffectAttr(a[0], a[1]); return true;
         case 25u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
-        case 31u: result = clearEffectWorkArea(a[0], a[1], a[2]); return true;
+        case 31u: result = cleanEffectWorkArea(a[0], a[1], a[2]); return true;
         case 32u: result = setEffectMode(a[0], a[1]); return true;
         case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
