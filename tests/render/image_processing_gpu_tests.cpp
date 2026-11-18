@@ -3,6 +3,7 @@
 #include "bozo/render/renderer.h"
 #include "bozo/render/gl.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cmath>
@@ -49,8 +50,46 @@ int main(){try{
         composite.imageProcessing=opacity;quad(composite,0x80808080);present();
         for(unsigned x:{8u,24u,40u,56u}){expect(x,36,64);expect(x,12,191);}
     }
+    // Frame depth: a plane between the two scene depths, drawn into an image with the main frame's depth buffer,
+    // passes (GEQUAL, larger nearer) only over the farther half. The main depth is unchanged (no depth write), so a
+    // second plane farther than both halves passes nowhere; a later ordinary draw into the same image has its own
+    // depth again and fills it.
+    for(unsigned repeat=0;repeat<2;++repeat){
+        r.beginFrame(screen);auto geometry=plain;geometry.depthWrite=true;
+        quad(geometry,0x80000000,0,0,64,24,screen.depthMax*0.25f);
+        quad(geometry,0x80000000,0,24,64,24,screen.depthMax*0.75f);
+        auto plane=plain;plane.target=1;plane.frameDepth=true;plane.depthTest=true;plane.depthWrite=false;
+        quad(plane,0x80808080,0,0,64,48,screen.depthMax*0.5f);
+        quad(plane,0x80404040,0,0,64,48,screen.depthMax*0.125f);
+        auto copy=plain;copy.fromFrame=1;copy.source=1;copy.nearest=true;quad(copy,0x80808080);present();
+        for(unsigned x:{8u,24u,40u,56u}){expect(x,36,255);expect(x,12,0);} // readback rows count from the bottom
+        r.beginFrame(screen);quad(geometry,0x80000000,0,0,64,48,screen.depthMax);
+        auto own=plain;own.target=1;own.depthTest=true;own.depthWrite=false;quad(own,0x80606060,0,0,64,48,screen.depthMax*0.5f);
+        quad(copy,0x80808080);present();
+        for(unsigned x:{8u,24u,40u,56u}){expect(x,12,191);expect(x,36,191);}
+    }
+    // GS lerp chain: base copy then truncating 8-bit lerps at 1/16-texel offsets, edges clamped, colour 255 (x2).
+    // Exact against a CPU reference of the same integer steps.
+    {
+        int bytes[16];for(unsigned x=0;x<16;++x)bytes[x]=int((x*53+11)%120);
+        r.beginFrame(screen);auto stripes=plain;stripes.target=1;stripes.targetWidth=16;stripes.targetHeight=12;stripes.directColour=true;
+        for(unsigned x=0;x<16;++x)quad(stripes,0x80000000u|uint32_t(bytes[x])*0x010101u,float(x*4),0,4,48);
+        auto lerps=plain;lerps.target=2;lerps.targetWidth=16;lerps.targetHeight=12;lerps.fromFrame=1;lerps.source=1;lerps.nearest=true;
+        auto p=std::make_shared<Material::ImageProcessing>();p->step={1.f/16,0};p->chainColour=255;
+        const float offsets[4]={-54/16.f,54/16.f,-23/16.f,23/16.f},alphas[4]={44,33,41,31};p->chainTaps=4;
+        for(unsigned i=0;i<4;++i){p->chainOffset[i]=offsets[i];p->chainAlpha[i]=alphas[i];}
+        lerps.imageProcessing=p;quad(lerps,0x80808080);
+        auto copy=plain;copy.fromFrame=1;copy.source=2;copy.nearest=true;quad(copy,0x80808080);present();
+        const auto texel=[&](int x){return bytes[std::clamp(x,0,15)];};
+        const auto modulate=[](double v){return std::min(255.0,std::floor(v*255/128));};
+        for(int x=0;x<16;++x){double c=modulate(texel(x));
+            for(unsigned i=0;i<4;++i){const int sixteenths=int(offsets[i]*16),whole=int(std::floor(sixteenths/16.0)),frac=sixteenths-whole*16;
+                const double s=modulate((texel(x+whole)*(16-frac)+texel(x+whole+1)*frac)/16.0);c=std::floor((s-c)*alphas[i]/128)+c;}
+            ++samples;const int actual=pixels[(24*64+unsigned(x)*4+2)*4];
+            if(actual!=int(c)){if(failures<12)std::printf("lerp chain x=%d got%d expected%d\n",x,actual,int(c));++failures;}}
+    }
     // Optional shader state must reset on the next ordinary draw/frame.
     r.beginFrame(screen);quad(plain,0x80202020);present();expect(32,24,64);
     r.releaseGpu();SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::printf("native blur/depth lookup/alpha images/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
+    std::printf("native blur/depth lookup/alpha images/frame depth/lerp chain/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
 }catch(const std::exception &e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

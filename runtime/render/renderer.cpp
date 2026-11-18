@@ -159,6 +159,8 @@ namespace bozo::render
                     uint64_t(m.nearest)<<24 | uint64_t(m.frameWidth)<<32 | uint64_t(m.frameHeight)<<48;
                 h=hash::xxh64(&extended,sizeof(extended),h);
             }
+            if(m.frameDepth)
+                h=hash::xxh64(&m.frameDepth,sizeof(m.frameDepth),h);
             if (m.useQ || m.gsBlend || m.colourMask != 0xFu || m.alphaFunc != Material::AlphaFunc::Greater || m.depthGreater)
             {
                 const uint64_t gs = uint64_t(m.useQ) | uint64_t(m.gsBlend) << 1 | uint64_t(m.depthGreater) << 2 | uint64_t(m.alphaFunc) << 8 |
@@ -208,6 +210,8 @@ namespace bozo::render
                 if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);}
                 h=hash::xxh64(&p.alphaSource,sizeof(p.alphaSource),h);
                 h=hash::xxh64(&p.alphaScale,sizeof(float),h);
+                if(p.chainTaps){h=hash::xxh64(&p.chainTaps,sizeof(p.chainTaps),h);h=hash::xxh64(&p.chainColour,sizeof(float),h);
+                    h=hash::xxh64(p.chainOffset.data(),sizeof(float)*p.chainTaps,h);h=hash::xxh64(p.chainAlpha.data(),sizeof(float)*p.chainTaps,h);}
             }
             h = hash::xxh64(batch.clip, sizeof(batch.clip), h);
             if (batch.first + static_cast<size_t>(batch.count) <= frame.vertices.size())
@@ -268,6 +272,16 @@ namespace bozo::render
                 throw std::invalid_argument("invalid native image kernel");
             if(p.depthLookup)for(float weight:p.depthWeights)if(!std::isfinite(weight) || weight<0 || weight>1)
                 throw std::invalid_argument("invalid native depth opacity");
+            if(p.chainTaps){
+                const bool axis=(p.step[0]!=0)!=(p.step[1]!=0);
+                if(p.chainTaps>32 || p.radius || p.depthLookup || !material.fromFrame || !axis ||
+                   !(p.chainColour>=0 && p.chainColour<=255) || p.chainColour!=std::floor(p.chainColour))
+                    throw std::invalid_argument("invalid native image lerp chain");
+                for(unsigned i=0;i<p.chainTaps;++i){const float sixteenths=p.chainOffset[i]*16;
+                    if(!(std::abs(p.chainOffset[i])<=64) || sixteenths!=std::floor(sixteenths) ||
+                       !(p.chainAlpha[i]>=0 && p.chainAlpha[i]<=128) || p.chainAlpha[i]!=std::floor(p.chainAlpha[i]))
+                        throw std::invalid_argument("invalid native image lerp chain tap");}
+            }
         }
         if (material.levels.enabled)
             for (unsigned c = 0; c < 3; ++c)

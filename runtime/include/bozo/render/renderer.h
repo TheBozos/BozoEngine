@@ -59,6 +59,14 @@ namespace bozo::render
             // Zero disables it; reading the draw target itself is rejected.
             uint8_t alphaSource = 0;
             float alphaScale = 1;
+            // A game's blur drawn as GS sprites: a base copy, then lerps C = floor((S - C) * alpha / 128) + C in
+            // 8-bit integers, as the GS blends them. Each step truncates, so no linear kernel gives the same image.
+            // chainTaps > 0 replaces the kernel. The base is the texel under the pixel; sample i is the source at
+            // chainOffset[i] texels (a multiple of 1/16) along step's axis, bilinear with 4-bit weights, edges
+            // clamped. Each is modulated by chainColour (128 = 1), floored and clamped to 255. chainAlpha in 128ths.
+            uint8_t chainTaps = 0;
+            std::array<float,32> chainOffset{}, chainAlpha{};
+            float chainColour = 128;
         };
         std::shared_ptr<const ImageProcessing> imageProcessing;
         // Optional per-draw auxiliary dimensions. Main-frame dimensions follow
@@ -98,8 +106,15 @@ namespace bozo::render
         // fromFrame != 0 samples source; its value is the main-frame mipmap LOD bias.
         // Aux/previous sources have no LOD bias. A same-target source is snapshotted before drawing.
         uint8_t fromFrame = 0, target = 0, source = 0;
+        // This draw's auxiliary target (target != 0) tests and writes the main frame's depth buffer instead of its
+        // own, as a GS draw into another frame address with the same ZBUF would: a game's depth planes compared
+        // with the scene into an image. The target takes the main frame's dimensions; its colour is its own.
+        bool frameDepth = false;
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
+        // Images 9..15 are auxiliary targets like 1..7 (not the previous frame). An image keeps its pixels until a
+        // draw into it in a later frame: a game's frame snapshot drawn while it fades is copied once, then sampled.
+        static constexpr uint8_t kAuxiliaryImages = 16;
         bool nearest = false;
         // Native colour correction after texturing/fog, before blending:
         // RGB = clamp(gain * max(0, min(RGB, high) - low), 0, 1).
@@ -297,10 +312,10 @@ namespace bozo::render
         void setEnabled(bool on) { m_enabled = on; }
 
         void setTargetSize(uint8_t n, uint16_t width, uint16_t height) {
-            if (n > 0 && n < 8) m_targetSize[n].store(uint32_t(width) << 16 | height);
+            if (n > 0 && n < Material::kAuxiliaryImages && n != Material::kPreviousFrame) m_targetSize[n].store(uint32_t(width) << 16 | height);
         }
         void setTargetSharesDepth(uint8_t n, bool share) {
-            if (n > 0 && n < 8) {
+            if (n > 0 && n < Material::kAuxiliaryImages && n != Material::kPreviousFrame) {
                 if (share) m_sharedDepth.fetch_or(1u << n);
                 else m_sharedDepth.fetch_and(~(1u << n));
             }
@@ -409,7 +424,7 @@ namespace bozo::render
         uint64_t m_group = 0;
         float m_clip[4] = {0, 0, 0, 0};
         std::atomic<uint32_t> m_clearColour{0};
-        std::atomic<uint32_t> m_targetSize[8]{};
+        std::atomic<uint32_t> m_targetSize[Material::kAuxiliaryImages]{};
         std::atomic<uint32_t> m_sharedDepth{0};
         std::atomic<int> m_frameRate{0};
         uint64_t m_key = 0, m_keyBase = 0;
