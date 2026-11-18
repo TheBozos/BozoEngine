@@ -94,6 +94,7 @@ namespace bozo::audio
 
         // The transfer-end delay (IOP cycles) after a transfer or an input half.
         static constexpr uint32_t kTransferDelay = 2000u;
+        void serialize(state::Archive &a); // the settings and callbacks (audio_state.cpp)
 
     private:
         void sync();

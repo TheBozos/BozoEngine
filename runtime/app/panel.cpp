@@ -13,6 +13,7 @@
 #include "bozo/app/input_bindings.h"
 #include "bozo/app/settings_tabs.h"
 #include "bozo/app/video_settings.h"
+#include "bozo/app/window.h"
 
 #include <SDL3/SDL.h>
 
@@ -21,9 +22,12 @@
 #include "imgui_impl_sdl3.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include <numeric>
@@ -32,6 +36,11 @@
 
 namespace bozo::app
 {
+    namespace
+    {
+        void drawNotice();
+    }
+
     struct Panel::Impl
     {
         SDL_Window *window = nullptr;
@@ -133,8 +142,11 @@ namespace bozo::app
                                    binding.source == input::Source::MouseMove;
                 if (!(mouse && ImGui::GetIO().WantCaptureMouse))
                 {
+                    // config() takes the same (non-recursive) mutex: fetched before the lock, as the other callers do.
+                    // Under the lock it threw "resource deadlock would occur" at the first input after Add.
+                    input::Config &config = input::config();
                     std::lock_guard<std::mutex> lock(input::configMutex());
-                    std::vector<input::Binding> &list = input::config().players[m.controlsPlayer].actions[m.bindingAction];
+                    std::vector<input::Binding> &list = config.players[m.controlsPlayer].actions[m.bindingAction];
                     if (std::find(list.begin(), list.end(), binding) == list.end())
                         list.push_back(binding);
                     m.bindingAction = -1;
@@ -170,8 +182,109 @@ namespace bozo::app
             m.drawSettings();
         if (m.overlay)
             m.drawOverlay();
+        drawNotice();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
+
+    // ---- Notices (notify): a save state's result, bottom left for a few seconds ----
+
+    namespace
+    {
+        std::mutex s_noticeMutex;
+        std::string s_notice;
+        std::chrono::steady_clock::time_point s_noticeAt;
+
+        void drawNotice()
+        {
+            std::string text;
+            {
+                std::lock_guard lock(s_noticeMutex);
+                if (s_notice.empty() || std::chrono::steady_clock::now() - s_noticeAt > std::chrono::seconds(4))
+                    return;
+                text = s_notice;
+            }
+            const ImGuiViewport *viewport = ImGui::GetMainViewport();
+            const float pad = 10.0f * ImGui::GetStyle().FontScaleDpi;
+            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + pad, viewport->WorkPos.y + viewport->WorkSize.y - pad),
+                                    ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+            ImGui::SetNextWindowBgAlpha(0.55f);
+            const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                           ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+            if (ImGui::Begin("##notice", nullptr, flags))
+                ImGui::TextUnformatted(text.c_str());
+            ImGui::End();
+        }
+    }
+
+    void notify(const std::string &text)
+    {
+        std::lock_guard lock(s_noticeMutex);
+        s_notice = text;
+        s_noticeAt = std::chrono::steady_clock::now();
+    }
+
+    std::string stateSlotPath(int slot)
+    {
+        std::filesystem::path dir = userDirectory().empty() ? std::filesystem::path("states") : userDirectory() / "states";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return (dir / ("slot" + std::to_string(slot) + ".state")).string();
+    }
+
+    std::string stateSlotSummary(int slot)
+    {
+        const std::filesystem::path path = stateSlotPath(slot);
+        std::error_code ec;
+        const auto written = std::filesystem::last_write_time(path, ec);
+        if (ec)
+            return "Slot " + std::to_string(slot) + ": empty";
+        const auto system = std::chrono::clock_cast<std::chrono::system_clock>(written);
+        const std::time_t t = std::chrono::system_clock::to_time_t(system);
+        char when[32] = "";
+        if (const std::tm *local = std::localtime(&t))
+            std::strftime(when, sizeof when, "%Y-%m-%d %H:%M", local);
+        return "Slot " + std::to_string(slot) + ": saved " + when;
+    }
+
+    namespace
+    {
+        std::atomic<int> s_stateSlot{0};
+    }
+    int stateSlot() { return s_stateSlot.load(std::memory_order_relaxed); }
+    void setStateSlot(int slot) { s_stateSlot.store(((slot % kStateSlots) + kStateSlots) % kStateSlots); }
+
+    void registerStateTab(std::function<void(int)> save, std::function<void(int)> load)
+    {
+        ui::registerTab("Save states", [save, load] {
+            ImGui::TextDisabled("F5 saves the selected slot, F7 loads it, F6 / Shift+F6 selects the next / previous.");
+            ImGui::Separator();
+            for (int slot = 0; slot < kStateSlots; ++slot)
+            {
+                ImGui::PushID(slot);
+                const std::string summary = stateSlotSummary(slot);
+                if (ImGui::RadioButton(summary.c_str(), stateSlot() == slot))
+                    setStateSlot(slot);
+                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120.0f * ImGui::GetStyle().FontScaleDpi);
+                if (ImGui::Button("Save"))
+                {
+                    setStateSlot(slot);
+                    save(slot);
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(summary.ends_with(": empty"));
+                if (ImGui::Button("Load"))
+                {
+                    setStateSlot(slot);
+                    load(slot);
+                }
+                ImGui::EndDisabled();
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Files: %s", std::filesystem::path(stateSlotPath(0)).parent_path().string().c_str());
+        });
     }
 
     // ---- F3: the frame rate counter ----

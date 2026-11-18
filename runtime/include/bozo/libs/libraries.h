@@ -14,6 +14,7 @@
 #include "bozo/libs/sif.h"
 #include "bozo/libs/snd.h"
 #include "bozo/libs/timer.h"
+#include "bozo/state.h"
 
 #include <cstdint>
 #include <functional>
@@ -35,7 +36,7 @@ namespace bozo::libs
         kLibc = 1u << 0, // memcpy, memset, the string functions, sprintf/printf, malloc/free, rand/srand
         kLibm = 1u << 1, // sqrt and the float sine/cosine kernels
         kGs = 1u << 2,   // the GS library (display and draw environments, uploads, syncs)
-        kPad = 1u << 3,  // libpad
+        kPad = 1u << 3,  // libpad, libpad2 and libvib
         kMc = 1u << 4,   // libmc
         kCd = 1u << 5,   // libcdvd: sectors and the stream from the disc image
         kVu0 = 1u << 6,  // TMB's VU0 microprograms (VCALLMS)
@@ -73,6 +74,34 @@ namespace bozo::libs
 
     class Libraries;
     using Handler = void (*)(Libraries &, Guest &);
+
+    // A library continuation that save states can keep (bozo/state.h): which one (a kind from the libraries' table)
+    // and its arguments. Kinds below kPortResumeKinds are BozoEngine's; a port adds its own from there
+    // (Libraries::addResumeKind).
+    struct Resume
+    {
+        uint32_t kind = 0;
+        std::array<uint32_t, 4> a{};
+    };
+    using ResumeFunction = void (*)(Libraries &, Guest &, const Resume &);
+    enum ResumeKind : uint32_t
+    {
+        kResumeNone = 0,
+        kResumeCdStreamRead = 1, // a[0]: the sectors asked for
+        kResumeMpegRelease = 2,  // a[0]: the heap entry
+        kResumeMpegNodataEnd = 3, // a[0]: the waiting thread, a[1]: the entry, a[2]: 1 work area (no release), 2 SDK callback
+        kResumeMpegGetPicture = 4, // a[0]: rgb, a[1]: mbcount
+        kResumeMpegDeliver = 5,    // a[0]: rgb, a[1]: mbcount
+        kResumeTimerHandlerEnd = 6, // a[0]: slot, a[1]: tag, a[2]: id
+        kPortResumeKinds = 0x1000,
+    };
+    // Native kernel deadlines (ee::Kernel::scheduleNative) the libraries make, by kind.
+    enum NativeDeadlineKind : uint32_t
+    {
+        kDeadlineTimerFire = 1,  // args: slot, tag
+        kDeadlineDelayDue = 2,   // args: thread
+        kPortDeadlineKinds = 0x1000,
+    };
 
     struct Function
     {
@@ -123,6 +152,7 @@ namespace bozo::libs
         uint32_t largestFree() const;
         uint32_t totalFree() const;
         size_t blocks() const { return used_.size(); }
+        void serialize(state::Archive &a);
 
     private:
         std::map<uint32_t, uint32_t> free_; // address -> bytes
@@ -149,7 +179,7 @@ namespace bozo::libs
         Libraries();
 
         // The runtime the libraries serve (the kernel's operations, the heap's start).
-        void attach(ee::Dispatcher &d) { d_ = &d; }
+        void attach(ee::Dispatcher &d);
         ee::Dispatcher *dispatcher() { return d_; }
 
         // The native function for a symbol name, or nullptr.
@@ -190,7 +220,23 @@ namespace bozo::libs
         // A handler queued by a library; `end` (if any) is its completion, run as it returns (origin handler-end).
         void queueHandler(const ee::QueuedHandler &h, std::function<void(Libraries &, Guest &)> end);
         std::function<void(Libraries &, Guest &)> takeHandlerEnd(uint64_t sequence);
+        // The same with saveable continuations (kind kResumeNone: none).
+        void waitVblank(uint64_t token, int32_t fixedResult, const Resume &then);
+        void waitFor(uint32_t reason, uint32_t object, uint64_t token, int32_t fixedResult, const Resume &then);
+        void queueHandler(const ee::QueuedHandler &h, const Resume &end);
+        // A port's continuation kinds (from kPortResumeKinds) and native deadline kinds (from kPortDeadlineKinds).
+        void addResumeKind(uint32_t kind, ResumeFunction f);
+        using DeadlineFunction = void (*)(Libraries &, const std::array<uint32_t, 3> &args, uint64_t due);
+        void addDeadlineKind(uint32_t kind, DeadlineFunction f);
+        // A kernel deadline the libraries can save: `f` (of kind `kind`) runs with `args` when it is due.
+        void scheduleDeadline(uint32_t key, uint64_t cycle, uint32_t kind, std::array<uint32_t, 3> args);
         Pin pin;
+
+        // ---- Save states (bozo/state.h) ----
+        // Every library's state. Why it cannot be saved now (empty: it can): a continuation with no saveable kind,
+        // a movie playing, the 989SND driver (not covered yet).
+        std::string unsaveable() const;
+        void serialize(state::Archive &a);
 
         // ---- VU0 microprograms ----
         // The native program at `pc` of the image VU0 holds (null if none): it runs on the calling context's VU0 state
@@ -211,6 +257,7 @@ namespace bozo::libs
         // turn it into DMA controller registers or execute a hardware environment.
         std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
+        MpegOptions mpegOptions;
         SifState sif;
         TimerState timers;
         SndDriver snd;
@@ -237,8 +284,16 @@ namespace bozo::libs
         ee::Dispatcher *d_ = nullptr;
         std::vector<Function> functions_;
         std::unordered_map<std::string, size_t> byName_;
-        std::map<int32_t, std::function<void(Libraries &, Guest &)>> continuations_;
-        std::map<uint64_t, std::function<void(Libraries &, Guest &)>> handlerEnds_;
+        struct Pending
+        {
+            std::function<void(Libraries &, Guest &)> run;
+            Resume resume; // kind kResumeNone with `run` set: not saveable
+        };
+        Pending pending(const Resume &r);
+        std::map<int32_t, Pending> continuations_;
+        std::map<uint64_t, Pending> handlerEnds_;
+        std::map<uint32_t, ResumeFunction> resumeKinds_;
+        std::map<uint32_t, DeadlineFunction> deadlineKinds_;
     };
 
     // Each library's functions (libc.cpp, libm.cpp, gs.cpp, pad.cpp, mc.cpp).
@@ -247,11 +302,18 @@ namespace bozo::libs
     void addGs(std::vector<Function> &out);
     void addDma(std::vector<Function> &out);
     void addPad(std::vector<Function> &out);
+    void addPad2(std::vector<Function> &out);
     void addMc(std::vector<Function> &out);
     void addCd(std::vector<Function> &out);
     void addMpeg(std::vector<Function> &out); // nothing without a video decoder (FFmpeg)
     void addSif(std::vector<Function> &out);
     void addTimer(std::vector<Function> &out);
+    // The libraries' continuations and deadlines by kind (cd.cpp, mpeg.cpp, timer.cpp).
+    void cdResume(Libraries &l, Guest &g, const Resume &r);
+    void mpegResume(Libraries &l, Guest &g, const Resume &r);
+    void timerResume(Libraries &l, Guest &g, const Resume &r);
+    void timerDeadline(Libraries &l, const std::array<uint32_t, 3> &args, uint64_t due);
+    void delayDeadline(Libraries &l, const std::array<uint32_t, 3> &args, uint64_t due);
     // Sectors of the game's disc (the CD library's image, opened on first use): false when there is none.
     bool discRead(Libraries &l, uint32_t lbn, uint32_t count, uint8_t *out);
 

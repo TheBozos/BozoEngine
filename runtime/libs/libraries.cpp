@@ -4,6 +4,7 @@
 #include "bozo/ee/dispatcher.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace bozo::libs
 {
@@ -234,6 +235,7 @@ namespace bozo::libs
         addGs(functions_);
         addDma(functions_);
         addPad(functions_);
+        addPad2(functions_);
         addMc(functions_);
         addCd(functions_);
         addMpeg(functions_);
@@ -241,6 +243,82 @@ namespace bozo::libs
         addTimer(functions_);
         for (size_t i = 0; i < functions_.size(); ++i)
             byName_[functions_[i].name] = i;
+        resumeKinds_[kResumeCdStreamRead] = cdResume;
+        resumeKinds_[kResumeMpegRelease] = mpegResume;
+        resumeKinds_[kResumeMpegNodataEnd] = mpegResume;
+        resumeKinds_[kResumeMpegGetPicture] = mpegResume;
+        resumeKinds_[kResumeMpegDeliver] = mpegResume;
+        resumeKinds_[kResumeTimerHandlerEnd] = timerResume;
+        deadlineKinds_[kDeadlineTimerFire] = timerDeadline;
+        deadlineKinds_[kDeadlineDelayDue] = delayDeadline;
+    }
+
+    void Libraries::attach(ee::Dispatcher &d)
+    {
+        d_ = &d;
+        d.kernel().nativeRebuild = [this](uint32_t kind, const std::array<uint32_t, 3> &args) {
+            std::function<void(uint64_t)> fn;
+            if (const auto f = deadlineKinds_.find(kind); f != deadlineKinds_.end())
+                fn = [this, f = f->second, args](uint64_t due) { f(*this, args, due); };
+            return fn;
+        };
+    }
+
+    void Libraries::addResumeKind(uint32_t kind, ResumeFunction f)
+    {
+        if (kind < kPortResumeKinds || !f || !resumeKinds_.emplace(kind, f).second)
+            throw std::invalid_argument("a port's continuation kind must be new and at least kPortResumeKinds");
+    }
+
+    void Libraries::addDeadlineKind(uint32_t kind, DeadlineFunction f)
+    {
+        if (kind < kPortDeadlineKinds || !f || !deadlineKinds_.emplace(kind, f).second)
+            throw std::invalid_argument("a port's deadline kind must be new and at least kPortDeadlineKinds");
+    }
+
+    void Libraries::scheduleDeadline(uint32_t key, uint64_t cycle, uint32_t kind, std::array<uint32_t, 3> args)
+    {
+        const auto f = deadlineKinds_.find(kind);
+        if (f == deadlineKinds_.end())
+            throw std::invalid_argument("unknown native deadline kind");
+        d_->kernel().scheduleNative(key, cycle, kind, args,
+                                    [this, f = f->second, args](uint64_t due) { f(*this, args, due); });
+    }
+
+    Libraries::Pending Libraries::pending(const Resume &r)
+    {
+        const auto f = resumeKinds_.find(r.kind);
+        if (f == resumeKinds_.end())
+            throw std::invalid_argument("unknown library continuation kind " + std::to_string(r.kind));
+        return {[f = f->second, r](Libraries &l, Guest &g) { f(l, g, r); }, r};
+    }
+
+    void Libraries::waitVblank(uint64_t token, int32_t fixedResult, const Resume &then)
+    {
+        ee::Kernel &k = d_->kernel();
+        const int32_t id = k.running();
+        const bool completion = then.kind != kResumeNone;
+        if (completion)
+            continuations_[id] = pending(then);
+        k.block(id, ee::kWaitVblank, 0, static_cast<uint32_t>(fixedResult), 0, completion, token, fixedResult);
+    }
+
+    void Libraries::waitFor(uint32_t reason, uint32_t object, uint64_t token, int32_t fixedResult, const Resume &then)
+    {
+        ee::Kernel &k = d_->kernel();
+        const int32_t id = k.running();
+        const bool completion = then.kind != kResumeNone;
+        if (completion)
+            continuations_[id] = pending(then);
+        k.block(id, reason, object, 0, 0, completion, token, fixedResult);
+    }
+
+    void Libraries::queueHandler(const ee::QueuedHandler &h, const Resume &end)
+    {
+        ee::Kernel &k = d_->kernel();
+        k.queue(h);
+        if (end.kind != kResumeNone)
+            handlerEnds_[k.sequence()] = pending(end);
     }
 
     const Function *Libraries::find(const std::string &name) const
@@ -285,7 +363,7 @@ namespace bozo::libs
         const int32_t id = k.running();
         const bool completion = static_cast<bool>(then);
         if (completion)
-            continuations_[id] = std::move(then);
+            continuations_[id] = {std::move(then), {}};
         k.block(id, ee::kWaitVblank, 0, static_cast<uint32_t>(fixedResult), 0, completion, token, fixedResult);
     }
 
@@ -296,7 +374,7 @@ namespace bozo::libs
         const int32_t id = k.running();
         const bool completion = static_cast<bool>(then);
         if (completion)
-            continuations_[id] = std::move(then);
+            continuations_[id] = {std::move(then), {}};
         k.block(id, reason, object, 0, 0, completion, token, fixedResult);
     }
 
@@ -305,7 +383,7 @@ namespace bozo::libs
         ee::Kernel &k = d_->kernel();
         k.queue(h);
         if (end)
-            handlerEnds_[k.sequence()] = std::move(end);
+            handlerEnds_[k.sequence()] = {std::move(end), {}};
     }
 
     std::function<void(Libraries &, Guest &)> Libraries::takeHandlerEnd(uint64_t sequence)
@@ -313,7 +391,7 @@ namespace bozo::libs
         auto it = handlerEnds_.find(sequence);
         if (it == handlerEnds_.end())
             return {};
-        auto c = std::move(it->second);
+        auto c = std::move(it->second.run);
         handlerEnds_.erase(it);
         return c;
     }
@@ -323,7 +401,7 @@ namespace bozo::libs
         auto it = continuations_.find(thread);
         if (it == continuations_.end())
             return {};
-        auto c = std::move(it->second);
+        auto c = std::move(it->second.run);
         continuations_.erase(it);
         return c;
     }

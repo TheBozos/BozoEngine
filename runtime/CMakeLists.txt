@@ -3,6 +3,7 @@
 # per-frame reference record (bozo/reference.h); the native libraries (bozo/libs/).
 add_library(bozo_runtime_core STATIC
   core/runtime_core.cpp
+  core/state.cpp
   ee/kernel.cpp
   ee/dispatcher.cpp
   harness/reference.cpp)
@@ -23,10 +24,13 @@ target_compile_options(bozo_audio PRIVATE -Wall -Wextra -ffp-contract=off)
 add_library(bozo_libs STATIC
   native/compiled_libraries.cpp
   libs/libraries.cpp
+  libs/libraries_state.cpp
+  audio/audio_state.cpp
   libs/libc.cpp
   libs/libm.cpp
   libs/gs.cpp
   libs/pad.cpp
+  libs/pad2.cpp
   libs/timer.cpp
   libs/mc.cpp
   libs/cd.cpp

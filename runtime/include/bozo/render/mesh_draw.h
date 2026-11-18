@@ -39,6 +39,7 @@ namespace bozo::render
         bool setsAlpha = false, setsTest = false, setsZbuf = false, setsTex0 = false;
         uint64_t alpha = 0, test = 0;
         bool depthMasked = false;
+        bool clampU = false, clampV = false; // the batch's CLAMP (WMS / WMT region clamp): set per batch, not kept
         std::shared_ptr<const Texture> texture;
         std::vector<Vertex> vertices; // triangles, three vertices each
     };

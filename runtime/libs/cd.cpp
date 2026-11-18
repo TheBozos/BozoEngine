@@ -235,7 +235,7 @@ namespace bozo::libs
                 h.gp = cd.callbackGp;
                 h.sp = cd.callbackStack;
                 h.a[0] = 4;
-                l.queueHandler(h, {});
+                l.queueHandler(h, Resume{});
             }
             g.ret(1);
         }
@@ -288,16 +288,20 @@ namespace bozo::libs
             CdState &cd = l.cd;
             cd.error = ok ? 0 : -1;
             cd.readBytes=ok?n*kSectorBytes:0;
-            g.cycles = l.callCycles(static_cast<uint64_t>(n) * kSectorCycles);
-            cd.readEnd = l.now(g) + g.cycles;
+            const uint64_t drive = static_cast<uint64_t>(n) * kSectorCycles;
+            g.cycles = l.callCycles(cd.timedCompletion ? 0 : drive);
+            cd.readEnd = l.now(g) + (cd.timedCompletion ? g.cycles + drive : g.cycles);
             if(ok && cd.callback)
             {
                 if(!l.dispatcher()) throw std::runtime_error("CD callback requires native dispatcher");
                 ee::QueuedHandler h;h.kind=ee::kInvokeLibraryCall;h.pc=cd.callback;
                 h.gp=cd.callbackGp;h.sp=cd.callbackStack;h.a[0]=1; // SCECdFuncRead
-                // The existing native read returns after charging its full
-                // read duration; this callback cannot execute inside that call.
-                l.queueHandler(h,{});
+                if(cd.timedCompletion)
+                    l.dispatcher()->kernel().scheduleDeadline(kReadDoneKey, cd.readEnd, h);
+                else
+                    // The read returns after charging its full duration; this callback cannot execute inside that
+                    // call.
+                    l.queueHandler(h, Resume{});
             }
             g.ret(ok ? 1 : 0);
         }
@@ -433,13 +437,7 @@ namespace bozo::libs
                 cd.pendingSectors = n - now;
                 cd.pendingBuffer = to + now * kSectorBytes;
                 cd.pendingError = errorAt;
-                l.waitVblank(token, -1, [n](Libraries &l2, Guest &g2) {
-                    CdState &c = l2.cd;
-                    c.advance(l2.now(g2));
-                    deliver(l2, g2, c.pendingSectors, c.pendingBuffer, c.pendingError);
-                    c.pendingSectors = 0;
-                    g2.ret(static_cast<int32_t>(n));
-                });
+                l.waitVblank(token, -1, Resume{kResumeCdStreamRead, {n}});
                 return;
             }
             deliver(l, g, mode == 1 ? n : static_cast<uint32_t>(available), to, errorAt);
@@ -515,6 +513,16 @@ namespace bozo::libs
             const auto *data=g.in(g.arg(1),g.arg(2));
             g.ret(static_cast<int32_t>(std::fwrite(data,1,g.arg(2),g.arg(0)==1 ? stdout : stderr)));
         }
+    }
+
+    // A blocking stream read's end, as its thread resumes: the rest of the sectors, then the count asked for.
+    void cdResume(Libraries &l, Guest &g, const Resume &r)
+    {
+        CdState &c = l.cd;
+        c.advance(l.now(g));
+        deliver(l, g, c.pendingSectors, c.pendingBuffer, c.pendingError);
+        c.pendingSectors = 0;
+        g.ret(static_cast<int32_t>(r.a[0]));
     }
 
     void addCd(std::vector<Function> &out)
