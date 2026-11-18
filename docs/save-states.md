@@ -17,6 +17,7 @@ running. Requests (`FreeHost::requestSave` / `requestLoad`, from any thread) wai
 | Dispatcher clocks, counters, COP0 | `dispatcher` | `Dispatcher::serialize` |
 | Threads and their frames, ready queues, semaphores, handlers, queued handlers, vblanks, deadlines | `kernel` | `Kernel::serialize` |
 | Heap, pad, memory cards (in memory), CD, VU0 image, I/O, MPEG, SIF, timers, library continuations | `libraries` | `libs/libraries_state.cpp` |
+| The 989SND driver: banks, handles, slots; its engine's IOP memory, clocks, mixer, libsd and 989SND's own model | `snd`, `snd989-engine` | `SndDriver::serialize`, `snd989::Engine::serialize` |
 | Frame count, last frame's clock | `host` | `FreeHost::serializeAll` |
 | Whatever a port adds | its own name | `state::Sections` |
 
@@ -87,8 +88,7 @@ Things a port must think about:
 
 ## Not covered yet
 
-- The 989SND driver (`libs::SndDriver` with its engine) and a playing movie (the decoder): a save waits, with the
-  reason, until they are idle.
+- A playing movie (the decoder): a save waits, with the reason, until it ends.
 - Recorded and pinned runs (`--out`, the reference harness): their records do not follow a load.
 
 A failed load in the middle of a run puts the state back as it was (the runtime saves itself first); a failed load

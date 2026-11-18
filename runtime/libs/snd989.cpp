@@ -4,12 +4,14 @@
 // 989SND's behaviour on the native mixer. Section references are to docs/specs/989snd.md (Part A programs, voices
 // and the tick; Part B MIDI; Part C streams) and docs/specs/iop-timing.md for the clock. See bozo/libs/snd989.h.
 #include "bozo/libs/snd989.h"
+#include "bozo/state.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace bozo::libs::snd989
 {
@@ -392,6 +394,9 @@ namespace bozo::libs::snd989
             const uint8_t *program(int i) const { return &h[programs + 8u * static_cast<uint32_t>(i)]; }
         };
         std::vector<std::unique_ptr<Bank>> banks; // load order
+        // Unloaded banks, kept: a voice or handler still playing reads its tone and program records after the game freed
+        // the bank (989SND reads IOP memory, which stays until reused). Headers only (the samples are in sound memory).
+        std::vector<std::unique_ptr<Bank>> retired;
         std::vector<Block> blocks;                 // the MIDI block list (load order)
 
         Bank *bankAt(uint32_t address)
@@ -2441,6 +2446,281 @@ namespace bozo::libs::snd989
                 reverbType[core] = type;
             }
         }
+
+        // ---- save states (bozo/state.h) ----
+        // Two passes: the containers and plain fields first (banks, handlers and buffers exist after it on a load),
+        // then the pointers, each as data: a byte of a bank as (bank, chunk, offset), a handler as (table, index), a
+        // MIDI as (bank, index), a stream buffer as its index.
+        size_t bankCount() const { return banks.size() + retired.size(); }
+        Bank *bankByIndex(size_t i) { return i < banks.size() ? banks[i].get() : retired[i - banks.size()].get(); }
+        void ioBytes(state::Archive &a, const uint8_t *&p, const char *what = "")
+        {
+            int32_t bank = -1, chunk = 0;
+            uint64_t offset = 0;
+            if (!a.loading() && p)
+            {
+                for (size_t b = 0; b < bankCount() && bank < 0; ++b)
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        const std::vector<uint8_t> &v = c ? bankByIndex(b)->midi : bankByIndex(b)->h;
+                        if (!v.empty() && p >= v.data() && p <= v.data() + v.size())
+                        {
+                            bank = static_cast<int32_t>(b);
+                            chunk = c;
+                            offset = static_cast<uint64_t>(p - v.data());
+                            break;
+                        }
+                    }
+                if (bank < 0)
+                    throw state::Error(std::string("save state: a 989SND pointer outside its banks: ") + what);
+            }
+            state::fields(a, bank, chunk, offset);
+            if (a.loading())
+            {
+                if (bank < 0)
+                {
+                    p = nullptr;
+                    return;
+                }
+                if (static_cast<size_t>(bank) >= bankCount())
+                    throw state::Error("save state: a 989SND pointer to a bank that is not there");
+                const std::vector<uint8_t> &v = chunk ? bankByIndex(bank)->midi : bankByIndex(bank)->h;
+                if (offset > v.size())
+                    throw state::Error("save state: a 989SND pointer past its bank");
+                p = v.data() + offset;
+            }
+        }
+        void ioBank(state::Archive &a, Bank *&b)
+        {
+            int32_t i = -1;
+            if (!a.loading() && b)
+            {
+                for (size_t k = 0; k < bankCount(); ++k)
+                    if (bankByIndex(k) == b)
+                        i = static_cast<int32_t>(k);
+                if (i < 0)
+                    throw state::Error("save state: a 989SND bank that is not there");
+            }
+            state::io(a, i);
+            if (a.loading())
+                b = i < 0 || static_cast<size_t>(i) >= bankCount() ? nullptr : bankByIndex(i);
+        }
+        void ioMidi(state::Archive &a, Midi *&m)
+        {
+            int32_t bank = -1, i = -1;
+            if (!a.loading() && m)
+                for (size_t k = 0; k < bankCount() && bank < 0; ++k)
+                    for (size_t j = 0; j < bankByIndex(k)->mids.size(); ++j)
+                        if (bankByIndex(k)->mids[j].get() == m)
+                        {
+                            bank = static_cast<int32_t>(k);
+                            i = static_cast<int32_t>(j);
+                            break;
+                        }
+            state::fields(a, bank, i);
+            if (a.loading())
+                m = bank < 0 || static_cast<size_t>(bank) >= bankCount() || i < 0 ||
+                            static_cast<size_t>(i) >= bankByIndex(bank)->mids.size()
+                        ? nullptr
+                        : bankByIndex(bank)->mids[i].get();
+        }
+        void ioHandler(state::Archive &a, Handler *&h)
+        {
+            int32_t kind = 0, i = 0;
+            if (!a.loading() && h)
+            {
+                if (h >= H.data() && h < H.data() + H.size())
+                    kind = 1, i = static_cast<int32_t>(h - H.data());
+                else if (h >= M.data() && h < M.data() + M.size())
+                    kind = 2, i = static_cast<int32_t>(h - M.data());
+                else if (!S.empty() && h >= S.data() && h < S.data() + S.size())
+                    kind = 3, i = static_cast<int32_t>(h - S.data());
+                else
+                    throw state::Error("save state: a 989SND handler outside its tables");
+            }
+            state::fields(a, kind, i);
+            if (a.loading())
+            {
+                Handler *base = kind == 1 ? H.data() : kind == 2 ? M.data() : kind == 3 ? S.data() : nullptr;
+                const size_t size = kind == 1 ? H.size() : kind == 2 ? M.size() : kind == 3 ? S.size() : 0;
+                if (kind && (i < 0 || static_cast<size_t>(i) >= size))
+                    throw state::Error("save state: a 989SND handler that is not there");
+                h = base ? base + i : nullptr;
+            }
+        }
+        void ioBuffer(state::Archive &a, Buffer *&b)
+        {
+            int32_t i = -1;
+            if (!a.loading() && b)
+            {
+                for (size_t k = 0; k < buffers.size(); ++k)
+                    if (buffers[k].get() == b)
+                        i = static_cast<int32_t>(k);
+                if (i < 0)
+                    throw state::Error("save state: a 989SND stream buffer that is not there");
+            }
+            state::io(a, i);
+            if (a.loading())
+                b = i < 0 || static_cast<size_t>(i) >= buffers.size() ? nullptr : buffers[i].get();
+        }
+        static void ioHandlerFields(state::Archive &a, Handler &h)
+        {
+            state::fields(a, h.handle, h.type, h.used, h.sndVol, h.sndPan, h.vol, h.pan, h.pm, h.pb, h.flags, h.group,
+                          h.mask, h.effect, h.note, h.fine, h.count, h.tempo, h.ppq, h.x, h.step, h.rem, h.mute, h.sustain,
+                          h.prog, h.chVol, h.chPan, h.chBend, h.first, h.runStatus, h.loops);
+        }
+        void ioHandlerPointers(state::Archive &a, Handler &h)
+        {
+            ioBytes(a, h.sound, h.used ? "handler sound (used)" : "handler sound (free)");
+            ioHandler(a, h.next);
+            ioBank(a, h.bank);
+            ioBytes(a, h.loopStart, h.used ? "handler loop (used)" : "handler loop (free)");
+            ioBytes(a, h.ptr, h.used ? "handler ptr (used)" : "handler ptr (free)");
+            ioBuffer(a, h.bufL);
+        }
+        void serialize(state::Archive &a)
+        {
+            using state::fields;
+            a.begin("snd989");
+            fields(a, traceCalls, inBatch, tickService, cost, root, voiceHead, now, reverbMask, pendingKon, pendingKoff,
+                   keyedOn, keyedOff, groupVol, playbackMode, panL, panR, streaming, keyOnPending, events, reverbDepth,
+                   reverbClear, reverbClearCh, movieCh, movieBuf, movieVol, moviePan, movieGroup, reverbType, reverbArea,
+                   silent);
+            uint64_t n = state::count(a, callLog.size());
+            if (a.loading())
+                callLog.assign(n, CallRec{});
+            for (CallRec &c : callLog)
+                fields(a, c.ordinal, c.entry, c.offset, c.result);
+            for (Node &node : nodes)
+                fields(a, node.start, node.size, node.used, node.parent, node.left, node.right);
+            for (EffectNode &f : nodesFx)
+                fields(a, f.flags, f.count, f.mode, f.step, f.period, f.target);
+
+            // Pass 1: containers and plain fields.
+            for (auto *list : {&banks, &retired})
+            {
+                n = state::count(a, list->size());
+                if (a.loading())
+                {
+                    list->clear();
+                    for (uint64_t i = 0; i < n; ++i)
+                        list->push_back(std::make_unique<Bank>());
+                }
+            }
+            for (size_t k = 0; k < bankCount(); ++k)
+            {
+                Bank *b = bankByIndex(k);
+                fields(a, b->address, b->id, b->number, b->h, b->midi, b->spu, b->spuBytes, b->soundCount, b->programCount,
+                       b->sounds, b->programs);
+                const uint64_t mids = state::count(a, b->mids.size());
+                if (a.loading())
+                {
+                    b->mids.clear();
+                    for (uint64_t i = 0; i < mids; ++i)
+                        b->mids.push_back(std::make_unique<Midi>());
+                }
+                for (auto &m : b->mids)
+                    fields(a, m->id, m->bankId, m->tempo, m->ppq);
+            }
+            n = state::count(a, blocks.size());
+            if (a.loading())
+                blocks.assign(n, Block{});
+            for (Block &b : blocks)
+            {
+                fields(a, b.id, b.multi);
+                const uint64_t subs = state::count(a, b.subs.size());
+                if (a.loading())
+                    b.subs.assign(subs, nullptr);
+            }
+            for (Voice &v : V)
+            {
+                uint8_t cb = static_cast<uint8_t>(v.cb);
+                fields(a, v.next, v.state, cb, v.note, v.fine, v.prio, v.group, v.age, v.volL, v.volR, v.pb, v.pm, v.ch,
+                       v.vel, v.sustained);
+                v.cb = static_cast<Cb>(cb);
+            }
+            for (Handler &h : H)
+                ioHandlerFields(a, h);
+            for (Handler &h : M)
+                ioHandlerFields(a, h);
+            n = state::count(a, S.size());
+            if (a.loading())
+                S.assign(n, Handler{});
+            for (Handler &h : S)
+                ioHandlerFields(a, h);
+            n = state::count(a, buffers.size());
+            if (a.loading())
+            {
+                buffers.clear();
+                for (uint64_t i = 0; i < n; ++i)
+                    buffers.push_back(std::make_unique<Buffer>());
+            }
+            for (auto &b : buffers)
+            {
+                fields(a, b->flags, b->size, b->spuA, b->half64, b->lastNax, b->swapTick, b->err, b->voice, b->nextLbn,
+                       b->firstLbn, b->off, b->toRead, b->total, b->played, b->rate, b->last124, b->vol, b->pan, b->group,
+                       b->pitch);
+                for (Request &r : b->req)
+                    fields(a, r.flags, r.spu, r.last, r.bytes, r.iop);
+            }
+            n = state::count(a, keyOns.size());
+            if (a.loading())
+                keyOns.assign(n, Pending{0, nullptr});
+            n = state::count(a, pendingStarts.size());
+            if (a.loading())
+                pendingStarts.assign(n, nullptr);
+            n = state::count(a, refills.size());
+            if (a.loading())
+                refills.assign(n, Refill{nullptr, 0});
+
+            // Pass 2: the pointers.
+            for (size_t k = 0; k < bankCount(); ++k)
+                for (auto &m : bankByIndex(k)->mids)
+                {
+                    ioBank(a, m->owner);
+                    ioBank(a, m->bank);
+                    ioBytes(a, m->data, "midi data");
+                }
+            for (Block &b : blocks)
+            {
+                ioBank(a, b.owner);
+                ioMidi(a, b.mid);
+                for (Midi *&m : b.subs)
+                    ioMidi(a, m);
+            }
+            for (Voice &v : V)
+            {
+                ioHandler(a, v.owner);
+                ioBytes(a, v.tone, v.state ? "voice tone (busy)" : "voice tone (idle)");
+                ioBytes(a, v.prog, v.state ? "voice prog (busy)" : "voice prog (idle)");
+            }
+            for (Handler &h : H)
+                ioHandlerPointers(a, h);
+            for (Handler &h : M)
+                ioHandlerPointers(a, h);
+            for (Handler &h : S)
+                ioHandlerPointers(a, h);
+            ioHandler(a, hHead);
+            ioHandler(a, hTail);
+            for (auto &b : buffers)
+            {
+                ioBuffer(a, b->R);
+                ioHandler(a, b->stream);
+            }
+            for (Pending &k : keyOns)
+            {
+                fields(a, k.at);
+                ioBuffer(a, k.b);
+            }
+            for (Buffer *&b : pendingStarts)
+                ioBuffer(a, b);
+            for (Refill &r : refills)
+            {
+                fields(a, r.i);
+                ioBuffer(a, r.b);
+            }
+            a.end();
+        }
     };
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -2453,6 +2733,17 @@ namespace bozo::libs::snd989
     }
 
     Engine::~Engine() = default;
+
+    void Engine::serialize(state::Archive &a)
+    {
+        a.begin("snd989-engine");
+        state::pod(a, timing);
+        state::fields(a, lead, m_ram, m_clock, m_now, m_nextDue, m_ticks, m_started, m_dumped, m_movieBuffer, m_bankRephased);
+        m_mixer->serialize(a, m_ram.data(), m_ram.size());
+        m_libsd->serialize(a);
+        m_impl->serialize(a);
+        a.end();
+    }
 
     void Engine::bankLoaded(uint32_t address, const std::vector<uint8_t> &header, const std::vector<uint8_t> &samples,
                             const std::vector<uint8_t> &midi)
@@ -2566,6 +2857,7 @@ namespace bozo::libs::snd989
                     I.spuFree((*it)->spu, (*it)->spuBytes);
                 Impl::Bank *b = it->get();
                 std::erase_if(I.blocks, [&](const Impl::Block &k) { return k.owner == b; });
+                I.retired.push_back(std::move(*it));
                 I.banks.erase(it);
                 return;
             }
