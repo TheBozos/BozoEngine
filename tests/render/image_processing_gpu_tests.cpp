@@ -100,8 +100,12 @@ int main(){try{
             ++samples;const int actual=pixels[(24*64+unsigned(x)*4+2)*4];
             if(actual!=int(c)){if(failures<12)std::printf("lerp chain x=%d got%d expected%d\n",x,actual,int(c));++failures;}}
     }
+    // Line batches: one horizontal segment lights its own row only (GL_LINES, one pixel wide).
+    {r.beginFrame(screen);auto line=plain;line.lines=true;line.directColour=true;Vertex pair[2]{};
+     pair[0].x=4;pair[0].y=20.5f;pair[1].x=60;pair[1].y=20.5f;pair[0].rgba=pair[1].rgba=0x80c8c8c8u;r.draw(line,id,pair,2);present();
+     for(unsigned x:{8u,32u,56u}){expect(x,48-1-20,200);expect(x,48-1-24,0);expect(x,48-1-16,0);}}
     // Optional shader state must reset on the next ordinary draw/frame.
     r.beginFrame(screen);quad(plain,0x80202020);present();expect(32,24,64);
     r.releaseGpu();SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::printf("native blur/depth lookup/depth colours/alpha images/frame depth/lerp chain/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
+    std::printf("native blur/depth lookup/depth colours/lines/alpha images/frame depth/lerp chain/per-draw resize/reset: %u samples, %u failures\n",samples,failures);return failures?1:0;
 }catch(const std::exception &e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -36,6 +36,15 @@ int main(){
      lookup.imageProcessing=colours;const auto colourHash=publish(lookup);
      auto plainGrey=std::make_shared<Material::ImageProcessing>(*grey);lookup.imageProcessing=plainGrey;
      if(colourHash==greyHash || colourHash==publish(lookup) || r.published()->batches.empty())++failures;}
+    // Line batches: segment pairs, part of the digest; an odd count, image processing or an overlay rejects.
+    {Material line;line.textured=false;line.lines=true;Vertex pair[2]{};
+     const auto withLines=[&]{r.beginFrame(Screen{});r.draw(line,id,pair,2);r.endFrame();return r.takeFrameDraws().hash;}();
+     Material solid=line;solid.lines=false;Vertex tri[3]{};r.beginFrame(Screen{});r.draw(solid,id,tri,3);r.endFrame();const auto triangles=r.takeFrameDraws().hash;
+     if(withLines==triangles || r.published()->batches.empty())++failures;
+     for(unsigned which=0;which<3;++which){r.beginFrame(Screen{});bool rejected=false;
+        try{if(which==0)r.draw(line,id,tri,3);else if(which==1){auto p=line;p.imageProcessing=std::make_shared<Material::ImageProcessing>();r.draw(p,id,pair,2);}
+            else r.drawOverlay(line,pair,2,nullptr);}catch(const std::invalid_argument &){rejected=true;}
+        r.endFrame();r.takeFrameDraws();if(!rejected)++failures;}}
     bool caught=false;try{r.drawOverlay(m,v,3,nullptr);}catch(const std::invalid_argument &){caught=true;}if(!caught)++failures;
     std::printf("native image publication, immutable parameters, digests and 19 admission guards: %u failures\n",failures);return failures?1:0;
 }

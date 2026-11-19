@@ -35,6 +35,7 @@ namespace bozo::render::gl
     // ---- Constants (OpenGL 3.3 core) ----
     constexpr GLenum kFalse = 0, kTrue = 1;
     constexpr GLenum kTriangles = 0x0004;
+    constexpr GLenum kLines = 0x0001;
     constexpr GLenum kUnsignedByte = 0x1401, kUnsignedInt = 0x1405, kFloat = 0x1406;
     constexpr GLenum kZero = 0, kOne = 1, kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303;
     constexpr GLenum kDstAlpha = 0x0304;
