@@ -177,6 +177,7 @@ uniform int uImageRadius;
 uniform vec4 uImageStep;
 uniform vec4 uImageKernel[5];
 uniform int uImageDepth;
+uniform int uImageDepthColours;
 uniform sampler2D uImageDepthTex;
 uniform vec4 uImageWeights[64];
 uniform vec4 uImageSize;
@@ -242,8 +243,13 @@ void main()
     vec4 texel = uTextured != 0 ? sampled() * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if(uImageDepth != 0) {
         float depth=texture(uImageDepthTex,gl_FragCoord.xy/uImageSize.xy).r;
-        int index=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,255.0));
-        texel=vec4(vec3(uImageWeights[index/4][index%4]),1.0);
+        if(uImageDepthColours != 0) {
+            int entry=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,63.0));
+            texel=uImageWeights[entry];
+        } else {
+            int index=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,255.0));
+            texel=vec4(vec3(uImageWeights[index/4][index%4]),1.0);
+        }
     }
     if (uTarget == 1)
         texel.a = 1.0;
@@ -394,7 +400,7 @@ void main()
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locUvBounds = -1, locDirectColour = -1, locTex = -1, locTextured = -1, locTarget = -1,
                   locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
                   locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
-                  locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthTex=-1,
+                  locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthColours=-1,locImageDepthTex=-1,
                   locImageWeights=-1,locImageSize=-1,locImageAlpha=-1,locImageAlphaTex=-1,
                   locImageChain=-1,locImageChainTaps=-1,locImageChainColour=-1,
                   locLodMode = -1, locLodScale = -1, locLodBias = -1;
@@ -782,6 +788,7 @@ void main()
             locImageStep=g.GetUniformLocation(shader,"uImageStep");
             locImageKernel=g.GetUniformLocation(shader,"uImageKernel[0]");
             locImageDepth=g.GetUniformLocation(shader,"uImageDepth");
+            locImageDepthColours=g.GetUniformLocation(shader,"uImageDepthColours");
             locImageDepthTex=g.GetUniformLocation(shader,"uImageDepthTex");
             locImageWeights=g.GetUniformLocation(shader,"uImageWeights[0]");
             locImageSize=g.GetUniformLocation(shader,"uImageSize");
@@ -1880,6 +1887,7 @@ void main()
             const auto *processing=m.imageProcessing.get();
             g.Uniform1i(gpu.locImageRadius,processing?processing->radius:0);
             g.Uniform1i(gpu.locImageDepth,processing && processing->depthLookup);
+            g.Uniform1i(gpu.locImageDepthColours,processing && processing->depthLookup && processing->depthColours);
             g.Uniform1i(gpu.locImageAlpha,processing && processing->alphaSource);
             g.Uniform1i(gpu.locImageChain,processing?processing->chainTaps:0);
             if(processing && processing->chainTaps){
