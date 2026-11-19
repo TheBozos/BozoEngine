@@ -2034,7 +2034,7 @@ void main()
             readDepthTiles(w, h, screen);
         g.DepthMask(gl::kTrue);
         g.Disable(gl::kDepthTest);
-        g.BindFramebuffer(gl::kFramebuffer, 0);
+        g.BindFramebuffer(gl::kFramebuffer, m_presentFramebuffer);
         g.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
         // Under the frame, as the display merges it: the picture the game shows through circuit 2 (a menu's movie frame,

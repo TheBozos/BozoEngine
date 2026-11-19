@@ -360,6 +360,9 @@ namespace bozo::render
         // the window (pixels from its top left; the current framebuffer, its viewport the window); false when there is
         // nothing to draw yet.
         bool present(float x, float y, float width, float height);
+        // The framebuffer present() draws into (0: the window's). A window that captures its pictures presents into one
+        // of its own: a covered, minimised or sleeping window's own pixels read back undefined (black).
+        void setPresentFramebuffer(unsigned framebuffer) { m_presentFramebuffer = framebuffer; }
         // Waits up to timeout seconds for a frame (or a movie picture) published after the one counted in seen, and
         // counts it there: the window shows each game frame once, on the game's clock.
         bool waitForFrame(uint64_t &seen, double timeout);
@@ -436,6 +439,7 @@ namespace bozo::render
         std::condition_variable m_publishedChanged;
         FrameDraws m_draws;
         std::atomic<float> m_renderScale{1.0f};
+        unsigned m_presentFramebuffer = 0; // present thread only
         std::atomic<uint32_t> m_textureUpscale{1u};
 
         // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.

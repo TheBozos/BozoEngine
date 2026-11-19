@@ -72,8 +72,9 @@ namespace bozo::app
                 m_thread.join();
             }
 
-            // The back buffer (pixels w x h) now, saved as path.
-            void capture(const std::string &path, int w, int h)
+            // The picture (pixels w x h) now, saved as path: framebuffer `from`'s colour (0: the window's back buffer,
+            // whose pixels are undefined while the window is covered, minimised or its display asleep).
+            void capture(const std::string &path, int w, int h, render::gl::GLuint from = 0)
             {
                 const render::gl::Api &g = render::gl::api();
                 Job job;
@@ -81,9 +82,11 @@ namespace bozo::app
                 job.width = w;
                 job.height = h;
                 job.pixels.resize(static_cast<size_t>(w) * h * 4u);
-                g.ReadBuffer(render::gl::kBack);
+                g.BindFramebuffer(render::gl::kReadFramebuffer, from);
+                g.ReadBuffer(from ? render::gl::kColorAttachment0 : render::gl::kBack);
                 g.PixelStorei(render::gl::kPackAlignment, 4);
                 g.ReadPixels(0, 0, w, h, render::gl::kRgba, render::gl::kUnsignedByte, job.pixels.data());
+                g.BindFramebuffer(render::gl::kReadFramebuffer, 0);
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
                     m_jobs.push_back(std::move(job));
@@ -270,6 +273,8 @@ namespace bozo::app
         uint64_t runFirstFrames = 0;
         Clock::time_point runFirst{};
         uint64_t seen = 0;
+        render::gl::GLuint pictureFbo = 0, pictureColour = 0, pictureDepth = 0; // the game's picture (see below)
+        int pictureWidth = 0, pictureHeight = 0;
         int swapRate = 0; // the frame rate the swap interval was set for
         Clock::time_point nextPresent{};
         while (!quit)
@@ -381,7 +386,36 @@ namespace bozo::app
             SDL_GetWindowSizeInPixels(window, &pw, &ph);
             pw = std::max(pw, 1);
             ph = std::max(ph, 1);
-            g.BindFramebuffer(render::gl::kFramebuffer, 0);
+            // The game's picture is drawn into a framebuffer of the window's size, then copied to the window: captures
+            // read it there, whether or not the window can be seen.
+            if (pictureWidth != pw || pictureHeight != ph)
+            {
+                if (!pictureFbo)
+                {
+                    g.GenFramebuffers(1, &pictureFbo);
+                    g.GenRenderbuffers(1, &pictureColour);
+                    g.GenRenderbuffers(1, &pictureDepth);
+                }
+                g.BindRenderbuffer(render::gl::kRenderbuffer, pictureColour);
+                g.RenderbufferStorage(render::gl::kRenderbuffer, render::gl::kRgba8, pw, ph);
+                g.BindRenderbuffer(render::gl::kRenderbuffer, pictureDepth);
+                g.RenderbufferStorage(render::gl::kRenderbuffer, render::gl::kDepth24Stencil8, pw, ph);
+                g.BindFramebuffer(render::gl::kFramebuffer, pictureFbo);
+                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kColorAttachment0, render::gl::kRenderbuffer,
+                                          pictureColour);
+                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kDepthStencilAttachment,
+                                          render::gl::kRenderbuffer, pictureDepth);
+                if (g.CheckFramebufferStatus(render::gl::kFramebuffer) != render::gl::kFramebufferComplete)
+                {
+                    std::fprintf(stderr, "[window] the %d x %d picture framebuffer is incomplete: drawing to the window\n", pw, ph);
+                    g.DeleteFramebuffers(1, &pictureFbo);
+                    pictureFbo = 0;
+                }
+                pictureWidth = pw;
+                pictureHeight = ph;
+            }
+            renderer.setPresentFramebuffer(pictureFbo);
+            g.BindFramebuffer(render::gl::kFramebuffer, pictureFbo);
             g.Viewport(0, 0, pw, ph);
             g.Disable(render::gl::kScissorTest);
             g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -395,6 +429,14 @@ namespace bozo::app
             else
                 rh = rw / options.aspect;
             renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
+            if (pictureFbo)
+            {
+                g.BindFramebuffer(render::gl::kReadFramebuffer, pictureFbo);
+                g.BindFramebuffer(render::gl::kDrawFramebuffer, 0);
+                g.BlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph, render::gl::kColorBufferBit, render::gl::kNearest);
+                g.BindFramebuffer(render::gl::kFramebuffer, 0);
+                g.Viewport(0, 0, pw, ph);
+            }
             ++presents;
             ++ratesPresents;
 
@@ -412,7 +454,7 @@ namespace bozo::app
             {
                 char name[64];
                 std::snprintf(name, sizeof(name), "frame_%06llu.png", static_cast<unsigned long long>(framesBefore));
-                writer.capture(captureDir + "/" + name, pw, ph);
+                writer.capture(captureDir + "/" + name, pw, ph, pictureFbo);
                 if (options.onCaptured)
                     options.onCaptured(framesBefore);
             }
@@ -422,7 +464,7 @@ namespace bozo::app
                 ensureDir(intervalDir);
                 char name[64];
                 std::snprintf(name, sizeof(name), "interval_%08llu.png", ms);
-                writer.capture(intervalDir + "/" + name, pw, ph);
+                writer.capture(intervalDir + "/" + name, pw, ph, pictureFbo);
             }
 
             // The overlay's rates, every half second.
