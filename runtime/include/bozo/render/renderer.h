@@ -55,6 +55,9 @@ namespace bozo::render
             bool depthLookup = false;
             float depthScale = 255;
             std::array<float,256> depthWeights{};
+            // With depthLookup: depthWeights holds 64 RGBA entries instead (each 0..1; alpha 1.0 is the GS's 0x80),
+            // the index clamped to 63; the entry replaces the sampled texel (a port's depth fog ramp).
+            bool depthColours = false;
             // Multiply output alpha by an auxiliary image's green channel.
             // Zero disables it; reading the draw target itself is rejected.
             uint8_t alphaSource = 0;

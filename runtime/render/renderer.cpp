@@ -208,7 +208,8 @@ namespace bozo::render
                 h=hash::xxh64(p.weights.data(),sizeof(float)*(p.radius+1),h);
                 h=hash::xxh64(p.step.data(),sizeof(float)*2,h);
                 h=hash::xxh64(&p.depthLookup,sizeof(p.depthLookup),h);
-                if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);}
+                if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);
+                    if(p.depthColours){const uint64_t colours=0x4445505448524742ull;h=hash::xxh64(&colours,sizeof(colours),h);}}
                 h=hash::xxh64(&p.alphaSource,sizeof(p.alphaSource),h);
                 h=hash::xxh64(&p.alphaScale,sizeof(float),h);
                 if(p.chainTaps){h=hash::xxh64(&p.chainTaps,sizeof(p.chainTaps),h);h=hash::xxh64(&p.chainColour,sizeof(float),h);
@@ -271,6 +272,7 @@ namespace bozo::render
                 throw std::invalid_argument("invalid native image operation");
             for(unsigned i=0;i<=p.radius;++i)if(!std::isfinite(p.weights[i]) || p.weights[i]<0)
                 throw std::invalid_argument("invalid native image kernel");
+            if(p.depthColours && !p.depthLookup)throw std::invalid_argument("invalid native depth colours");
             if(p.depthLookup)for(float weight:p.depthWeights)if(!std::isfinite(weight) || weight<0 || weight>1)
                 throw std::invalid_argument("invalid native depth opacity");
             if(p.chainTaps){
