@@ -2042,7 +2042,7 @@ void main()
                 g.Disable(gl::kScissorTest);
                 scissored = false;
             }
-            g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
+            g.DrawArrays(m.lines ? gl::kLines : gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
         }
         g.Disable(gl::kStencilTest);
         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);

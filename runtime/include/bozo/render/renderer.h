@@ -119,6 +119,8 @@ namespace bozo::render
         // draw into it in a later frame: a game's frame snapshot drawn while it fades is copied once, then sampled.
         static constexpr uint8_t kAuxiliaryImages = 16;
         bool nearest = false;
+        // The vertices are line segments (pairs, one pixel wide: the GS's LINE / LINE STRIP) instead of triangles.
+        bool lines = false;
         // Native colour correction after texturing/fog, before blending:
         // RGB = clamp(gain * max(0, min(RGB, high) - low), 0, 1).
         // Alpha is preserved. Off by default; values are copied with the batch.

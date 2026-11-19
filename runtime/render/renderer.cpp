@@ -188,6 +188,11 @@ namespace bozo::render
                 h = hash::xxh64(&mip, sizeof(mip), h);
             }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
+            if (m.lines)
+            {
+                const uint64_t tag = 0x4c494e4553000000ull;
+                h = hash::xxh64(&tag, sizeof(tag), h);
+            }
             if (m.levels.enabled)
             {
                 const uint64_t tag = 0x434f4c4f55524c56ull;
@@ -260,6 +265,8 @@ namespace bozo::render
     {
         if (count == 0u)
             return;
+        if (material.lines && (count % 2u != 0u || material.imageProcessing))
+            throw std::invalid_argument("invalid native line batch");
         if ((material.targetWidth==0)!=(material.targetHeight==0) ||
             (material.targetWidth && (!material.target || material.targetWidth>4096 || material.targetHeight>4096)))
             throw std::invalid_argument("invalid per-draw image dimensions");
@@ -338,6 +345,8 @@ namespace bozo::render
             throw std::invalid_argument("native colour levels require a frame draw");
         if(material.imageProcessing || material.targetWidth || material.targetHeight)
             throw std::invalid_argument("native image processing requires a frame draw");
+        if (material.lines)
+            throw std::invalid_argument("native line batches require a frame draw");
         if (count == 0u || m_overlayBuilding.vertices.size() > (1u << 20))
             return; // (never published: a port that does not publish keeps the latest million vertices' worth out)
         Batch batch;
