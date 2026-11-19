@@ -40,6 +40,11 @@ namespace bozo::app
         // applied its command line there) instead of width / height / fullscreen / renderScale.
         bool videoSettings = false;
         bool panel = true; // F2 / F3 (Dear ImGui)
+        // A test run that shows nothing: the window is never shown (the game still renders into the renderer's target),
+        // and captures read that target (captureScene: the renderer's picture, its size, no overlays; also
+        // PS2X_CAPTURE_SCENE=1), since a hidden or covered window's back buffer reads back black.
+        bool hidden = false;
+        bool captureScene = false;
     };
 
     // What the window runs and how it talks to it.

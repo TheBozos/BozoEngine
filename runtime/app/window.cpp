@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -62,6 +63,7 @@ namespace bozo::app
         {
         public:
             CaptureWriter() : m_thread([this] { run(); }) {}
+            void readOffscreen(bool offscreen) { m_offscreen = offscreen; }
             ~CaptureWriter()
             {
                 {
@@ -81,7 +83,9 @@ namespace bozo::app
                 job.width = w;
                 job.height = h;
                 job.pixels.resize(static_cast<size_t>(w) * h * 4u);
-                g.ReadBuffer(render::gl::kBack);
+                // From the back buffer, or from the offscreen picture the window presents into when nothing may depend
+                // on the window being visible (WindowOptions::captureScene / hidden, PS2X_CAPTURE_SCENE=1).
+                g.ReadBuffer(m_offscreen ? render::gl::GLenum(0x8CE0) /* GL_COLOR_ATTACHMENT0 */ : render::gl::kBack);
                 g.PixelStorei(render::gl::kPackAlignment, 4);
                 g.ReadPixels(0, 0, w, h, render::gl::kRgba, render::gl::kUnsignedByte, job.pixels.data());
                 {
@@ -126,6 +130,7 @@ namespace bozo::app
             std::condition_variable m_wake;
             std::deque<Job> m_jobs;
             bool m_stop = false;
+            bool m_offscreen = false; // captures read the offscreen picture (WindowOptions::captureScene)
             std::thread m_thread;
         };
 
@@ -165,7 +170,8 @@ namespace bozo::app
         const int openHeight = videoSettings ? video::edited().height : options.height;
         SDL_Window *window = SDL_CreateWindow(options.title.c_str(), openWidth, openHeight,
                                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                                  (!videoSettings && options.fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+                                                  (options.hidden ? SDL_WINDOW_HIDDEN : 0) |
+                                                  (!videoSettings && !options.hidden && options.fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (!window)
         {
             std::fprintf(stderr, "[window] SDL_CreateWindow: %s\n", SDL_GetError());
@@ -258,6 +264,13 @@ namespace bozo::app
         std::ofstream sequenceLog;
         bool burst = false;
         CaptureWriter writer;
+        // The window presents into an offscreen picture (then copied to the window when it is shown) when captures must
+        // not depend on the window being visible: a hidden or covered window's back buffer reads back black.
+        static const bool sceneByEnv = [] { const char *v = std::getenv("PS2X_CAPTURE_SCENE"); return v && *v == '1'; }();
+        const bool offscreen = options.captureScene || options.hidden || sceneByEnv;
+        writer.readOffscreen(offscreen);
+        render::gl::GLuint offFbo = 0, offColour = 0, offDepth = 0;
+        int offWidth = 0, offHeight = 0;
         bool quit = false;
 
         using Clock = std::chrono::steady_clock;
@@ -381,7 +394,26 @@ namespace bozo::app
             SDL_GetWindowSizeInPixels(window, &pw, &ph);
             pw = std::max(pw, 1);
             ph = std::max(ph, 1);
-            g.BindFramebuffer(render::gl::kFramebuffer, 0);
+            if (offscreen && (offFbo == 0 || offWidth != pw || offHeight != ph))
+            {
+                if (offFbo == 0)
+                {
+                    g.GenFramebuffers(1, &offFbo);
+                    g.GenTextures(1, &offColour);
+                    g.GenRenderbuffers(1, &offDepth);
+                }
+                g.BindTexture(render::gl::kTexture2D, offColour);
+                g.TexImage2D(render::gl::kTexture2D, 0, static_cast<render::gl::GLint>(render::gl::kRgba8), pw, ph, 0, render::gl::kRgba,
+                             render::gl::kUnsignedByte, nullptr);
+                g.BindRenderbuffer(render::gl::kRenderbuffer, offDepth);
+                g.RenderbufferStorage(render::gl::kRenderbuffer, render::gl::kDepth24Stencil8, pw, ph);
+                g.BindFramebuffer(render::gl::kFramebuffer, offFbo);
+                g.FramebufferTexture2D(render::gl::kFramebuffer, render::gl::kColorAttachment0, render::gl::kTexture2D, offColour, 0);
+                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kDepthStencilAttachment, render::gl::kRenderbuffer, offDepth);
+                offWidth = pw;
+                offHeight = ph;
+            }
+            g.BindFramebuffer(render::gl::kFramebuffer, offscreen ? offFbo : 0);
             g.Viewport(0, 0, pw, ph);
             g.Disable(render::gl::kScissorTest);
             g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -492,6 +524,14 @@ namespace bozo::app
                 char name[64];
                 std::snprintf(name, sizeof(name), "burst_%08llu.png", ms);
                 writer.capture(captureDir + "/" + name, pw, ph);
+            }
+            if (offscreen)
+            {
+                // The offscreen picture to the window (shown or not), then the panel goes on top as usual.
+                g.BindFramebuffer(render::gl::kReadFramebuffer, offFbo);
+                g.BindFramebuffer(render::gl::kDrawFramebuffer, 0);
+                g.BlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph, render::gl::kColorBufferBit, render::gl::GLenum(0x2600) /* GL_NEAREST */);
+                g.BindFramebuffer(render::gl::kFramebuffer, 0);
             }
             SDL_GL_SwapWindow(window);
 

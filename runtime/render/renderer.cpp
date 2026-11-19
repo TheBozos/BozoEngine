@@ -175,7 +175,8 @@ namespace bozo::render
             }
             if (m.stencilOp != Material::StencilOp::None || m.stencilNotZero || m.stencilClear)
             {
-                const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9;
+                const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9 |
+                                         uint64_t(m.stencilDepthFail) << 10;
                 h = hash::xxh64(&stencil, sizeof(stencil), h);
             }
             if (m.mipmap.levels != 0u)

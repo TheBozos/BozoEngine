@@ -141,6 +141,8 @@ namespace bozo::render::gl
     X(void, GenFramebuffers, (GLsizei n, GLuint *framebuffers))                                                        \
     X(void, DeleteFramebuffers, (GLsizei n, const GLuint *framebuffers))                                               \
     X(void, BindFramebuffer, (GLenum target, GLuint framebuffer))                                                      \
+    X(void, BlitFramebuffer, (GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1,   \
+                              GLbitfield mask, GLenum filter))                                                         \
     X(void, FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level))   \
     X(void, FramebufferRenderbuffer, (GLenum target, GLenum attachment, GLenum rbtarget, GLuint renderbuffer))         \
     X(GLenum, CheckFramebufferStatus, (GLenum target))                                                                 \

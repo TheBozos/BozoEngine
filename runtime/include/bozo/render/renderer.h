@@ -189,6 +189,9 @@ namespace bozo::render
         } stencilOp = StencilOp::None;
         bool stencilNotZero = false;
         bool stencilClear = false;
+        // stencilOp counts where the depth test fails instead (z-fail, "Carmack's reverse"): closed volumes then count
+        // right when the camera is inside one or a volume crosses the near plane, where z-pass darkens a wedge.
+        bool stencilDepthFail = false;
         // Kept for the draw-list hash's layout (the reference's GS-context batches); a native port never sets it.
         bool fromGsContext = false;
         bool alphaBlend = true;
