@@ -159,6 +159,12 @@ namespace bozo::host
         void endFrame(R5900Context *ctx);
         void frameSound(uint64_t &hash, uint32_t &count);
         std::vector<int16_t> audio_;
+        // A field's sound at the mixer's 48 kHz (60 fields a second), and the samples skipped after EE clock leaps in
+        // real time (frameSound).
+        static constexpr size_t kFieldFrames = 800;
+        uint64_t leapFrames_ = 0;
+        int64_t lastSoundNs_ = 0;
+        double soundBudget_ = 0.0;
         // Real time with sound (libraries.md 15.13e): when no frame has ended for a while (a load, a stall), the sound
         // is still made, on the game's thread between two out-calls (never inside a command): a watcher thread only
         // raises soundDue_, the watchdog's next look brings the engine up to the host's clock and hands the samples to
