@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -467,6 +468,11 @@ namespace bozo::host
 
     // The frame's sound: the engine brought up to the frame's end on the EE clock, its samples since the last frame to
     // onAudio, their digest for the record.
+    namespace
+    {
+        int64_t steadyNs();
+    }
+
     void FreeHost::frameSound(uint64_t &hash, uint32_t &count)
     {
         hash = 0;
@@ -481,7 +487,34 @@ namespace bozo::host
         mixer->takeMixed(hash, count);
         mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
-        const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        // Real time: a frame whose EE clock leapt (a wait the console spent in a device, a disc read, that the PC did
+        // not: The Third Age's streaming, up to five fields in one frame) brings the sound of the whole leap, but the
+        // host only lived the frame's own time. Given all, the output queue overflowed and dropped hundreds of
+        // milliseconds at a time (heard as cuts and crackle). The sound given out is held to the host's time instead:
+        // a budget of samples grows with it (48 kHz) and every output spends it (stallSound's too); a frame gives at
+        // most the budget plus a quarter field (the frames' own jitter), its newest samples, the leap's surplus skipped
+        // where it was made. The budget is kept within a few fields, so neither a stall nor a run of short frames
+        // stores up a burst.
+        if (opt_.realTime)
+        {
+            const int64_t now = steadyNs();
+            if (lastSoundNs_ != 0)
+            {
+                soundBudget_ += static_cast<double>(now - lastSoundNs_) * 48e-6;
+                soundBudget_ = std::clamp(soundBudget_, -double(kFieldFrames), 3.0 * kFieldFrames);
+                const double room = soundBudget_ + kFieldFrames / 4.0;
+                const size_t allowed = room > 0.0 ? static_cast<size_t>(room) : 0u;
+                if (n > allowed)
+                {
+                    std::memmove(audio_.data(), audio_.data() + 2u * (n - allowed), 2u * allowed * sizeof(int16_t));
+                    leapFrames_ += n - allowed;
+                    n = allowed;
+                }
+                soundBudget_ -= static_cast<double>(n);
+            }
+            lastSoundNs_ = now;
+        }
         if (onAudio && n)
             onAudio(stats_.frames, audio_.data(), n);
     }
@@ -507,6 +540,7 @@ namespace bozo::host
         mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
         const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        soundBudget_ -= static_cast<double>(n); // the host's time it fills (frameSound)
         if (n)
             onAudio(stats_.frames, audio_.data(), n);
     }
