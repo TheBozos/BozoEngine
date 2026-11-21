@@ -34,7 +34,15 @@ namespace bozo::app
         // that present began, so its picture is at least that frame's). A host that holds its game at a capture frame
         // until then (tmb-check --window: the pinned run) gets exactly that frame's picture.
         std::function<void(uint64_t frames)> onCaptured;
-        uint64_t quitAfterFrames = 0;        // close once the game ended this many frames (0: never)
+        // Lockstep (reproducible runs; at the game's own frame rate, not interpolating): each published frame is
+        // presented exactly once, in order. The window presents only a frame it has not presented (no repeat after
+        // its 1/30 s wait), and calls onPresented with Renderer::publishes() of the frame just presented. A host that
+        // holds its game after each publish until then gets every frame presented, none twice: what the pictures keep
+        // from present to present (Material::kPreviousFrame, the render targets: TTA's Nazgul Scream ghosting)
+        // then follows the game's frames instead of the window's timing.
+        bool lockstep = false;
+        std::function<void(uint64_t publishes)> onPresented;
+        uint64_t quitAfterFrames = 0;       // close once the game ended this many frames (0: never)
         bool stats = true;                   // every 2 s on stderr: game frames and presents a second, frame times
         // The window's size, mode and render scale from video::edited() (the port called video::loadAtStartup and
         // applied its command line there) instead of width / height / fullscreen / renderScale.

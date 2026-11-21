@@ -283,6 +283,7 @@ namespace bozo::app
         uint64_t runFirstFrames = 0;
         Clock::time_point runFirst{};
         uint64_t seen = 0;
+        uint64_t lockstepFrames = 0; // lockstep: the frames ended at the last present
         int swapRate = 0; // the frame rate the swap interval was set for
         Clock::time_point nextPresent{};
         while (!quit)
@@ -345,7 +346,20 @@ namespace bozo::app
             }
             bool isFresh;
             if (rate == 0)
+            {
                 isFresh = renderer.waitForFrame(seen, 1.0 / 30.0);
+                if (options.lockstep)
+                {
+                    if (!isFresh)
+                        continue; // lockstep: no frame presented twice
+                    // A frame publishes its picture before it counts as ended: the present waits for that end (a second
+                    // at most), so its frame count (the captures' names) is the picture's own frame.
+                    const auto limit = Clock::now() + std::chrono::seconds(1);
+                    while (game.framesEnded() == lockstepFrames && Clock::now() < limit && !thread.done.load(std::memory_order_acquire))
+                        std::this_thread::yield();
+                    lockstepFrames = game.framesEnded();
+                }
+            }
             else
             {
                 if (rate > 0)
@@ -429,6 +443,8 @@ namespace bozo::app
             renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
             ++presents;
             ++ratesPresents;
+            if (options.lockstep && options.onPresented) // (interpolating: reported too, so a holding host never stalls)
+                options.onPresented(seen);
 
             const uint64_t frames = game.framesEnded();
             const double elapsed = seconds(start, now);
