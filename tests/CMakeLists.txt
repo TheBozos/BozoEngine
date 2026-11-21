@@ -43,6 +43,12 @@ if(MINGW)
   target_link_options(bozo-runtime-tests PRIVATE -static)
 endif()
 add_test(NAME runtime COMMAND bozo-runtime-tests)
+add_executable(bozo-vu0-simd-tests runtime/vu0_simd_tests.cpp)
+target_link_libraries(bozo-vu0-simd-tests PRIVATE bozo_runtime_core)
+if(MINGW)
+  target_link_options(bozo-vu0-simd-tests PRIVATE -static)
+endif()
+add_test(NAME vu0_simd COMMAND bozo-vu0-simd-tests)
 
 # The native libraries (runtime/libs): what no call log checks yet (the memory card's save path), and the heap and
 # rand rules.
