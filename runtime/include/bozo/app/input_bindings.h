@@ -65,6 +65,8 @@ namespace bozo::app::input
         std::vector<Binding> actions[ActionCount];
         int gamepad = -1; // which gamepad (0-3, in the order they were plugged in) this player reads; -1: the player's
                           // among the connected ones (player n the nth)
+        int rumble = 100;         // the gamepad's vibration, in percent of what the game asks (0: none); input.ini's
+                                  // rumble (a number, or on / off), the Controls tab's slider
     };
 
     struct MouseSettings
@@ -87,6 +89,11 @@ namespace bozo::app::input
     void resetToDefaults();
     bool save();
     std::string configPath();
+
+    // The Controls tab's rumble test: the player's gamepad shakes for half a second at the player's strength, whatever
+    // the game asks (DevicePad::update reads rumbleTestUntil, SDL_GetTicks milliseconds).
+    void testRumble(int player);
+    uint64_t rumbleTestUntil(int player);
 
     // The devices as the window's thread sampled them for one evaluation.
     struct Devices

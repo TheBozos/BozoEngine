@@ -566,7 +566,13 @@ namespace bozo::app
             ImGui::SetNextItemWidth(90.0f * unit);
             ImGui::InputInt("Gamepad (-1: auto)", &profile.gamepad);
             profile.gamepad = std::clamp(profile.gamepad, -1, 3);
+            ImGui::SameLine(0.0f, 30.0f * unit);
+            ImGui::SetNextItemWidth(120.0f * unit);
+            ImGui::SliderInt("Rumble", &profile.rumble, 0, 100, profile.rumble ? "%d%%" : "off", ImGuiSliderFlags_AlwaysClamp);
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Test"))
+            input::testRumble(controlsPlayer);
         ImGui::TextWrapped("Add: then press a key or a gamepad button, push a stick or trigger, or click, roll the wheel or "
                            "move the mouse over the game picture. Click a binding to remove it.");
 

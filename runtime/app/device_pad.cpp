@@ -201,12 +201,15 @@ namespace bozo::app
 
         input::Config &config = input::config(); // input.ini, loaded at the first update
         input::MouseSettings mouse;
-        std::array<int, input::kPlayers> chosen{};
+        std::array<int, input::kPlayers> chosen{}, strength{};
         {
             std::lock_guard<std::mutex> lock(input::configMutex());
             mouse = config.mouse;
             for (int player = 0; player < input::kPlayers; ++player)
+            {
                 chosen[static_cast<size_t>(player)] = config.players[player].gamepad;
+                strength[static_cast<size_t>(player)] = std::clamp(config.players[player].rumble, 0, 100);
+            }
         }
 
         // Cursor capture while playing: the motion is then unbounded (no screen edge), and the cursor hidden.
@@ -262,7 +265,12 @@ namespace bozo::app
         for (int player = 0; player < input::kPlayers; ++player)
         {
             SDL_Gamepad *g = pads[static_cast<size_t>(player)];
-            uint32_t want = m.rumbleOn && allowed ? m.wanted[static_cast<size_t>(player)].load(std::memory_order_relaxed) : 0;
+            const int percent = strength[static_cast<size_t>(player)];
+            uint32_t want = m.rumbleOn && allowed && percent > 0 ? m.wanted[static_cast<size_t>(player)].load(std::memory_order_relaxed) : 0;
+            if (m.rumbleOn && percent > 0 && now < input::rumbleTestUntil(player))
+                want = 0x1FF; // the Controls tab's test: both motors
+            if (want)
+                want |= static_cast<uint32_t>(percent) << 16; // a strength change is sent at once too
             SDL_Gamepad *&was = m.rumbling[static_cast<size_t>(player)];
             if (was && was != g)
             {
@@ -275,8 +283,8 @@ namespace bozo::app
             const bool again = want && now - m.sentAt[static_cast<size_t>(player)] > 1000;
             if (want == m.sent[static_cast<size_t>(player)] && !again)
                 continue;
-            const uint16_t low = static_cast<uint16_t>((want & 0xFF) * 257u);
-            const uint16_t high = (want >> 8) ? 0xFFFF : 0;
+            const uint16_t low = static_cast<uint16_t>((want & 0xFF) * 257u * static_cast<uint32_t>(percent) / 100u);
+            const uint16_t high = (want & 0x100) ? static_cast<uint16_t>(0xFFFFu * static_cast<uint32_t>(percent) / 100u) : 0;
             SDL_RumbleGamepad(g, low, high, want ? 2000 : 0);
             m.sent[static_cast<size_t>(player)] = want;
             m.sentAt[static_cast<size_t>(player)] = now;

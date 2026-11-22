@@ -11,7 +11,8 @@
 // - SDL's controller database, plus gamecontrollerdb.txt (PS2X_GAMEPAD_DB, else beside the executable, else in the
 //   user folder) for controllers it lacks;
 // - rumble: the motors the game sets (scePadSetActDirect) on the player's gamepad, the large motor as its low
-//   frequency rumble, the small one as its high frequency (PS2X_RUMBLE=0: none);
+//   frequency rumble, the small one as its high frequency, scaled by the player's strength (input.ini rumble, 0-100,
+//   the Controls tab; PS2X_RUMBLE=0: none);
 // - pressure: each pressure button reports how far its binding is pressed (an analog trigger's travel, full for keys
 //   and digital buttons).
 // The host's devices reach the game only while the window has the focus (PS2X_INPUT_BACKGROUND=1: always).
