@@ -26,12 +26,14 @@ namespace bozo::app::input
 {
     constexpr int kPlayers = 4;
 
-    // The PS2 side: the 16 buttons, then the two sticks' four directions.
+    // The PS2 side: the 16 buttons, then the two sticks' four directions; then the window's own: fast forward while
+    // held (FramePacer::speedPercent; player 1's ` key by default, any player's binding counts).
     enum Action : int
     {
         Up, Down, Left, Right, Cross, Circle, Square, Triangle, L1, R1, L2, R2, L3, R3, Start, Select,
         LeftStickLeft, LeftStickRight, LeftStickUp, LeftStickDown,
         RightStickLeft, RightStickRight, RightStickUp, RightStickDown,
+        FastForward,
         ActionCount
     };
 
@@ -107,7 +109,8 @@ namespace bozo::app::input
 
     // A player's pad from its bindings: the buttons (pressed past half way), the sticks (0..255, 128 the centre), the
     // pressures (how far each pressure button is pressed, 0..255). `gamepad`: the player's gamepad (null: none).
-    libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad);
+    // `fastForward` (optional): set when the player's FastForward binding is pressed past half way.
+    libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad, bool *fastForward = nullptr);
 
     // Names (input.ini, a Controls window).
     const char *actionName(int action);   // "cross", "left_stick_up", ...

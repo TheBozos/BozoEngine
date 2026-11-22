@@ -427,10 +427,10 @@ namespace bozo::app
                 if (FramePacer::backgroundHold().exchange(hold, std::memory_order_acq_rel) != hold)
                     std::fprintf(stderr, "[window] %s\n", hold ? "in the background: the game holds" : "the game goes on");
             }
-            // Fast forward: while ` (the key left of 1, by its place: SDL's scancode) is held with the window focused, the
-            // game runs at the player's speed (video::Settings::fastForward; FramePacer::speedPercent). Not while the panel
-            // takes the keyboard. PS2X_FAST_FORWARD_AT=<from>-<to>[,...]: held between those seconds from the start
-            // (scripted checks).
+            // Fast forward: while a player's FastForward binding is held (input.ini fast_forward, the Controls tab; player
+            // 1's ` key, left of 1, by default; the pad's last update: focused, not while the panel takes the keyboard),
+            // the game runs at the player's speed (video::Settings::fastForward; FramePacer::speedPercent).
+            // PS2X_FAST_FORWARD_AT=<from>-<to>[,...]: held between those seconds from the start (scripted checks).
             {
                 static const std::vector<std::pair<double, double>> s_spans = []
                 {
@@ -446,9 +446,7 @@ namespace bozo::app
                     }
                     return spans;
                 }();
-                const bool *keys = SDL_GetKeyboardState(nullptr);
-                bool held = keys && keys[SDL_SCANCODE_GRAVE] && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) &&
-                            !panel.holdsKeyboard();
+                bool held = pad && pad->fastForwardHeld();
                 const double at = seconds(start, Clock::now());
                 for (const auto &[from, to] : s_spans)
                     held = held || (at >= from && at < to);

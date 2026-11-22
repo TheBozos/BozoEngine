@@ -39,6 +39,7 @@ namespace bozo::app
         std::array<SDL_Gamepad *, kPlaces> gamepads{};
         std::array<SDL_JoystickID, kPlaces> ids{};
         bool mappingsLoaded = false;
+        bool fastForward = false; // a FastForward binding held at the last update (the window's thread)
         bool listChanged = true;
 
         // The mouse: motion since the last update, smoothed speed, the wheel's last notch.
@@ -190,6 +191,8 @@ namespace bozo::app
         impl_->heldMouse = mouse;
     }
 
+    bool DevicePad::fastForwardHeld() const { return impl_->fastForward; }
+
     void DevicePad::update(bool focused)
     {
         Impl &m = *impl_;
@@ -246,19 +249,23 @@ namespace bozo::app
 
         std::array<libs::PadInputState, input::kPlayers> states{};
         std::array<SDL_Gamepad *, input::kPlayers> pads{};
+        bool fastForward = false;
         for (int player = 0; player < input::kPlayers; ++player)
         {
             SDL_Gamepad *g = m.gamepadOf(player, chosen[static_cast<size_t>(player)]);
             pads[static_cast<size_t>(player)] = g;
             // Players 2-4 only with a gamepad of their own, never the keyboard (as the fork).
+            bool held = false;
             if (allowed && (player == 0 || g))
-                states[static_cast<size_t>(player)] = input::padState(player, devices, g);
+                states[static_cast<size_t>(player)] = input::padState(player, devices, g, &held);
+            fastForward = fastForward || held;
             states[static_cast<size_t>(player)].connected = player == 0 || g != nullptr;
         }
         {
             std::lock_guard<std::mutex> lock(m.mutex);
             m.states = states;
         }
+        m.fastForward = fastForward;
 
         // Rumble: what the game asks, sent when it changes and again before the last one runs out; nothing while the
         // window is in the background.

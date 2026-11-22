@@ -57,7 +57,7 @@ namespace bozo::app::video
         // The game held while the window is in the background (another window has the focus, or it is minimised):
         // FramePacer::backgroundHold, set by the window's loop. Off by default (the game runs on, as before).
         bool pauseInBackground = false;
-        // Fast forward (FramePacer::speedPercent while the player holds ` , the key left of 1): the game's speed in
+        // Fast forward (FramePacer::speedPercent while a FastForward binding is held, ` by default): the game's speed in
         // percent, 200 to 1000, or 0 as fast as the PC goes (live). 300 by default.
         int fastForward = 300;
     };
