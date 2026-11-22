@@ -77,8 +77,9 @@ namespace bozo::app
             }
 
             // The back buffer (pixels w x h) now, saved as path; `compressed`: through SDL_SavePNG (a player's
-            // screenshot, F12), else the quick uncompressed writer (captures, many a second).
-            void capture(const std::string &path, int w, int h, bool compressed = false)
+            // screenshot, F12; a save state's picture, scaled down to `maxWidth` when it is set), else the quick
+            // uncompressed writer (captures, many a second).
+            void capture(const std::string &path, int w, int h, bool compressed = false, int maxWidth = 0)
             {
                 const render::gl::Api &g = render::gl::api();
                 Job job;
@@ -86,6 +87,7 @@ namespace bozo::app
                 job.width = w;
                 job.height = h;
                 job.compressed = compressed;
+                job.maxWidth = maxWidth;
                 job.pixels.resize(static_cast<size_t>(w) * h * 4u);
                 // From the back buffer, or from the offscreen picture the window presents into when nothing may depend
                 // on the window being visible (WindowOptions::captureScene / hidden, PS2X_CAPTURE_SCENE=1).
@@ -105,6 +107,7 @@ namespace bozo::app
                 std::string path;
                 int width = 0, height = 0;
                 bool compressed = false;
+                int maxWidth = 0;
                 std::vector<uint8_t> pixels; // bottom-up, as GL reads them
             };
 
@@ -134,7 +137,15 @@ namespace bozo::app
                         if (SDL_Surface *surface = SDL_CreateSurfaceFrom(job.width, job.height, SDL_PIXELFORMAT_RGBA32,
                                                                          rows.data(), static_cast<int>(stride)))
                         {
-                            ok = SDL_SavePNG(surface, job.path.c_str());
+                            SDL_Surface *saved = surface;
+                            if (job.maxWidth > 0 && job.width > job.maxWidth)
+                                if (SDL_Surface *small = SDL_ScaleSurface(surface, job.maxWidth,
+                                                                          std::max(1, job.height * job.maxWidth / job.width),
+                                                                          SDL_SCALEMODE_LINEAR))
+                                    saved = small;
+                            ok = SDL_SavePNG(saved, job.path.c_str());
+                            if (saved != surface)
+                                SDL_DestroySurface(saved);
                             SDL_DestroySurface(surface);
                         }
                     }
@@ -151,6 +162,9 @@ namespace bozo::app
             bool m_offscreen = false; // captures read the offscreen picture (WindowOptions::captureScene)
             std::thread m_thread;
         };
+
+        // A save state's picture is taken at the next present after its save was asked (F5 or the Save states tab).
+        std::atomic<int> g_pictureSlot{-1};
 
         // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
         // number added when two fall in the same second.
@@ -249,8 +263,13 @@ namespace bozo::app
         Panel panel;
         if (options.panel)
             panel.init(window, context);
+        const auto saveState = [save = game.saveState](int slot)
+        {
+            save(slot);
+            g_pictureSlot.store(slot, std::memory_order_relaxed);
+        };
         if (game.saveState && game.loadState)
-            registerStateTab(game.saveState, game.loadState);
+            registerStateTab(saveState, game.loadState);
 
         GameThread thread;
         thread.game = &game;
@@ -300,6 +319,9 @@ namespace bozo::app
         // PS2X_SCREENSHOT_AT=<s>[,<s>...]: F12 pressed at those seconds.
         std::vector<double> screenshotAt = parseSeconds(std::getenv("PS2X_SCREENSHOT_AT"));
         size_t nextScreenshotAt = 0;
+        // PS2X_STATE_SAVE_AT=<s>[,<s>...]: F5 pressed at those seconds (the selected slot, its picture).
+        std::vector<double> stateSaveAt = parseSeconds(std::getenv("PS2X_STATE_SAVE_AT"));
+        size_t nextStateSaveAt = 0;
         const auto ensureDir = [](const std::string &dir)
         {
             std::error_code ec;
@@ -360,7 +382,7 @@ namespace bozo::app
                 else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
                 {
                     if (event.key.scancode == SDL_SCANCODE_F5 && game.saveState)
-                        game.saveState(stateSlot());
+                        saveState(stateSlot());
                     else if (event.key.scancode == SDL_SCANCODE_F7 && game.loadState)
                         game.loadState(stateSlot());
                     else if (event.key.scancode == SDL_SCANCODE_F6 && game.saveState)
@@ -549,6 +571,14 @@ namespace bozo::app
                 ++nextScreenshotAt;
                 screenshot = true;
             }
+            while (nextStateSaveAt < stateSaveAt.size() && elapsed >= stateSaveAt[nextStateSaveAt])
+            {
+                ++nextStateSaveAt;
+                if (game.saveState)
+                    saveState(stateSlot());
+            }
+            if (const int slot = g_pictureSlot.exchange(-1, std::memory_order_relaxed); slot >= 0)
+                writer.capture(stateSlotPicturePath(slot), pw, ph, true, 320);
             if (screenshot)
             {
                 screenshot = false;

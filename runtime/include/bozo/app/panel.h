@@ -21,8 +21,9 @@ union SDL_Event;
 
 namespace bozo::app
 {
-    // Save states in the panel: the slot F5 / F7 use (F6 picks it) and the settings' "Save states" tab (each slot:
-    // when it was saved, Save, Load), registered by the window when the game has save states.
+    // Save states in the panel: the slot F5 / F7 use (F6 picks it) and the settings' "Save states" tab (each slot: the
+    // picture taken at its save, stateSlotPicturePath, larger under the pointer; when it was saved; Save, Load),
+    // registered by the window when the game has save states.
     int stateSlot();
     void setStateSlot(int slot);
     void registerStateTab(std::function<void(int)> save, std::function<void(int)> load);
