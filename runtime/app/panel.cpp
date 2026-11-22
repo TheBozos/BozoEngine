@@ -10,6 +10,7 @@
 #include "bozo/app/panel.h"
 
 #include "bozo/app/app.h"
+#include "bozo/app/frame_pacer.h"
 #include "bozo/app/input_bindings.h"
 #include "bozo/app/settings_tabs.h"
 #include "bozo/app/video_settings.h"
@@ -41,6 +42,31 @@ namespace bozo::app
     namespace
     {
         void drawNotice();
+
+        // While the game is fast-forwarded (FramePacer::speedPercent, set by the window): its speed at the top left.
+        void drawFastForward()
+        {
+            const uint32_t speed = FramePacer::speedPercent().load(std::memory_order_relaxed);
+            if (speed == 100u)
+                return;
+            const ImGuiViewport *viewport = ImGui::GetMainViewport();
+            const float pad = 10.0f * ImGui::GetStyle().FontScaleDpi;
+            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + pad, viewport->WorkPos.y + pad), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.45f);
+            const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                           ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+            if (ImGui::Begin("##fast-forward", nullptr, flags))
+            {
+                if (speed == 0u)
+                    ImGui::TextUnformatted(">> unlimited");
+                else if (speed % 100u == 0u)
+                    ImGui::Text(">> %ux", speed / 100u);
+                else
+                    ImGui::Text(">> %u%%", speed);
+            }
+            ImGui::End();
+        }
     }
 
     struct Panel::Impl
@@ -185,6 +211,7 @@ namespace bozo::app
         if (m.overlay)
             m.drawOverlay();
         drawNotice();
+        drawFastForward();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
@@ -555,6 +582,24 @@ namespace bozo::app
         ImGui::Checkbox("Pause in the background", &edited.pauseInBackground);
         envNote("PS2X_PAUSE_IN_BACKGROUND");
         ImGui::TextDisabled("The game holds while another window has the focus or this one is minimised.");
+
+        static const int kFastForwards[] = {200, 300, 400, 0};
+        static const char *kFastForwardNames[] = {"2x", "3x", "4x", "Unlimited (as fast as the PC goes)"};
+        int fastIndex = -1;
+        for (int i = 0; i < IM_ARRAYSIZE(kFastForwards); ++i)
+            if (edited.fastForward == kFastForwards[i])
+                fastIndex = i;
+        const std::string fastLabel = fastIndex >= 0 ? kFastForwardNames[fastIndex] : video::fastForwardName(edited.fastForward);
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::BeginCombo("Fast forward", fastLabel.c_str()))
+        {
+            for (int i = 0; i < IM_ARRAYSIZE(kFastForwards); ++i)
+                if (ImGui::Selectable(kFastForwardNames[i], i == fastIndex))
+                    edited.fastForward = kFastForwards[i];
+            ImGui::EndCombo();
+        }
+        envNote("PS2X_FAST_FORWARD");
+        ImGui::TextDisabled("The game's speed while ` (the key left of 1) is held; the music keeps its pace.");
 
         // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
         {
