@@ -7,8 +7,9 @@
 // (bozo/app/device_pad.h).
 //
 // Keys (milestone M4): F2 the settings window and F3 the frame rate counter (bozo/app/panel.h); F8 a capture sequence
-// and F9 a burst of captures (window.cpp says where and how); F11 or Alt+Enter switches fullscreen (with the video
-// settings: to the last full-screen mode, bozo/app/video_settings.h). Closing the window ends the game at its next frame.
+// and F9 a burst of captures (window.cpp says where and how); F12 a screenshot, the game's picture without the panel
+// (a PNG in the user folder's screenshots, PS2X_SCREENSHOT_DIR another folder); F11 or Alt+Enter switches fullscreen
+// (with the video settings: to the last full-screen mode, bozo/app/video_settings.h). Closing the window ends the game at its next frame.
 #pragma once
 
 #include <cstdint>

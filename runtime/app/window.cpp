@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -75,14 +76,16 @@ namespace bozo::app
                 m_thread.join();
             }
 
-            // The back buffer (pixels w x h) now, saved as path.
-            void capture(const std::string &path, int w, int h)
+            // The back buffer (pixels w x h) now, saved as path; `compressed`: through SDL_SavePNG (a player's
+            // screenshot, F12), else the quick uncompressed writer (captures, many a second).
+            void capture(const std::string &path, int w, int h, bool compressed = false)
             {
                 const render::gl::Api &g = render::gl::api();
                 Job job;
                 job.path = path;
                 job.width = w;
                 job.height = h;
+                job.compressed = compressed;
                 job.pixels.resize(static_cast<size_t>(w) * h * 4u);
                 // From the back buffer, or from the offscreen picture the window presents into when nothing may depend
                 // on the window being visible (WindowOptions::captureScene / hidden, PS2X_CAPTURE_SCENE=1).
@@ -101,6 +104,7 @@ namespace bozo::app
             {
                 std::string path;
                 int width = 0, height = 0;
+                bool compressed = false;
                 std::vector<uint8_t> pixels; // bottom-up, as GL reads them
             };
 
@@ -122,7 +126,20 @@ namespace bozo::app
                     for (int y = 0; y < job.height; ++y) // bottom-up to top-down
                         std::copy_n(job.pixels.data() + static_cast<size_t>(job.height - 1 - y) * stride, stride,
                                     rows.data() + static_cast<size_t>(y) * stride);
-                    const bool ok = writePng(job.path, rows.data(), static_cast<uint32_t>(job.width), static_cast<uint32_t>(job.height));
+                    bool ok = false;
+                    if (job.compressed)
+                    {
+                        for (size_t i = 3; i < rows.size(); i += 4)
+                            rows[i] = 0xFF; // the picture's alpha is the renderer's, not the player's
+                        if (SDL_Surface *surface = SDL_CreateSurfaceFrom(job.width, job.height, SDL_PIXELFORMAT_RGBA32,
+                                                                         rows.data(), static_cast<int>(stride)))
+                        {
+                            ok = SDL_SavePNG(surface, job.path.c_str());
+                            SDL_DestroySurface(surface);
+                        }
+                    }
+                    else
+                        ok = writePng(job.path, rows.data(), static_cast<uint32_t>(job.width), static_cast<uint32_t>(job.height));
                     std::fprintf(stderr, "[window] %s %s\n", ok ? "saved" : "could not save", job.path.c_str());
                 }
             }
@@ -134,6 +151,35 @@ namespace bozo::app
             bool m_offscreen = false; // captures read the offscreen picture (WindowOptions::captureScene)
             std::thread m_thread;
         };
+
+        // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
+        // number added when two fall in the same second.
+        std::string screenshotPath()
+        {
+            std::filesystem::path dir;
+            if (const char *env = std::getenv("PS2X_SCREENSHOT_DIR"); env && *env)
+                dir = env;
+            else
+                dir = userDirectory().empty() ? std::filesystem::path("screenshots") : userDirectory() / "screenshots";
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            const std::time_t now = std::time(nullptr);
+            std::tm local{};
+#if defined(_WIN32)
+            localtime_s(&local, &now);
+#else
+            localtime_r(&now, &local);
+#endif
+            char stamp[32];
+            std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &local);
+            // The last name given counts as taken too: its file may not be written yet (the writer's thread).
+            static std::filesystem::path s_last;
+            std::filesystem::path path = dir / ("screenshot_" + std::string(stamp) + ".png");
+            for (int n = 2; (path == s_last || std::filesystem::exists(path, ec)) && n < 100; ++n)
+                path = dir / ("screenshot_" + std::string(stamp) + "_" + std::to_string(n) + ".png");
+            s_last = path;
+            return path.string();
+        }
 
         std::vector<double> parseSeconds(const char *text)
         {
@@ -251,6 +297,9 @@ namespace bozo::app
         // PS2X_CAPTURE_BURST_AT=<s>[,<s>...]: F9 pressed at those seconds (unattended checks of the bursts).
         std::vector<double> burstAt = parseSeconds(std::getenv("PS2X_CAPTURE_BURST_AT"));
         size_t nextBurstAt = 0;
+        // PS2X_SCREENSHOT_AT=<s>[,<s>...]: F12 pressed at those seconds.
+        std::vector<double> screenshotAt = parseSeconds(std::getenv("PS2X_SCREENSHOT_AT"));
+        size_t nextScreenshotAt = 0;
         const auto ensureDir = [](const std::string &dir)
         {
             std::error_code ec;
@@ -264,6 +313,7 @@ namespace bozo::app
         int sequences = 0, sequenceLeft = 0, sequenceIndex = 0;
         std::ofstream sequenceLog;
         bool burst = false;
+        bool screenshot = false; // F12: the next present's game picture
         CaptureWriter writer;
         // The window presents into an offscreen picture (then copied to the window when it is shown) when captures must
         // not depend on the window being visible: a hidden or covered window's back buffer reads back black.
@@ -318,6 +368,8 @@ namespace bozo::app
                         setStateSlot(stateSlot() + ((event.key.mod & SDL_KMOD_SHIFT) ? -1 : 1));
                         notify(stateSlotSummary(stateSlot()));
                     }
+                    else if (event.key.scancode == SDL_SCANCODE_F12)
+                        screenshot = true;
                     else if (event.key.scancode == SDL_SCANCODE_F8 && sequenceLeft == 0)
                         sequenceLeft = -1; // starts at this present
                     else if (event.key.scancode == SDL_SCANCODE_F9)
@@ -491,6 +543,18 @@ namespace bozo::app
                 writer.capture(captureDir + "/" + name, pw, ph);
                 if (options.onCaptured)
                     options.onCaptured(framesBefore);
+            }
+            while (nextScreenshotAt < screenshotAt.size() && elapsed >= screenshotAt[nextScreenshotAt])
+            {
+                ++nextScreenshotAt;
+                screenshot = true;
+            }
+            if (screenshot)
+            {
+                screenshot = false;
+                const std::string path = screenshotPath();
+                writer.capture(path, pw, ph, true);
+                notify("Screenshot: " + std::filesystem::path(path).filename().string());
             }
             if (interval > 0.0 && seconds(lastInterval, now) >= interval)
             {
