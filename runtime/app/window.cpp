@@ -287,11 +287,19 @@ namespace bozo::app
         uint64_t lockstepFrames = 0; // lockstep: the frames ended at the last present
         int swapRate = 0; // the frame rate the swap interval was set for
         Clock::time_point nextPresent{};
+        // The cursor over the game hides after two seconds without moving (shown again by any motion or button, and
+        // while the settings window is open). PS2X_KEEP_CURSOR=1 leaves it shown.
+        static const bool keepCursor = [] { const char *v = std::getenv("PS2X_KEEP_CURSOR"); return v && *v == '1'; }();
+        Clock::time_point cursorMoved = start;
+        bool cursorHidden = false;
         while (!quit)
         {
             SDL_Event event;
             while (SDL_PollEvent(&event))
             {
+                if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                    event.type == SDL_EVENT_MOUSE_WHEEL)
+                    cursorMoved = Clock::now();
                 panel.handleEvent(event);
                 if (videoSettings)
                     video::handleEvent(event);
@@ -326,6 +334,16 @@ namespace bozo::app
             }
             if (videoSettings)
                 video::frameUpdate();
+            if (!keepCursor && !options.hidden)
+            {
+                const bool hide = !panel.settingsOpen() && Clock::now() - cursorMoved > std::chrono::seconds(2) &&
+                                  (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS);
+                if (hide != cursorHidden)
+                {
+                    hide ? SDL_HideCursor() : SDL_ShowCursor();
+                    cursorHidden = hide;
+                }
+            }
             // The player's "Pause in the background": the game holds at its frame end while the window has no focus
             // (or is minimised); the window keeps presenting the last picture.
             {
