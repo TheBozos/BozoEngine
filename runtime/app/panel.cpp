@@ -14,6 +14,7 @@
 #include "bozo/app/settings_tabs.h"
 #include "bozo/app/video_settings.h"
 #include "bozo/app/window.h"
+#include "bozo/render/gl.h"
 
 #include <SDL3/SDL.h>
 
@@ -22,6 +23,7 @@
 #include "imgui_impl_sdl3.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -233,6 +235,11 @@ namespace bozo::app
         return (dir / ("slot" + std::to_string(slot) + ".state")).string();
     }
 
+    std::string stateSlotPicturePath(int slot)
+    {
+        return std::filesystem::path(stateSlotPath(slot)).replace_extension(".png").string();
+    }
+
     std::string stateSlotSummary(int slot)
     {
         const std::filesystem::path path = stateSlotPath(slot);
@@ -251,6 +258,57 @@ namespace bozo::app
     namespace
     {
         std::atomic<int> s_stateSlot{0};
+
+        // The Save states tab's thumbnails: each slot's picture as a texture, loaded again when its file changes (the
+        // window's thread, which owns the GL context; a file still being written fails to load and is tried again).
+        struct Thumbnail
+        {
+            render::gl::GLuint texture = 0;
+            std::filesystem::file_time_type loaded{};
+            int width = 0, height = 0;
+        };
+        std::array<Thumbnail, kStateSlots> s_thumbnails;
+
+        const Thumbnail &thumbnail(int slot)
+        {
+            Thumbnail &t = s_thumbnails[static_cast<size_t>(slot)];
+            const std::string path = stateSlotPicturePath(slot);
+            std::error_code ec;
+            const auto written = std::filesystem::last_write_time(path, ec);
+            const render::gl::Api &g = render::gl::api();
+            if (ec)
+            {
+                if (t.texture)
+                    g.DeleteTextures(1, &t.texture);
+                t = Thumbnail{};
+                return t;
+            }
+            if (t.texture && written == t.loaded)
+                return t;
+            SDL_Surface *file = SDL_LoadPNG(path.c_str());
+            SDL_Surface *rgba = file ? SDL_ConvertSurface(file, SDL_PIXELFORMAT_RGBA32) : nullptr;
+            if (rgba)
+            {
+                if (!t.texture)
+                    g.GenTextures(1, &t.texture);
+                g.BindTexture(render::gl::kTexture2D, t.texture);
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureMinFilter, static_cast<render::gl::GLint>(render::gl::kLinear));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureMagFilter, static_cast<render::gl::GLint>(render::gl::kLinear));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureWrapS, static_cast<render::gl::GLint>(render::gl::kClampToEdge));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureWrapT, static_cast<render::gl::GLint>(render::gl::kClampToEdge));
+                g.PixelStorei(render::gl::kUnpackAlignment, 4);
+                g.TexImage2D(render::gl::kTexture2D, 0, static_cast<render::gl::GLint>(render::gl::kRgba8), rgba->w, rgba->h, 0,
+                             render::gl::kRgba, render::gl::kUnsignedByte, rgba->pixels);
+                g.BindTexture(render::gl::kTexture2D, 0);
+                t.loaded = written;
+                t.width = rgba->w;
+                t.height = rgba->h;
+                SDL_DestroySurface(rgba);
+            }
+            if (file)
+                SDL_DestroySurface(file);
+            return t;
+        }
     }
     int stateSlot() { return s_stateSlot.load(std::memory_order_relaxed); }
     void setStateSlot(int slot) { s_stateSlot.store(((slot % kStateSlots) + kStateSlots) % kStateSlots); }
@@ -260,13 +318,37 @@ namespace bozo::app
         ui::registerTab("Save states", [save, load] {
             ImGui::TextDisabled("F5 saves the selected slot, F7 loads it, F6 / Shift+F6 selects the next / previous.");
             ImGui::Separator();
+            const float unit = ImGui::GetStyle().FontScaleDpi;
+            const ImVec2 picture(96.0f * unit, 72.0f * unit);
             for (int slot = 0; slot < kStateSlots; ++slot)
             {
                 ImGui::PushID(slot);
                 const std::string summary = stateSlotSummary(slot);
+                const float buttons = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 120.0f * unit;
+                // The picture taken when it was saved (a blank box without one), larger under the pointer.
+                const Thumbnail &t = thumbnail(slot);
+                const bool hasPicture = t.texture && !summary.ends_with(": empty");
+                if (hasPicture)
+                {
+                    const ImTextureID id = static_cast<ImTextureID>(t.texture);
+                    ImGui::Image(id, picture);
+                    if (ImGui::BeginItemTooltip())
+                    {
+                        ImGui::Image(id, ImVec2(static_cast<float>(t.width) * unit, static_cast<float>(t.height) * unit));
+                        ImGui::EndTooltip();
+                    }
+                }
+                else
+                    ImGui::Dummy(ImVec2(picture.x, ImGui::GetFrameHeight())); // an empty slot's row stays one line
+                ImGui::SameLine();
+                // The slot's line, centred on its picture (a group: SameLine stays on its line).
+                const float groupX = ImGui::GetCursorPosX();
+                ImGui::BeginGroup();
+                if (hasPicture)
+                    ImGui::Dummy(ImVec2(0.0f, (picture.y - ImGui::GetFrameHeight()) * 0.5f - ImGui::GetStyle().ItemSpacing.y));
                 if (ImGui::RadioButton(summary.c_str(), stateSlot() == slot))
                     setStateSlot(slot);
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120.0f * ImGui::GetStyle().FontScaleDpi);
+                ImGui::SameLine(buttons - groupX);
                 if (ImGui::Button("Save"))
                 {
                     setStateSlot(slot);
@@ -280,6 +362,7 @@ namespace bozo::app
                     load(slot);
                 }
                 ImGui::EndDisabled();
+                ImGui::EndGroup();
                 ImGui::PopID();
             }
             ImGui::Separator();
