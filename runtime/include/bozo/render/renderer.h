@@ -385,6 +385,12 @@ namespace bozo::render
             const uint32_t packed = m_textureUpscale.load(std::memory_order_relaxed);
             return TextureUpscale{static_cast<uint8_t>(packed & 0xffu), static_cast<UpscaleFilter>(packed >> 8)};
         }
+        // Texture smoothing (a PC option, off by default): a frame draw whose material has no mip levels of its own
+        // (Material::mipmap.levels 0, not nearest) samples levels made from its texture at upload, trilinear, by the screen
+        // footprint: distant textures stop shimmering. 0 off (level 0 only, as the GS samples a texture without levels),
+        // 1 trilinear, 2..16 trilinear with that much anisotropic filtering (as far as the GPU goes). Live.
+        void setTextureSmoothing(int level) { m_textureSmoothing.store(std::clamp(level, 0, 16), std::memory_order_relaxed); }
+        int textureSmoothing() const { return m_textureSmoothing.load(std::memory_order_relaxed); }
         // Present thread: frees the GPU objects (before the context goes).
         void releaseGpu();
 
@@ -445,6 +451,7 @@ namespace bozo::render
         FrameDraws m_draws;
         std::atomic<float> m_renderScale{1.0f};
         std::atomic<uint32_t> m_textureUpscale{1u};
+        std::atomic<int> m_textureSmoothing{0};
 
         // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.
         std::deque<std::shared_ptr<const Frame>> m_history;

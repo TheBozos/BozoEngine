@@ -48,6 +48,9 @@ namespace bozo::app::video
         // a second without vsync; above the game's, the renderer draws frames between the game's.
         int frameRate = 0;
         render::TextureUpscale textureUpscale; // texture assets drawn from copies 2 or 4 times as large (live); off by default
+        // Texture smoothing (Renderer::setTextureSmoothing, live): 0 off (the default: as the console samples), 1 trilinear
+        // levels made from the textures, 2..16 the same with that much anisotropic filtering.
+        int textureSmoothing = 0;
         // Texture replacements (bozo/render/texture_replace.h): a folder of <identity>.png files; "" the user folder's
         // texture_pack when it exists, "off" none.
         std::string texturePack;
@@ -55,6 +58,10 @@ namespace bozo::app::video
 
     // The texture replacements' folder a texture_pack setting names ("" when off or when there is none).
     std::string texturePackFolder(const std::string &setting);
+
+    // texture_smoothing / PS2X_TEXTURE_SMOOTHING: "off", "trilinear", "2x" .. "16x" (false for anything else).
+    bool parseTextureSmoothing(const std::string &text, int &level);
+    std::string textureSmoothingName(int level);
 
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).
     bool parseFrameRate(const char *text, int &rate);

@@ -99,6 +99,14 @@ namespace bozo::app::video
                 settings.textureUpscale.factor = 1u;
             if (settings.textureUpscale.filter != render::UpscaleFilter::Smooth)
                 settings.textureUpscale.filter = render::UpscaleFilter::Edge;
+            int smoothing = 0; // 0, 1, or a power of two up to 16
+            for (int level : {16, 8, 4, 2, 1})
+                if (settings.textureSmoothing >= level)
+                {
+                    smoothing = level;
+                    break;
+                }
+            settings.textureSmoothing = smoothing;
         }
 
         void load(Settings &settings)
@@ -128,6 +136,8 @@ namespace bozo::app::video
                     render::parseUpscaleFactor(value, settings.textureUpscale.factor);
                 else if (name == "texture_filter")
                     render::parseUpscaleFilter(value, settings.textureUpscale.filter);
+                else if (name == "texture_smoothing")
+                    parseTextureSmoothing(value, settings.textureSmoothing);
                 else if (name == "texture_pack")
                     settings.texturePack = value;
             }
@@ -226,6 +236,24 @@ namespace bozo::app::video
 
     std::string frameRateName(int rate) { return rate == 0 ? "game" : rate < 0 ? "monitor" : std::to_string(rate); }
 
+    bool parseTextureSmoothing(const std::string &text, int &level)
+    {
+        if (text == "off" || text == "0")
+            level = 0;
+        else if (text == "trilinear" || text == "1")
+            level = 1;
+        else if (const int n = std::atoi(text.c_str()); n >= 2 && n <= 16 && (n & (n - 1)) == 0)
+            level = n; // "2x" .. "16x" (atoi stops at the x)
+        else
+            return false;
+        return true;
+    }
+
+    std::string textureSmoothingName(int level)
+    {
+        return level <= 0 ? "off" : level == 1 ? "trilinear" : std::to_string(level) + "x";
+    }
+
     const char *modeName(WindowMode mode)
     {
         switch (mode)
@@ -268,6 +296,8 @@ namespace bozo::app::video
             render::parseUpscaleFilter(filter, settings.textureUpscale.filter);
         if (const char *pack = std::getenv("PS2X_TEXTURE_PACK"); pack && *pack)
             settings.texturePack = pack;
+        if (const char *smoothing = std::getenv("PS2X_TEXTURE_SMOOTHING"); smoothing && *smoothing)
+            parseTextureSmoothing(smoothing, settings.textureSmoothing);
         sanitize(settings);
         g_current = settings;
         g_current.mode = WindowMode::Windowed; // the window opens as a window; applyAtStartup goes on from there
@@ -284,6 +314,7 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(target.renderScale);
         render::Renderer::instance().setFrameRate(target.frameRate);
         render::Renderer::instance().setTextureUpscale(target.textureUpscale);
+        render::Renderer::instance().setTextureSmoothing(target.textureSmoothing);
         applyTexturePack(target.texturePack);
         g_current = target;
         publish();
@@ -416,6 +447,7 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
         render::Renderer::instance().setFrameRate(g_edited.frameRate);
         render::Renderer::instance().setTextureUpscale(g_edited.textureUpscale);
+        render::Renderer::instance().setTextureSmoothing(g_edited.textureSmoothing);
         if (g_edited.texturePack != g_current.texturePack)
             applyTexturePack(g_edited.texturePack);
         g_current = g_edited;
@@ -447,6 +479,9 @@ namespace bozo::app::video
                 "# made (edge: sharp edges kept, smooth: bicubic; PS2X_TEXTURE_FILTER). texture_pack: a folder of texture\n"
                 "# replacements, <identity>.png files the player made (off: none; unset: texture_pack in this folder when it\n"
                 "# exists; PS2X_TEXTURE_PACK, PS2X_TEXTURE_PACK_RELOAD=1 to read changed files again while playing).\n"
+                "# texture_smoothing: off (textures sampled as the console does), trilinear (levels made from them: distant\n"
+                "# textures stop shimmering) or 2x .. 16x (trilinear with that much anisotropic filtering;\n"
+                "# PS2X_TEXTURE_SMOOTHING).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
@@ -454,7 +489,8 @@ namespace bozo::app::video
              << "gs_scale = " << s.gsScale << "\n"
              << "frame_rate = " << frameRateName(s.frameRate) << "\n"
              << "texture_upscale = " << render::upscaleFactorName(s.textureUpscale.factor) << "\n"
-             << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n";
+             << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n"
+             << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n";
         if (!s.texturePack.empty())
             file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);
