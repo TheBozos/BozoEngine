@@ -57,6 +57,9 @@ namespace bozo::app::video
         // The game held while the window is in the background (another window has the focus, or it is minimised):
         // FramePacer::backgroundHold, set by the window's loop. Off by default (the game runs on, as before).
         bool pauseInBackground = false;
+        // Fast forward (FramePacer::speedPercent while the player holds ` , the key left of 1): the game's speed in
+        // percent, 200 to 1000, or 0 as fast as the PC goes (live). 300 by default.
+        int fastForward = 300;
     };
 
     // The texture replacements' folder a texture_pack setting names ("" when off or when there is none).
@@ -68,6 +71,10 @@ namespace bozo::app::video
 
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).
     bool parseFrameRate(const char *text, int &rate);
+
+    // fast_forward / PS2X_FAST_FORWARD: "2x" .. "10x", a percent (200 .. 1000) or "unlimited" (false for anything else).
+    bool parseFastForward(const std::string &text, int &percent);
+    std::string fastForwardName(int percent);
     std::string frameRateName(int rate);
 
     // Before the window opens: the file then the environment over the defaults (the port's window size). The port may

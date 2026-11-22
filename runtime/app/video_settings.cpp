@@ -119,6 +119,8 @@ namespace bozo::app::video
                     break;
                 }
             settings.textureSmoothing = smoothing;
+            if (settings.fastForward != 0)
+                settings.fastForward = std::clamp(settings.fastForward, 200, 1000);
         }
 
         void load(Settings &settings)
@@ -154,6 +156,8 @@ namespace bozo::app::video
                     settings.texturePack = value;
                 else if (name == "pause_in_background")
                     parseSwitch(value, settings.pauseInBackground);
+                else if (name == "fast_forward")
+                    parseFastForward(value, settings.fastForward);
             }
         }
 
@@ -250,6 +254,30 @@ namespace bozo::app::video
 
     std::string frameRateName(int rate) { return rate == 0 ? "game" : rate < 0 ? "monitor" : std::to_string(rate); }
 
+    bool parseFastForward(const std::string &text, int &percent)
+    {
+        if (text == "unlimited" || text == "0")
+        {
+            percent = 0;
+            return true;
+        }
+        const int n = std::atoi(text.c_str()); // "3x" (atoi stops at the x) or a percent
+        if (!text.empty() && (text.back() == 'x' || text.back() == 'X') && n >= 2 && n <= 10)
+            percent = n * 100;
+        else if (n >= 200 && n <= 1000)
+            percent = n;
+        else
+            return false;
+        return true;
+    }
+
+    std::string fastForwardName(int percent)
+    {
+        if (percent == 0)
+            return "unlimited";
+        return percent % 100 == 0 ? std::to_string(percent / 100) + "x" : std::to_string(percent);
+    }
+
     bool parseTextureSmoothing(const std::string &text, int &level)
     {
         if (text == "off" || text == "0")
@@ -314,6 +342,8 @@ namespace bozo::app::video
             parseTextureSmoothing(smoothing, settings.textureSmoothing);
         if (const char *pause = std::getenv("PS2X_PAUSE_IN_BACKGROUND"); pause && *pause)
             parseSwitch(pause, settings.pauseInBackground);
+        if (const char *fast = std::getenv("PS2X_FAST_FORWARD"); fast && *fast)
+            parseFastForward(fast, settings.fastForward);
         sanitize(settings);
         g_current = settings;
         g_current.mode = WindowMode::Windowed; // the window opens as a window; applyAtStartup goes on from there
@@ -498,7 +528,8 @@ namespace bozo::app::video
                 "# texture_smoothing: off (textures sampled as the console does), trilinear (levels made from them: distant\n"
                 "# textures stop shimmering) or 2x .. 16x (trilinear with that much anisotropic filtering;\n"
                 "# PS2X_TEXTURE_SMOOTHING). pause_in_background: on (the game held while another window has the focus or\n"
-                "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND).\n"
+                "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND). fast_forward: the game's speed while\n"
+                "# ` (the key left of 1) is held: 2x .. 10x or unlimited (as fast as the PC goes; PS2X_FAST_FORWARD).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
@@ -508,7 +539,8 @@ namespace bozo::app::video
              << "texture_upscale = " << render::upscaleFactorName(s.textureUpscale.factor) << "\n"
              << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n"
              << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n"
-             << "pause_in_background = " << (s.pauseInBackground ? "on" : "off") << "\n";
+             << "pause_in_background = " << (s.pauseInBackground ? "on" : "off") << "\n"
+             << "fast_forward = " << fastForwardName(s.fastForward) << "\n";
         if (!s.texturePack.empty())
             file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);

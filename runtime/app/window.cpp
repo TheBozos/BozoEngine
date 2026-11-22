@@ -427,6 +427,43 @@ namespace bozo::app
                 if (FramePacer::backgroundHold().exchange(hold, std::memory_order_acq_rel) != hold)
                     std::fprintf(stderr, "[window] %s\n", hold ? "in the background: the game holds" : "the game goes on");
             }
+            // Fast forward: while ` (the key left of 1, by its place: SDL's scancode) is held with the window focused, the
+            // game runs at the player's speed (video::Settings::fastForward; FramePacer::speedPercent). Not while the panel
+            // takes the keyboard. PS2X_FAST_FORWARD_AT=<from>-<to>[,...]: held between those seconds from the start
+            // (scripted checks).
+            {
+                static const std::vector<std::pair<double, double>> s_spans = []
+                {
+                    std::vector<std::pair<double, double>> spans;
+                    const char *text = std::getenv("PS2X_FAST_FORWARD_AT");
+                    for (std::string rest = text ? text : ""; !rest.empty();)
+                    {
+                        const size_t comma = rest.find(',');
+                        double from = 0.0, to = 0.0;
+                        if (std::sscanf(rest.substr(0, comma).c_str(), "%lf-%lf", &from, &to) == 2 && to > from)
+                            spans.emplace_back(from, to);
+                        rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    }
+                    return spans;
+                }();
+                const bool *keys = SDL_GetKeyboardState(nullptr);
+                bool held = keys && keys[SDL_SCANCODE_GRAVE] && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) &&
+                            !panel.holdsKeyboard();
+                const double at = seconds(start, Clock::now());
+                for (const auto &[from, to] : s_spans)
+                    held = held || (at >= from && at < to);
+                // Without the player's video settings (a scripted run): PS2X_FAST_FORWARD alone, 3x by default.
+                static const int s_fallback = []
+                {
+                    int percent = 300;
+                    if (const char *fast = std::getenv("PS2X_FAST_FORWARD"); fast && *fast)
+                        video::parseFastForward(fast, percent);
+                    return percent;
+                }();
+                const uint32_t speed = held ? static_cast<uint32_t>(videoSettings ? video::current().fastForward : s_fallback) : 100u;
+                if (FramePacer::speedPercent().exchange(speed, std::memory_order_relaxed) != speed)
+                    std::fprintf(stderr, "[window] fast forward %s\n", held ? video::fastForwardName(static_cast<int>(speed)).c_str() : "off");
+            }
             if (pad)
             {
                 pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse());
@@ -698,6 +735,7 @@ namespace bozo::app
                          static_cast<unsigned long long>(frames), span, span > 0.0 ? frames / span : 0.0);
         }
         FramePacer::backgroundHold().store(false, std::memory_order_release); // a held game must reach its stop
+        FramePacer::speedPercent().store(100u, std::memory_order_relaxed);
         game.stop();
         int result = 0;
         SDL_WaitThread(gameThread, &result);
