@@ -469,6 +469,10 @@ namespace bozo::app
         envNote("PS2X_TEXTURE_SMOOTHING");
         ImGui::TextDisabled("Distant textures without the shimmer: smaller copies made from each (applies at once).");
 
+        ImGui::Checkbox("Pause in the background", &edited.pauseInBackground);
+        envNote("PS2X_PAUSE_IN_BACKGROUND");
+        ImGui::TextDisabled("The game holds while another window has the focus or this one is minimised.");
+
         // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
         {
             static std::string s_lastOn; // a set folder (video.ini, PS2X_TEXTURE_PACK) given back when turned on again

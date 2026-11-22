@@ -7,6 +7,7 @@
 
 #include "bozo/app/app.h"
 #include "bozo/app/device_pad.h"
+#include "bozo/app/frame_pacer.h"
 #include "bozo/app/panel.h"
 #include "bozo/app/png.h"
 #include "bozo/app/video_settings.h"
@@ -325,6 +326,15 @@ namespace bozo::app
             }
             if (videoSettings)
                 video::frameUpdate();
+            // The player's "Pause in the background": the game holds at its frame end while the window has no focus
+            // (or is minimised); the window keeps presenting the last picture.
+            {
+                const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+                const bool away = !(flags & SDL_WINDOW_INPUT_FOCUS) || (flags & SDL_WINDOW_MINIMIZED);
+                const bool hold = videoSettings && video::current().pauseInBackground && away && !quit;
+                if (FramePacer::backgroundHold().exchange(hold, std::memory_order_acq_rel) != hold)
+                    std::fprintf(stderr, "[window] %s\n", hold ? "in the background: the game holds" : "the game goes on");
+            }
             if (pad)
             {
                 pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse());
@@ -575,6 +585,7 @@ namespace bozo::app
             std::fprintf(stderr, "[window] %llu game frames in %.2f s since the first picture: %.2f frames/s\n",
                          static_cast<unsigned long long>(frames), span, span > 0.0 ? frames / span : 0.0);
         }
+        FramePacer::backgroundHold().store(false, std::memory_order_release); // a held game must reach its stop
         game.stop();
         int result = 0;
         SDL_WaitThread(gameThread, &result);

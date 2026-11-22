@@ -77,6 +77,18 @@ namespace bozo::app::video
             return true;
         }
 
+        // on / off (also 1 / 0, true / false, yes / no); false for anything else.
+        bool parseSwitch(std::string_view text, bool &on)
+        {
+            if (text == "on" || text == "1" || text == "true" || text == "yes")
+                on = true;
+            else if (text == "off" || text == "0" || text == "false" || text == "no")
+                on = false;
+            else
+                return false;
+            return true;
+        }
+
         bool parseSize(const char *text, int &width, int &height)
         {
             int w = 0, h = 0;
@@ -140,6 +152,8 @@ namespace bozo::app::video
                     parseTextureSmoothing(value, settings.textureSmoothing);
                 else if (name == "texture_pack")
                     settings.texturePack = value;
+                else if (name == "pause_in_background")
+                    parseSwitch(value, settings.pauseInBackground);
             }
         }
 
@@ -298,6 +312,8 @@ namespace bozo::app::video
             settings.texturePack = pack;
         if (const char *smoothing = std::getenv("PS2X_TEXTURE_SMOOTHING"); smoothing && *smoothing)
             parseTextureSmoothing(smoothing, settings.textureSmoothing);
+        if (const char *pause = std::getenv("PS2X_PAUSE_IN_BACKGROUND"); pause && *pause)
+            parseSwitch(pause, settings.pauseInBackground);
         sanitize(settings);
         g_current = settings;
         g_current.mode = WindowMode::Windowed; // the window opens as a window; applyAtStartup goes on from there
@@ -481,7 +497,8 @@ namespace bozo::app::video
                 "# exists; PS2X_TEXTURE_PACK, PS2X_TEXTURE_PACK_RELOAD=1 to read changed files again while playing).\n"
                 "# texture_smoothing: off (textures sampled as the console does), trilinear (levels made from them: distant\n"
                 "# textures stop shimmering) or 2x .. 16x (trilinear with that much anisotropic filtering;\n"
-                "# PS2X_TEXTURE_SMOOTHING).\n"
+                "# PS2X_TEXTURE_SMOOTHING). pause_in_background: on (the game held while another window has the focus or\n"
+                "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
@@ -490,7 +507,8 @@ namespace bozo::app::video
              << "frame_rate = " << frameRateName(s.frameRate) << "\n"
              << "texture_upscale = " << render::upscaleFactorName(s.textureUpscale.factor) << "\n"
              << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n"
-             << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n";
+             << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n"
+             << "pause_in_background = " << (s.pauseInBackground ? "on" : "off") << "\n";
         if (!s.texturePack.empty())
             file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);
