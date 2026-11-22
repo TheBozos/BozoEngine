@@ -456,6 +456,19 @@ namespace bozo::app
         envNote("PS2X_TEXTURE_FILTER");
         ImGui::TextDisabled("The game's textures redrawn 2 or 4 times as large (applies at once; made in the background).");
 
+        static const int kSmoothings[] = {0, 1, 2, 4, 8, 16};
+        static const char *kSmoothingNames[] = {"Off (as the console)", "Trilinear", "Anisotropic 2x", "Anisotropic 4x",
+                                                "Anisotropic 8x", "Anisotropic 16x"};
+        int smoothingIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kSmoothings); ++i)
+            if (edited.textureSmoothing == kSmoothings[i])
+                smoothingIndex = i;
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Texture smoothing", &smoothingIndex, kSmoothingNames, IM_ARRAYSIZE(kSmoothingNames)))
+            edited.textureSmoothing = kSmoothings[smoothingIndex];
+        envNote("PS2X_TEXTURE_SMOOTHING");
+        ImGui::TextDisabled("Distant textures without the shimmer: smaller copies made from each (applies at once).");
+
         // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
         {
             static std::string s_lastOn; // a set folder (video.ini, PS2X_TEXTURE_PACK) given back when turned on again

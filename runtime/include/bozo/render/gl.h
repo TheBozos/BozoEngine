@@ -41,6 +41,8 @@ namespace bozo::render::gl
     constexpr GLenum kDstAlpha = 0x0304;
     constexpr GLenum kNearestMipmapNearest = 0x2700, kLinearMipmapNearest = 0x2701, kNearestMipmapLinear = 0x2702;
     constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501, kTextureMaxLevel = 0x813D, kTextureBaseLevel = 0x813C;
+    // Anisotropic filtering (GL 4.6 core, EXT_texture_filter_anisotropic before): the same enums.
+    constexpr GLenum kTextureMaxAnisotropy = 0x84FE, kMaxTextureMaxAnisotropy = 0x84FF;
     constexpr GLenum kFuncAdd = 0x8006, kFuncSubtract = 0x800A, kFuncReverseSubtract = 0x800B;
     constexpr GLenum kConstantAlpha = 0x8003, kOneMinusConstantAlpha = 0x8004, kOneMinusDstAlpha = 0x0305;
     constexpr GLenum kLess = 0x0201, kNotEqual = 0x0205, kAlways = 0x0207;

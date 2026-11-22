@@ -445,6 +445,7 @@ void main()
             g.FramebufferRenderbuffer(gl::kFramebuffer,gl::kDepthAttachment,gl::kRenderbuffer,shared ? depth : t.depth);
             return g.CheckFramebufferStatus(gl::kFramebuffer)==gl::kFramebufferComplete;
         }
+        int maxAnisotropy = 1; // the GPU's (init)
         struct GpuTexture
         {
             gl::GLuint id = 0;
@@ -458,6 +459,7 @@ void main()
             uint8_t holds = 0;         // what it was sent: 0 the texture as it is, 1 its upscaled copy, 2 its replacement
             size_t bytes = 0;        // sent to the GPU (generated levels not counted)
             const Texture *shared = nullptr; // a larger copy's: the GPU texture is sharedCopies' (not this slot's own)
+            int anisotropy = 1;      // the texture's anisotropic filtering as last set (texture smoothing)
         };
         // Larger copies (replacements, upscaled copies) on the GPU, by the copy (the same object for the same texels: the
         // replacements' and the upscaler's caches give it back): a slot whose key changed for the same texture (a game's
@@ -713,11 +715,52 @@ void main()
         }
 
         // The texture bound, its mip levels and filters as the material samples them: the uniforms that choose the level.
+        // The texture's levels made from its level 0 (the GPU's level `shift`) once, when it has none of its own.
+        void generateLevels(GpuTexture &slot)
+        {
+            const gl::Api &g = gl::api();
+            if (slot.levels != slot.shift || slot.generated || !slot.source || !slot.source->levels.empty())
+                return;
+            if (slot.shift != 0)
+                g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, slot.shift);
+            g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, 1000);
+            g.GenerateMipmap(gl::kTexture2D);
+            if (slot.shift != 0)
+                g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, 0);
+            uint32_t size = std::max(slot.source->width, slot.source->height);
+            while (size > 1u)
+                size >>= 1, ++slot.levels;
+            slot.generated = true;
+        }
+        void setAnisotropy(GpuTexture &slot, int anisotropy)
+        {
+            anisotropy = std::clamp(anisotropy, 1, maxAnisotropy);
+            if (slot.anisotropy == anisotropy)
+                return;
+            gl::api().TexParameterf(gl::kTexture2D, gl::kTextureMaxAnisotropy, static_cast<float>(anisotropy));
+            slot.anisotropy = anisotropy;
+        }
+
         void sampleLevels(uint64_t key, const Material &m)
         {
             const gl::Api &g = gl::api();
             const Material::Mipmap &mip = m.mipmap;
             GpuTexture &slot = textures[key];
+            // Texture smoothing (Renderer::setTextureSmoothing): a draw without levels of its own samples generated ones,
+            // trilinear by the screen footprint, with anisotropic filtering past 1.
+            const int smoothing = Renderer::instance().textureSmoothing();
+            if (mip.levels == 0u && smoothing > 0 && !m.nearest && slot.source)
+            {
+                generateLevels(slot);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, slot.levels);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, gl::kLinearMipmapLinear);
+                g.TexParameterf(gl::kTexture2D, gl::kTextureLodBias, 0.0f);
+                g.Uniform1i(locLodMode, 0);
+                setAnisotropy(slot, smoothing);
+                return;
+            }
+            if (maxAnisotropy > 1)
+                setAnisotropy(slot, 1);
             if (mip.levels == 0u && slot.shift != 0 && slot.levels >= slot.shift)
             {
                 // A larger copy (upscaled or replaced) of a texture drawn without levels: its levels down to the texture's
@@ -735,19 +778,7 @@ void main()
                 g.Uniform1i(locLodMode, 0);
                 return;
             }
-            if (slot.levels == slot.shift && !slot.generated && slot.source && slot.source->levels.empty())
-            {
-                if (slot.shift != 0)
-                    g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, slot.shift);
-                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, 1000);
-                g.GenerateMipmap(gl::kTexture2D);
-                if (slot.shift != 0)
-                    g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, 0);
-                uint32_t size = std::max(slot.source->width, slot.source->height);
-                while (size > 1u)
-                    size >>= 1, ++slot.levels;
-                slot.generated = true;
-            }
+            generateLevels(slot);
             g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, std::min<int>(mip.levels + slot.shift, slot.levels));
             static constexpr gl::GLenum kFilters[2][2] = {{gl::kNearestMipmapNearest, gl::kNearestMipmapLinear},
                                                          {gl::kLinearMipmapNearest, gl::kLinearMipmapLinear}};
@@ -801,6 +832,14 @@ void main()
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locLodMode = g.GetUniformLocation(shader, "uLodMode");
+            {
+                // The GPU's anisotropic filtering limit (1: none; a driver without the extension sets an error, cleared).
+                gl::GLint most = 1;
+                g.GetIntegerv(gl::kMaxTextureMaxAnisotropy, &most);
+                if (g.GetError() != 0)
+                    most = 1;
+                maxAnisotropy = std::max(1, static_cast<int>(most));
+            }
             locLodScale = g.GetUniformLocation(shader, "uLodScale");
             locLodBias = g.GetUniformLocation(shader, "uLodBias");
             locViewport = g.GetUniformLocation(flatShader, "uViewport");
