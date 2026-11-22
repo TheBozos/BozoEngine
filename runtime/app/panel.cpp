@@ -599,7 +599,7 @@ namespace bozo::app
             ImGui::EndCombo();
         }
         envNote("PS2X_FAST_FORWARD");
-        ImGui::TextDisabled("The game's speed while ` (the key left of 1) is held; the music keeps its pace.");
+        ImGui::TextDisabled("The game's speed while Fast forward is held (` by default, the Controls tab binds it).");
 
         // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
         {

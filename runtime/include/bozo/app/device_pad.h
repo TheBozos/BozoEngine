@@ -38,6 +38,8 @@ namespace bozo::app
         // Window thread: while the settings window (F2) holds them, the keyboard and the mouse do not reach the game
         // (the gamepads still do), and the cursor is not captured.
         void setHeld(bool keyboard, bool mouse);
+        // Window thread, after update: a player's FastForward binding is held (input::FastForward).
+        bool fastForwardHeld() const;
         // Game thread.
         void read(uint32_t frame, int player, libs::PadInputState &out) override;
         void rumble(int player, bool small, uint8_t large) override;

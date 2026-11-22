@@ -529,7 +529,7 @@ namespace bozo::app::video
                 "# textures stop shimmering) or 2x .. 16x (trilinear with that much anisotropic filtering;\n"
                 "# PS2X_TEXTURE_SMOOTHING). pause_in_background: on (the game held while another window has the focus or\n"
                 "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND). fast_forward: the game's speed while\n"
-                "# ` (the key left of 1) is held: 2x .. 10x or unlimited (as fast as the PC goes; PS2X_FAST_FORWARD).\n"
+                "# fast forward is held (input.ini fast_forward; ` by default): 2x .. 10x or unlimited (as fast as the PC goes; PS2X_FAST_FORWARD).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
