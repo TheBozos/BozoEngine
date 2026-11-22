@@ -11,6 +11,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -262,6 +263,16 @@ namespace bozo::app::input
                     profile.gamepad = value == "auto" ? -1 : std::clamp(std::atoi(value.c_str()), -1, 3);
                     continue;
                 }
+                if (name == "rumble")
+                {
+                    if (value == "on" || value == "true")
+                        profile.rumble = 100;
+                    else if (value == "off" || value == "false")
+                        profile.rumble = 0;
+                    else
+                        profile.rumble = std::clamp(std::atoi(value.c_str()), 0, 100);
+                    continue;
+                }
                 for (int action = 0; action < ActionCount; ++action)
                 {
                     if (name != kActionNames[action])
@@ -348,6 +359,22 @@ namespace bozo::app::input
 
     std::mutex &configMutex() { return g_mutex; }
 
+    namespace
+    {
+        std::atomic<uint64_t> g_rumbleTest[kPlayers] = {};
+    }
+
+    void testRumble(int player)
+    {
+        if (player >= 0 && player < kPlayers)
+            g_rumbleTest[player].store(SDL_GetTicks() + 500, std::memory_order_relaxed);
+    }
+
+    uint64_t rumbleTestUntil(int player)
+    {
+        return player >= 0 && player < kPlayers ? g_rumbleTest[player].load(std::memory_order_relaxed) : 0;
+    }
+
     Config &config()
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -385,7 +412,8 @@ namespace bozo::app::input
         {
             const Profile &profile = g_config.players[player];
             file << "\n[player" << (player + 1) << "]\ngamepad = "
-                 << (profile.gamepad < 0 ? std::string("auto") : std::to_string(profile.gamepad)) << "\n";
+                 << (profile.gamepad < 0 ? std::string("auto") : std::to_string(profile.gamepad)) << "\nrumble = "
+                 << profile.rumble << "\n";
             for (int action = 0; action < ActionCount; ++action)
             {
                 file << kActionNames[action] << " =";
