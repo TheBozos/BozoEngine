@@ -54,6 +54,9 @@ namespace bozo::app::video
         // Texture replacements (bozo/render/texture_replace.h): a folder of <identity>.png files; "" the user folder's
         // texture_pack when it exists, "off" none.
         std::string texturePack;
+        // The game held while the window is in the background (another window has the focus, or it is minimised):
+        // FramePacer::backgroundHold, set by the window's loop. Off by default (the game runs on, as before).
+        bool pauseInBackground = false;
     };
 
     // The texture replacements' folder a texture_pack setting names ("" when off or when there is none).

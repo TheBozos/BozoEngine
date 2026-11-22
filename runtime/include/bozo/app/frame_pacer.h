@@ -43,11 +43,29 @@ public:
     [[nodiscard]] uint64_t frames() const noexcept { return m_frames.load(std::memory_order_relaxed); }
     [[nodiscard]] double lastStepSeconds() const noexcept { return m_lastStep.load(std::memory_order_relaxed); }
 
+    // Any thread: while set, a paced game holds at its frame end (the window sets it while it is in the background and
+    // the player's video settings ask for it: video::Settings::pauseInBackground; cleared before the game is stopped).
+    // The sound runs dry meanwhile (the game's thread is what pushes it); the frame after counts one period.
+    static std::atomic<bool> &backgroundHold() noexcept
+    {
+        static std::atomic<bool> hold{false};
+        return hold;
+    }
+
     // Waits until the cap allows the next frame to start, then returns the time since the previous frame end.
     double frameEnd()
     {
         using Clock = std::chrono::steady_clock;
         const uint32_t cap = m_cap.load(std::memory_order_relaxed);
+        if (m_paced.load(std::memory_order_relaxed) && backgroundHold().load(std::memory_order_acquire))
+        {
+            while (backgroundHold().load(std::memory_order_acquire))
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            // Back on the schedule from now, the pause not counted as the game's time (nor as a frame's work).
+            m_previous = Clock::now() - std::chrono::duration_cast<Clock::duration>(
+                                            std::chrono::duration<double>(1.0 / std::max<uint32_t>(cap, 1u)));
+            m_lastReturn = Clock::now();
+        }
         Clock::time_point now = Clock::now();
         Clock::time_point due{};
         if (statsWanted() && m_frames.load(std::memory_order_relaxed) != 0u)
