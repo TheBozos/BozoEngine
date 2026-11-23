@@ -104,11 +104,13 @@ namespace bozo::app::input
         const char *const kActionNames[ActionCount] = {
             "up", "down", "left", "right", "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3",
             "r3", "start", "select", "left_stick_left", "left_stick_right", "left_stick_up", "left_stick_down",
-            "right_stick_left", "right_stick_right", "right_stick_up", "right_stick_down", "fast_forward"};
+            "right_stick_left", "right_stick_right", "right_stick_up", "right_stick_down", "fast_forward", "settings_window",
+            "save_state", "load_state"};
         const char *const kActionLabels[ActionCount] = {
             "Up", "Down", "Left", "Right", "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3",
             "R3", "Start", "Select", "Left stick left", "Left stick right", "Left stick up", "Left stick down",
-            "Right stick left", "Right stick right", "Right stick up", "Right stick down", "Fast forward (held)"};
+            "Right stick left", "Right stick right", "Right stick up", "Right stick down", "Fast forward (held)",
+            "Settings window (F2)", "Save state (F5)", "Load state (F7)"};
         // The PS2 buttons in Action order for the 16 buttons.
         const uint16_t kButtonBits[16] = {libs::kPadUp,  libs::kPadDown, libs::kPadLeft,  libs::kPadRight,
                                           libs::kPadCross, libs::kPadCircle, libs::kPadSquare, libs::kPadTriangle,
@@ -183,6 +185,8 @@ namespace bozo::app::input
                 p.actions[RightStickDown].push_back(axis(SDL_GAMEPAD_AXIS_RIGHTY, 1));
                 // Fast forward: a DualShock 4 / DualSense's touchpad click (no PS2 button has it).
                 p.actions[FastForward].push_back(pad(SDL_GAMEPAD_BUTTON_TOUCHPAD));
+                // The settings window: the middle button (PS, Xbox, Home), as a console's own menu.
+                p.actions[SettingsWindow].push_back(pad(SDL_GAMEPAD_BUTTON_GUIDE));
             }
             // Player 1's keyboard (US key positions), as before.
             Profile &p1 = config.players[0];
@@ -430,7 +434,21 @@ namespace bozo::app::input
         return static_cast<bool>(file);
     }
 
-    libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad, bool *fastForward)
+    uint32_t windowActions(int player, const Devices &devices, SDL_Gamepad *gamepad)
+    {
+        player = std::clamp(player, 0, kPlayers - 1);
+        uint32_t held = 0;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        ensureLoaded();
+        const Profile &profile = g_config.players[player];
+        for (int action = kFirstWindowAction; action < ActionCount; ++action)
+            for (const Binding &binding : profile.actions[action])
+                if (strength(binding, devices, gamepad) > 0.5f)
+                    held |= 1u << (action - kFirstWindowAction);
+        return held;
+    }
+
+    libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad)
     {
         player = std::clamp(player, 0, kPlayers - 1);
         float value[ActionCount] = {};
@@ -442,8 +460,6 @@ namespace bozo::app::input
                 for (const Binding &binding : profile.actions[action])
                     value[action] = std::max(value[action], strength(binding, devices, gamepad));
         }
-        if (fastForward)
-            *fastForward = value[FastForward] > 0.5f;
         libs::PadInputState state;
         for (int button = 0; button < 16; ++button)
             if (value[button] > 0.5f)

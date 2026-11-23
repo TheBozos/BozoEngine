@@ -74,6 +74,7 @@ namespace bozo::app
         SDL_Window *window = nullptr;
         bool ready = false;
         bool settings = false; // F2
+        bool focusSettings = false; // just opened: the settings window takes the focus (gamepad navigation)
         bool overlay = false;  // F3
         std::string openTab;   // PS2X_SETTINGS_OPEN's tab, selected once
         std::string iniPath;   // imgui.ini (ImGui keeps the pointer)
@@ -100,7 +101,7 @@ namespace bozo::app
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
         const std::filesystem::path &user = userDirectory();
         m.iniPath = (user.empty() ? std::filesystem::path("imgui.ini") : user / "imgui.ini").string();
         io.IniFilename = m.iniPath.c_str();
@@ -116,6 +117,8 @@ namespace bozo::app
             ImGui::DestroyContext();
             return false;
         }
+        // Every gamepad steers the settings window (any player's), not only the first plugged in.
+        ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);
         m.window = window;
         m.ready = true;
         if (const char *show = std::getenv("PS2X_SHOW_FPS"); show && *show == '1')
@@ -123,6 +126,7 @@ namespace bozo::app
         if (const char *open = std::getenv("PS2X_SETTINGS_OPEN"); open && *open)
         {
             m.settings = true;
+            m.focusSettings = true;
             m.openTab = open;
         }
         return true;
@@ -148,9 +152,7 @@ namespace bozo::app
         {
             if (event.key.scancode == SDL_SCANCODE_F2)
             {
-                m.settings = !m.settings;
-                if (!m.settings)
-                    m.bindingAction = -1;
+                toggleSettings();
                 return;
             }
             if (event.key.scancode == SDL_SCANCODE_F3)
@@ -191,6 +193,17 @@ namespace bozo::app
     }
 
     bool Panel::settingsOpen() const { return impl_->ready && impl_->settings; }
+    void Panel::toggleSettings()
+    {
+        Impl &m = *impl_;
+        if (!m.ready)
+            return;
+        m.settings = !m.settings;
+        m.focusSettings = m.settings;
+        if (!m.settings)
+            m.bindingAction = -1;
+    }
+    bool Panel::holdsGamepads() const { return impl_->ready && impl_->settings; }
     bool Panel::overlayShown() const { return impl_->ready && impl_->overlay; }
     bool Panel::holdsKeyboard() const
     {
@@ -426,6 +439,11 @@ namespace bozo::app
     {
         const float unit = ImGui::GetStyle().FontScaleDpi;
         ImGui::SetNextWindowSize(ImVec2(640.0f * unit, 600.0f * unit), ImGuiCond_FirstUseEver);
+        if (focusSettings)
+        {
+            ImGui::SetNextWindowFocus();
+            focusSettings = false;
+        }
         if (!ImGui::Begin("Settings (F2)", &settings))
         {
             ImGui::End();
@@ -707,7 +725,7 @@ namespace bozo::app
         if (ImGui::BeginTable("bindings", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
                               ImVec2(0.0f, ImGui::GetContentRegionAvail().y - 120.0f * unit)))
         {
-            ImGui::TableSetupColumn("PS2", ImGuiTableColumnFlags_WidthFixed, 130.0f * unit);
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 150.0f * unit);
             ImGui::TableSetupColumn("Bindings", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 70.0f * unit);
             for (int action = 0; action < input::ActionCount; ++action)

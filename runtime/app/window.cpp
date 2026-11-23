@@ -8,6 +8,7 @@
 #include "bozo/app/app.h"
 #include "bozo/app/device_pad.h"
 #include "bozo/app/frame_pacer.h"
+#include "bozo/app/input_bindings.h"
 #include "bozo/app/panel.h"
 #include "bozo/app/png.h"
 #include "bozo/app/video_settings.h"
@@ -364,6 +365,7 @@ namespace bozo::app
         static const bool keepCursor = [] { const char *v = std::getenv("PS2X_KEEP_CURSOR"); return v && *v == '1'; }();
         Clock::time_point cursorMoved = start;
         bool cursorHidden = false;
+        uint32_t windowActions = 0; // the window's actions held at the last pad update (input::windowActions)
         while (!quit)
         {
             SDL_Event event;
@@ -408,6 +410,70 @@ namespace bozo::app
             }
             if (videoSettings)
                 video::frameUpdate();
+            // PS2X_VIRTUAL_PAD=<s>:<button>[,...] (scripted checks of what a gamepad does to the window: its bindings, the
+            // settings window's gamepad navigation): a virtual SDL gamepad, attached at the start, presses each button
+            // (SDL's names: guide, a, b, dpdown, touchpad, ...; or input.ini's: MIDDLE, RIGHT_FACE_LEFT, ...) for 0.15 s
+            // at that second from the start. A hidden window has no focus: with PS2X_INPUT_BACKGROUND=1 the devices are
+            // read anyway.
+            {
+                struct Press
+                {
+                    double at;
+                    SDL_GamepadButton button;
+                    int stage; // 0 waiting, 1 down, 2 done
+                };
+                static std::vector<Press> s_presses;
+                static SDL_Joystick *s_virtual = nullptr;
+                static const bool s_wanted = [&]
+                {
+                    const char *text = std::getenv("PS2X_VIRTUAL_PAD");
+                    for (std::string rest = text ? text : ""; !rest.empty();)
+                    {
+                        const size_t comma = rest.find(',');
+                        const std::string step = rest.substr(0, comma);
+                        rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                        const size_t colon = step.find(':');
+                        const std::string name = colon == std::string::npos ? std::string() : step.substr(colon + 1);
+                        SDL_GamepadButton button = name.empty() ? SDL_GAMEPAD_BUTTON_INVALID : SDL_GetGamepadButtonFromString(name.c_str());
+                        input::Binding binding; // or input.ini's name (RIGHT_FACE_LEFT, MIDDLE, ...)
+                        if (button == SDL_GAMEPAD_BUTTON_INVALID && !name.empty() && input::parseBinding("pad:" + name, binding) &&
+                            binding.source == input::Source::GamepadButton && binding.code < SDL_GAMEPAD_BUTTON_COUNT)
+                            button = static_cast<SDL_GamepadButton>(binding.code);
+                        if (button != SDL_GAMEPAD_BUTTON_INVALID)
+                            s_presses.push_back({std::atof(step.c_str()), button, 0});
+                        else
+                            std::fprintf(stderr, "[window] PS2X_VIRTUAL_PAD: no button in '%s'\n", step.c_str());
+                    }
+                    if (s_presses.empty())
+                        return false;
+                    SDL_VirtualJoystickDesc desc;
+                    SDL_INIT_INTERFACE(&desc);
+                    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+                    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+                    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+                    desc.name = "Virtual gamepad (PS2X_VIRTUAL_PAD)";
+                    const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+                    s_virtual = id ? SDL_OpenJoystick(id) : nullptr;
+                    std::fprintf(stderr, "[window] virtual gamepad %s\n", s_virtual ? "attached" : SDL_GetError());
+                    return s_virtual != nullptr;
+                }();
+                if (s_wanted)
+                {
+                    const double at = seconds(start, Clock::now());
+                    for (Press &p : s_presses)
+                        if (p.stage == 0 && at >= p.at)
+                        {
+                            SDL_SetJoystickVirtualButton(s_virtual, p.button, true);
+                            p.stage = 1;
+                            std::fprintf(stderr, "[window] virtual gamepad: %s\n", SDL_GetGamepadStringForButton(p.button));
+                        }
+                        else if (p.stage == 1 && at >= p.at + 0.15)
+                        {
+                            SDL_SetJoystickVirtualButton(s_virtual, p.button, false);
+                            p.stage = 2;
+                        }
+                }
+            }
             if (!keepCursor && !options.hidden)
             {
                 const bool hide = !panel.settingsOpen() && Clock::now() - cursorMoved > std::chrono::seconds(2) &&
@@ -446,7 +512,7 @@ namespace bozo::app
                     }
                     return spans;
                 }();
-                bool held = pad && pad->fastForwardHeld();
+                bool held = (windowActions & (1u << (input::FastForward - input::kFirstWindowAction))) != 0;
                 const double at = seconds(start, Clock::now());
                 for (const auto &[from, to] : s_spans)
                     held = held || (at >= from && at < to);
@@ -464,8 +530,20 @@ namespace bozo::app
             }
             if (pad)
             {
-                pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse());
+                pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse(), panel.holdsGamepads());
                 pad->update((SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0);
+                // The window's actions bound like the pad's buttons (input.ini, the Controls tab): the settings window,
+                // save and load a state at their press (F2, F5, F7's); fast forward while held (above, the next loop).
+                const uint32_t now = pad->windowActions();
+                const uint32_t pressed = now & ~windowActions;
+                windowActions = now;
+                const auto bit = [](int action) { return 1u << (action - input::kFirstWindowAction); };
+                if (pressed & bit(input::SettingsWindow))
+                    panel.toggleSettings();
+                if ((pressed & bit(input::SaveState)) && game.saveState)
+                    saveState(stateSlot());
+                if ((pressed & bit(input::LoadState)) && game.loadState)
+                    game.loadState(stateSlot());
             }
             if (thread.done.load(std::memory_order_acquire))
                 break;

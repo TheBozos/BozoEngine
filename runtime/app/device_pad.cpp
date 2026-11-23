@@ -39,7 +39,7 @@ namespace bozo::app
         std::array<SDL_Gamepad *, kPlaces> gamepads{};
         std::array<SDL_JoystickID, kPlaces> ids{};
         bool mappingsLoaded = false;
-        bool fastForward = false; // a FastForward binding held at the last update (the window's thread)
+        uint32_t windowActions = 0; // the window's actions held at the last update (the window's thread)
         bool listChanged = true;
 
         // The mouse: motion since the last update, smoothed speed, the wheel's last notch.
@@ -59,7 +59,7 @@ namespace bozo::app
         bool rumbleOn = true;
         bool background = false;
         // The settings window's hold (DevicePad::setHeld): the keyboard / the mouse kept from the game.
-        bool heldKeys = false, heldMouse = false;
+        bool heldKeys = false, heldMouse = false, heldPads = false;
 
         // The gamepad of a player: the one input.ini names, else the player's among the connected ones (player n the
         // nth, as the fork gave port n the nth raylib gamepad).
@@ -185,13 +185,14 @@ namespace bozo::app
         }
     }
 
-    void DevicePad::setHeld(bool keyboard, bool mouse)
+    void DevicePad::setHeld(bool keyboard, bool mouse, bool gamepads)
     {
+        impl_->heldPads = gamepads;
         impl_->heldKeys = keyboard;
         impl_->heldMouse = mouse;
     }
 
-    bool DevicePad::fastForwardHeld() const { return impl_->fastForward; }
+    uint32_t DevicePad::windowActions() const { return impl_->windowActions; }
 
     void DevicePad::update(bool focused)
     {
@@ -249,23 +250,24 @@ namespace bozo::app
 
         std::array<libs::PadInputState, input::kPlayers> states{};
         std::array<SDL_Gamepad *, input::kPlayers> pads{};
-        bool fastForward = false;
+        uint32_t windowActions = 0;
         for (int player = 0; player < input::kPlayers; ++player)
         {
             SDL_Gamepad *g = m.gamepadOf(player, chosen[static_cast<size_t>(player)]);
             pads[static_cast<size_t>(player)] = g;
             // Players 2-4 only with a gamepad of their own, never the keyboard (as the fork).
-            bool held = false;
             if (allowed && (player == 0 || g))
-                states[static_cast<size_t>(player)] = input::padState(player, devices, g, &held);
-            fastForward = fastForward || held;
+            {
+                states[static_cast<size_t>(player)] = input::padState(player, devices, m.heldPads ? nullptr : g);
+                windowActions |= input::windowActions(player, devices, g);
+            }
             states[static_cast<size_t>(player)].connected = player == 0 || g != nullptr;
         }
         {
             std::lock_guard<std::mutex> lock(m.mutex);
             m.states = states;
         }
-        m.fastForward = fastForward;
+        m.windowActions = windowActions;
 
         // Rumble: what the game asks, sent when it changes and again before the last one runs out; nothing while the
         // window is in the background.
