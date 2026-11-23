@@ -61,6 +61,8 @@ namespace bozo::audio
         void setStart(int group, int voice, uint32_t address);
         void setLoop(int group, int voice, uint32_t address);
         uint16_t volume(int group, int voice, int side) const;
+        // The voice's current volume on a side, 0..0x7FFF: its setting, or where its sweep has brought it (bit 15).
+        uint16_t currentVolume(int group, int voice, int side) const;
         uint16_t pitch(int group, int voice) const;
         uint16_t adsr(int group, int voice, int word) const;
         uint16_t envelope(int group, int voice) const; // ENVX: the envelope's level now (0..0x7FFF)
