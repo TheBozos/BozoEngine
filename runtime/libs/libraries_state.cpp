@@ -103,7 +103,7 @@ namespace bozo::libs
             throw state::Error("save state: " + why);
         a.begin("libraries");
         heap.serialize(a);
-        fields(a, rand.state, framesEnded, dmaEnvironment);
+        fields(a, rand.state, framesEnded, dmaEnvironment, gsVideo);
         a.begin("waits");
         uint64_t n = state::count(a, continuations_.size());
         if (!a.loading())
