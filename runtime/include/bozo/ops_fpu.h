@@ -212,8 +212,10 @@ namespace bozo::ps2f
 #ifndef BOZO_PS2F_EXACT_ONLY
         if (normal(a) && normal(b))
         {
+            // Not the smallest normals (exponent 1): a product just below 2^-126 rounds up to 2^-126 on the host,
+            // where the PS2 flushes it to zero and flags the underflow. A sum cannot: below 2^-126 it is exact.
             const uint32_t r = hostBits(hostFloat(a) * hostFloat(b));
-            if (normal(r))
+            if (expOf(r) - 2u < 253u)
                 return r;
         }
 #endif
