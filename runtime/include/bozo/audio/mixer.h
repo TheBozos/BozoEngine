@@ -111,6 +111,12 @@ namespace bozo::audio
         // Clocked: the IOP cycle at which the next input half ends (its half callback), 0 when no input plays.
         uint64_t nextInputHalfCycle() const;
         void setInputHalfCallback(std::function<void(int group, int half)> half);
+        // The SPU2's interrupt: a core's IRQ address (SD_A_IRQA) and its enable (SD_CORE_IRQ_ENABLE). Reached by a voice
+        // reading the 16-byte block that holds it (a block decoded, a key on) or a transfer writing over it, an enabled
+        // core calls irq(core) once and stays disabled until it is enabled again, as the SPU2's IRQ flag is cleared.
+        void setIrqAddress(int group, uint32_t address);
+        void setIrqEnabled(int group, bool enabled);
+        void setIrqCallback(std::function<void(int group)> irq);
         // A port's stream, added to each output sample after the voices (null: none). It outlives its use here.
         void setPortStream(PortStream *stream);
 
@@ -206,6 +212,8 @@ namespace bozo::audio
             Reverb reverb;
             uint16_t mix = 0xFF0u;
             Input input;
+            uint32_t irqAddress = 0;
+            bool irqEnabled = false;
         };
 
         void decode(Voice &voice);
@@ -228,6 +236,8 @@ namespace bozo::audio
         std::vector<uint8_t> m_memory = std::vector<uint8_t>(kSoundMemory, 0u);
         Group m_groups[kGroups];
         std::function<void(int group, int half)> m_inputHalf;
+        std::function<void(int group)> m_irq;
+        void reachIrq(uint32_t address, uint32_t bytes); // under m_mutex
         PortStream *m_portStream = nullptr;
         // takeMixed's digest.
         std::mutex m_digestMutex;

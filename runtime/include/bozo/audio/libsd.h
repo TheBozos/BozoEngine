@@ -77,7 +77,8 @@ namespace bozo::audio
         uint32_t blockTransStatus(uint32_t channel);
         uint32_t setTransCallback(uint32_t channel, uint32_t function, uint32_t gp);                       // 21
         uint32_t setTransIntrHandler(uint32_t channel, uint32_t function, uint32_t argument, uint32_t gp); // 26
-        uint32_t setIrqCallback(uint32_t function);                                                        // 22
+        uint32_t setIrqCallback(uint32_t function);
+        uint32_t setSpu2IntrHandler(uint32_t function, uint32_t argument, uint32_t gp);           // 27                                                        // 22
         uint32_t setEffectAttr(uint32_t core, uint32_t attr); // 23: attr {core, mode, depth L/R, delay, feedback}
         uint32_t getEffectAttr(uint32_t core, uint32_t attr); // 24
         uint32_t setEffectMode(uint32_t core, uint32_t attr);       // 32: the mode, its delay, feedback and depth 0
@@ -101,6 +102,7 @@ namespace bozo::audio
         uint32_t batchOne(uint32_t function, uint32_t entry, uint32_t value);
         void transferDone(uint32_t channel);
         void inputHalf(uint32_t channel, uint32_t half);
+        void spu2Interrupt(int core); // the mixer reached a core's IRQ address
         uint32_t blockPosition(uint32_t channel);
 
         uint32_t physical(uint32_t address);
@@ -123,6 +125,7 @@ namespace bozo::audio
             uint32_t transferAddress[2] = {};
             Callback transCallback[2], transHandler[2]; // per DMA channel
             uint32_t irqCallback = 0;
+            Callback spu2Handler; // sceSdSetSpu2IntrHandler: handler(core bit, argument) at the SPU2's interrupt
             uint32_t blockBuffer[2] = {}, blockSize[2] = {}; // the block transfer playing as each core's input
             // The halves signalled and not yet read by sceSdBlockTransStatus (oldest first, at most two).
             uint32_t halves[2][2] = {}, halvesPending[2] = {};

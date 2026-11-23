@@ -1589,6 +1589,12 @@ namespace bozo::native::irx
             // no pending operation; this is the SDK's terminal/error result.
             ret(0xffffffffu);return;
         }
+        // sceSifSetDChain (6): arms the SIF DMA's chain mode before a transfer; the native copies need nothing armed.
+        if (lib == "sifman" && n == 6)
+        {
+            ret();
+            return;
+        }
         if (lib == "sifman" && (n == 5 || n == 29))
         {
             ret(1);
@@ -1689,6 +1695,13 @@ namespace bozo::native::irx
                 write(a0 + 0x28, a2);
                 write(a0 + 0x2c, a3);
                 ret(a0);
+                return;
+            }
+            // sceSifCheckStatRpc(client): an IOP call to an EE service completes within sceSifCallRpc (below), so it is
+            // never in progress when asked: 0.
+            if (n == 18)
+            {
+                ret(0);
                 return;
             }
             if (n == 15)
