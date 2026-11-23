@@ -358,6 +358,11 @@ namespace bozo::audio
     {
         sync();
         mode &= 3u;
+        // The SPU2's transfer start address is in units of 8 halfwords, as a voice's start and loop are (the mixer
+        // keeps those 16-byte aligned): an unaligned address is the block it lies in. Shinobido's driver allocates its
+        // music buffers down from the last byte (0x1fffff - 0x28000 = 0x1d7fff) and passes that address both to
+        // sceSdVoiceTrans and to the voice's SSA; written at the exact byte, every block was 15 bytes off its decode.
+        sound &= ~15u;
         if (mode == 0u || mode == 3u)
         {
             std::vector<uint8_t> data(size);
