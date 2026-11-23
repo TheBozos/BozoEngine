@@ -1,6 +1,7 @@
 // bozo-runtime-tests: the runtime core (bozo/runtime.h): the guest addresses with memory behind them, and the
 // function table with its overrides looked up first.
 #include "bozo/runtime.h"
+#include "bozo/ops_fpu.h"
 
 #include <cstdio>
 #include <memory>
@@ -119,6 +120,22 @@ int main()
     eq("ei", bozo_cop0_read(&ctx, rt.get(), 12), 0x10000);
     bozo_set_interrupts(rt->memory.ram(), &ctx, rt.get(), false);
     eq("di", bozo_cop0_read(&ctx, rt.get(), 12), 0);
+
+    // ps2f's host shortcut (normal operands and result) at the bottom of the normals: a product just below 2^-126
+    // rounds up to 2^-126 on the host; the PS2 flushes it to zero with the underflow flags.
+    {
+        const uint32_t cases[][4] = {{0x00800000u, 0x3f7fffffu, 0x00000000u, 0x4008u},
+                                     {0x00800000u, 0xbf7fffffu, 0x80000000u, 0x4008u},
+                                     {0x3effffffu, 0x01000000u, 0x00000000u, 0x4008u},
+                                     {0x3f800000u, 0x00800000u, 0x00800000u, 0u},
+                                     {0x3f000000u, 0x01000000u, 0x00800000u, 0u}};
+        for (const auto &c : cases)
+        {
+            uint32_t flags = 0;
+            eq("ps2f mul at the smallest normal", bozo::ps2f::mul(c[0], c[1], flags), c[2]);
+            eq("ps2f mul's underflow flags", flags, c[3]);
+        }
+    }
 
     std::printf("runtime tests: %s\n", g_failures ? "FAILED" : "passed");
     return g_failures ? 1 : 0;

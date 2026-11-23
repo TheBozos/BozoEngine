@@ -101,7 +101,7 @@ namespace bozo::vu0
     // ---- Four fields at once (x86-64) ----
     // The common cases of an FMAC instruction, all four fields through SSE together; the field-by-field path above gives
     // the same bits and flags for them:
-    // - a product of two normal numbers that is normal, or with a zero operand (exponent 0: zero or denormal): the
+    // - a product of two normal numbers that is normal above the smallest normals (exponent 2-254), or with a zero operand (exponent 0: zero or denormal): the
     //   signed zero, no flag (ps2f::mul);
     // - a sum of two normal numbers that is normal, or with a zero operand: the other operand, or for two zeros -0 only
     //   when both are -0 (ps2f::addZeros); a - b is a + (-b);
@@ -128,6 +128,9 @@ namespace bozo::vu0
         inline __m128i zero(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_setzero_si128()); } // or denormal
         inline __m128i top(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(0xFF)); }
         inline __m128i abnormal(__m128i x) { return _mm_or_si128(zero(x), top(x)); }
+        // Exponent 1, the smallest normals: a product just below 2^-126 rounds up to them on the host, where the PS2
+        // flushes it to zero with the underflow flags (ps2f::mul's shortcut leaves them to the exact path too).
+        inline __m128i bottom(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(1)); }
         inline __m128i select(__m128i mask, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b)); }
         inline __m128i signBits() { return _mm_set1_epi32(static_cast<int32_t>(0x80000000u)); }
         // Lane i on when dest enables field i (x = dest bit 3 = lane 0).
@@ -141,7 +144,8 @@ namespace bozo::vu0
         {
             const __m128i z = _mm_or_si128(zero(s), zero(t));
             const __m128i p = _mm_castps_si128(_mm_mul_ps(_mm_castsi128_ps(s), _mm_castsi128_ps(t)));
-            bad = _mm_or_si128(bad, _mm_andnot_si128(z, _mm_or_si128(_mm_or_si128(top(s), top(t)), abnormal(p))));
+            bad = _mm_or_si128(bad, _mm_andnot_si128(z, _mm_or_si128(_mm_or_si128(top(s), top(t)),
+                                                                     _mm_or_si128(abnormal(p), bottom(p)))));
             return select(z, _mm_and_si128(_mm_xor_si128(s, t), signBits()), p);
         }
         // a + b, likewise.
