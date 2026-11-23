@@ -2043,6 +2043,13 @@ namespace bozo::native::irx
             throw std::runtime_error("native frame policy must be installed before execution");
         p.nativeFrameCallbacks = true;
     }
+    void CompiledLibraries::useBlockTransStatusAhead()
+    {
+        auto &p = *impl_;
+        if (!p.started.empty() || p.invokeDepth || !p.tasks.empty() || p.calls)
+            throw std::runtime_error("the block transfer status policy must be installed before execution");
+        p.libsd.setStatusBlockAhead(true);
+    }
     void CompiledLibraries::useNativeDiscFiles()
     {
         auto &p=*impl_;

@@ -75,6 +75,9 @@ namespace bozo::audio
         // 20: where the input plays now, | 1 << 24 in the 2nd half; while a signalled half is unread, the start of the
         // half that followed it (each signalled half answered once, in turn).
         uint32_t blockTransStatus(uint32_t channel);
+        // sceSdBlockTransStatus as the SPU2's input DMA reports it: its transfer address, the start of the 1 KB block
+        // after the one playing (off: the byte played next, as TMB's logs have it). Set by the port before execution.
+        void setStatusBlockAhead(bool on) { m_statusBlockAhead = on; }
         uint32_t setTransCallback(uint32_t channel, uint32_t function, uint32_t gp);                       // 21
         uint32_t setTransIntrHandler(uint32_t channel, uint32_t function, uint32_t argument, uint32_t gp); // 26
         uint32_t setIrqCallback(uint32_t function);
@@ -115,6 +118,7 @@ namespace bozo::audio
 
         Mixer &m_mixer;
         LibsdHost &m_host;
+        bool m_statusBlockAhead = false;
         struct Callback
         {
             uint32_t function = 0, argument = 0, gp = 0;

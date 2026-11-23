@@ -93,6 +93,8 @@ namespace bozo::libs
         kResumeMpegGetPicture = 4, // a[0]: rgb, a[1]: mbcount
         kResumeMpegDeliver = 5,    // a[0]: rgb, a[1]: mbcount
         kResumeTimerHandlerEnd = 6, // a[0]: slot, a[1]: tag, a[2]: id
+        kResumeMpegDemuxCallbackEnd = 7, // a[0]: the demuxing thread, a[1]: the entry
+        kResumeMpegDemuxNext = 8,        // a[0]: the bytes the call was given
         kPortResumeKinds = 0x1000,
     };
     // Native kernel deadlines (ee::Kernel::scheduleNative) the libraries make, by kind.
@@ -258,6 +260,9 @@ namespace bozo::libs
         std::array<uint8_t, 20> dmaEnvironment{};
         MpegState mpeg;
         MpegOptions mpegOptions;
+        // The console's own video standard: what sceGsResetGraph's video mode 0 ("the console's") means. A port sets
+        // PAL for a PAL disc (its SYSTEM.CNF says VMODE = PAL); Shinobido asks for mode 0 and runs at 50 Hz.
+        bool palConsole = false;
         SifState sif;
         TimerState timers;
         SndDriver snd;

@@ -248,6 +248,8 @@ namespace bozo::libs
         resumeKinds_[kResumeMpegNodataEnd] = mpegResume;
         resumeKinds_[kResumeMpegGetPicture] = mpegResume;
         resumeKinds_[kResumeMpegDeliver] = mpegResume;
+        resumeKinds_[kResumeMpegDemuxCallbackEnd] = mpegResume;
+        resumeKinds_[kResumeMpegDemuxNext] = mpegResume;
         resumeKinds_[kResumeTimerHandlerEnd] = timerResume;
         deadlineKinds_[kDeadlineTimerFire] = timerDeadline;
         deadlineKinds_[kDeadlineDelayDue] = delayDeadline;

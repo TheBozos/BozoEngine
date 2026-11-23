@@ -443,7 +443,13 @@ namespace bozo::audio
         }
         if (!m_mixer.inputPlaying(static_cast<int>(channel)))
             return 0u;
-        const uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));
+        // With setStatusBlockAhead, the input DMA's transfer address: the next 1 KB block it fetches, one block ahead
+        // of the sample being played (the SPU2 holds the block it plays). A driver that keeps its ring full by this
+        // address (Shinobido's movie sound: free = address - 0x400 - written) needs it ahead: at the play position
+        // itself, a ring just filled reads as empty and is overwritten before it is played.
+        uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));
+        if (const uint32_t ring = m_state.blockSize[channel] / 1024u * 1024u; m_statusBlockAhead && ring != 0u)
+            offset = (offset / 1024u + 1u) * 1024u % ring;
         const uint32_t second = offset >= m_state.blockSize[channel] / 2u ? 1u : 0u;
         return (second << 24u) | (m_state.blockBuffer[channel] + offset);
     }

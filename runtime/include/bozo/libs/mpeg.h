@@ -76,6 +76,17 @@ namespace bozo::libs
         // The Nodata callback as the SDK calls it: (mp, callback data, the data given to sceMpegAddCallback); a 0 it
         // returns ends the input (the pictures left come out, then sceMpegIsEnd answers 1).
         bool sdkNodata = false;
+        // How many coded pictures sceMpegDemuxPssRing reads ahead of the game. A game that wants a stream's audio
+        // before it takes its first picture needs the audio's place in the multiplex: Shinobido's first audio packet
+        // comes after 14 pictures and its player waits for 0x6000 bytes of it (about 18 pictures).
+        uint32_t picturesAhead = 8;
+        // sceMpegDemuxPssRing as the SDK runs it: each stream packet's callback runs before the demux goes on, and a 0
+        // the sound callback returns (Shinobido's: its ring has no room) stops the demux before that packet, which the
+        // next call gives again; only whole packets are taken. (A video callback's 0 is not waited for: the decoder
+        // takes the video from the demux, and the game's own copy, its IPU input, is never drained.) Off: a sector at
+        // a time, the callbacks queued as the call ends and their results unused (a refused sound packet is lost, and
+        // with an odd-sized one the sound after it is read a byte off).
+        bool sdkDemux = false;
     };
 
     // One sceMpeg (TMB plays one movie at a time).
@@ -124,6 +135,14 @@ namespace bozo::libs
             uint32_t entry = 0;
         };
         std::vector<DueCallback> callbacksDue;
+        // MpegOptions::sdkDemux: the call's first stream byte, and the packet whose callback runs (where it begins,
+        // its stream, its payload and time stamp), given to the decoder or the sound sink once the callback took it.
+        uint64_t callAt = 0;
+        uint64_t heldAt = 0;
+        uint8_t heldId = 0;
+        std::vector<uint8_t> held;
+        int64_t heldPts = -1;
+        bool refused = false; // the callback refused its packet: the call ends
         // The thread waiting in sceMpegGetPicture for data (0: none).
         int32_t waiting = 0;
 
