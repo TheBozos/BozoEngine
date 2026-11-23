@@ -890,6 +890,19 @@ int main()
         eq("software-double sqrt in v0", static_cast<long long>(m.ctx.r[2].ud[0] == std::bit_cast<uint64_t>(1.5)), 1);
     }
     {
+        // sceGsResetGraph's display mode stays the library's: the game may reuse scratchpad 0x100 (where the reference
+        // also leaves it) before sceGsSetDefDispEnv (TMB from its fourth frame). NTSC interlaced, field mode off.
+        Machine m;
+        m.call("sceGsResetGraph", {0, 1, 2, 0});
+        uint8_t *scratch = m.rt->memory.flat() + bozo::GuestMemory::flatOffset(bozo::kScratchpadBase + 0x100u, 4);
+        eq("ResetGraph leaves its parameters at scratchpad 0x100", scratch[0] == 1 && scratch[1] == 2 && scratch[3] == 3, 1);
+        std::memset(scratch, 0, 4);
+        m.call("sceGsSetDefDispEnv", {0x100000, 0, 640, 448, 0, 0});
+        uint64_t smode2 = 0;
+        std::memcpy(&smode2, m.rt->memory.ram() + 0x100008, 8);
+        eq("SetDefDispEnv's SMODE2 after the game reused the scratchpad", static_cast<long long>(smode2), 1);
+    }
+    {
         // Native graphics must reject the retired graphics paths without blocking movie input, T0 or VU0 data.
         for (uint32_t address : {0x10003000u, 0x10003C00u, 0x10008000u, 0x10009030u, 0x1000A000u,
                                  0x11008000u, 0x12001000u, 0xB2001000u})
