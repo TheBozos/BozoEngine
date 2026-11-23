@@ -23,9 +23,9 @@ namespace bozo::audio
         constexpr uint32_t kKon = 0x1500u, kKoff = 0x1600u, kEndX = 0x1700u, kVMixL = 0x1800u, kVMixEL = 0x1900u,
                            kVMixR = 0x1A00u, kVMixER = 0x1B00u;
         // Addresses.
-        constexpr uint32_t kEea = 0x1D00u, kTsa = 0x1E00u, kSsa = 0x2040u, kLsax = 0x2140u, kNax = 0x2240u;
+        constexpr uint32_t kEea = 0x1D00u, kTsa = 0x1E00u, kIrqa = 0x1F00u, kSsa = 0x2040u, kLsax = 0x2140u, kNax = 0x2240u;
         // Core attributes.
-        constexpr uint32_t kEffectEnable = 0x2u;
+        constexpr uint32_t kEffectEnable = 0x2u, kIrqEnable = 0x4u; // SD_CORE_EFFECT_ENABLE, SD_CORE_IRQ_ENABLE
 
         int coreOf(uint32_t entry)
         {
@@ -59,11 +59,13 @@ namespace bozo::audio
     {
         m_mixer.setInputHalfCallback([this](int group, int half)
                                      { inputHalf(static_cast<uint32_t>(group), static_cast<uint32_t>(half)); });
+        m_mixer.setIrqCallback([this](int core) { spu2Interrupt(core); });
     }
 
     Libsd::~Libsd()
     {
         m_mixer.setInputHalfCallback({});
+        m_mixer.setIrqCallback({});
     }
 
     uint32_t Libsd::physical(uint32_t address)
@@ -226,6 +228,8 @@ namespace bozo::audio
         }
         if ((entry & 0xFF00u) == kTsa)
             m_state.transferAddress[core] = value;
+        if ((entry & 0xFF00u) == kIrqa)
+            m_mixer.setIrqAddress(core, value);
         if ((entry & 0xFF00u) == kEea)
             m_state.effectEnd[core] = value | 0x1FFFFu;
         m_state.addresses[entry & 0xFF01u] = value;
@@ -251,6 +255,8 @@ namespace bozo::audio
     {
         if ((entry & ~1u) == kEffectEnable)
             m_mixer.setEffectEnable(coreOf(entry), value != 0u);
+        if ((entry & ~1u) == kIrqEnable)
+            m_mixer.setIrqEnabled(coreOf(entry), value != 0u);
         m_state.coreAttributes[entry] = value;
     }
 
@@ -453,6 +459,23 @@ namespace bozo::audio
         const uint32_t previous = m_state.transHandler[channel].function;
         m_state.transHandler[channel] = Callback{function, argument, gp};
         return previous;
+    }
+
+    // sceSdSetSpu2IntrHandler(handler, argument): the SPU2's interrupt (a core's IRQ address reached) calls
+    // handler(1 << core, argument) as an interrupt handler.
+    uint32_t Libsd::setSpu2IntrHandler(uint32_t function, uint32_t argument, uint32_t gp)
+    {
+        sync();
+        const uint32_t previous = m_state.spu2Handler.function;
+        m_state.spu2Handler = Callback{function, argument, gp};
+        return previous;
+    }
+
+    void Libsd::spu2Interrupt(int core)
+    {
+        const Callback &handler = m_state.spu2Handler;
+        if (handler.function != 0u)
+            m_host.interruptCall(handler.function, 1u << core, handler.argument, handler.gp, kTransferDelay);
     }
 
     uint32_t Libsd::setIrqCallback(uint32_t function)
@@ -661,7 +684,7 @@ namespace bozo::audio
         case 32u: result = setEffectMode(a[0], a[1]); return true;
         case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
-        case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
+        case 27u: result = setSpu2IntrHandler(a[0], a[1], gp); return true;
         case 13u: result = note2Pitch(a[0], a[1], a[2], a[3]); return true;
         case 14u: result = pitch2Note(a[0], a[1], a[2]); return true;
         case 28u: result = transIntrHandlerArgument(a[0]); return true;

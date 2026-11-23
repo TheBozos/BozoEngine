@@ -19,7 +19,7 @@ namespace bozo::audio
         {
             for (Voice &v : g.voices)
                 pod(a, v);
-            fields(a, g.ended, g.dry, g.wet, g.mix);
+            fields(a, g.ended, g.dry, g.wet, g.mix, g.irqAddress, g.irqEnabled);
             for (Volume &v : g.master)
                 pod(a, v);
             for (Volume &v : g.effect)
@@ -59,6 +59,7 @@ namespace bozo::audio
             pod(a, c);
         for (Callback &c : s.transHandler)
             pod(a, c);
+        pod(a, s.spu2Handler);
         for (auto &e : s.effect)
             pod(a, e);
         a.end();
