@@ -169,6 +169,11 @@ namespace bozo::audio
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_groups[group].voices[voice].volume[side].setting;
     }
+    uint16_t Mixer::currentVolume(int group, int voice, int side) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return static_cast<uint16_t>(std::min<int32_t>(std::abs(m_groups[group].voices[voice].volume[side].level) >> 1, 0x7FFF));
+    }
     uint16_t Mixer::pitch(int group, int voice) const
     {
         std::lock_guard<std::mutex> lock(m_mutex);

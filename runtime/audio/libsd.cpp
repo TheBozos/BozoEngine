@@ -151,15 +151,14 @@ namespace bozo::audio
             case kAdsr1: return m_mixer.adsr(core, voice, 0);
             case kAdsr2: return m_mixer.adsr(core, voice, 1);
             case kEnvX: return m_mixer.envelope(core, voice);
-            // VOLXL / VOLXR: the voice's current volume, its volume scaled by its envelope (ENVX), as the SPU2 reports it:
-            // 0 once a released voice's envelope has ended (Capcom's SNDDRVCD waits for that before reusing a voice).
-            // A sweeping volume (bit 15) counts as full.
+            // VOLXL / VOLXR: the voice's current volume, as the SPU2 reports it: its volume (where a sweep has brought it,
+            // bit 15) scaled by its envelope (ENVX). 0 once a released voice's envelope has ended or a decreasing sweep
+            // has run down (Capcom's SNDDRVCD sweeps a voice's volume down and waits for that before reusing it).
             case kVolXL:
             case kVolXR:
             {
                 sync();
-                const uint32_t set = m_mixer.volume(core, voice, (entry & 0xFF00u) == kVolXL ? 0 : 1);
-                const uint32_t level = (set & 0x8000u) ? 0x7FFFu : (set & 0x7FFFu);
+                const uint32_t level = m_mixer.currentVolume(core, voice, (entry & 0xFF00u) == kVolXL ? 0 : 1);
                 return (level * (m_mixer.envelope(core, voice) & 0x7FFFu)) / 0x7FFFu;
             }
             default: break;
