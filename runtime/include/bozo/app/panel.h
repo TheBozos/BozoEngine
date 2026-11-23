@@ -48,11 +48,17 @@ namespace bozo::app
         void draw();
 
         bool settingsOpen() const;
+        // The settings window opened or closed, as F2 does (the window's SettingsWindow binding: a gamepad's middle
+        // button by default). Opened, it takes the focus: a gamepad steers it (ImGui's gamepad navigation).
+        void toggleSettings();
         bool overlayShown() const;
         // What the game's devices should not get now: the keyboard (a binding being captured, a text field typed in),
         // the mouse (the settings window is open: the cursor is the panel's).
         bool holdsKeyboard() const;
         bool holdsMouse() const;
+        // The gamepads: while the settings window is open they steer it (D-pad / left stick move, Cross activates,
+        // Circle cancels), not the game.
+        bool holdsGamepads() const;
 
         struct Impl;
 
