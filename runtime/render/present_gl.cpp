@@ -283,6 +283,22 @@ void main()
 }
 )";
 
+        // Material::depthFromTexture: the texel's R, G, B as a 24-bit GS Z (low byte first), written as the fragment's
+        // depth on the vertex shader's mapping (window depth 1 - Z / uDepthMax); the colour is masked by the draw.
+        const char *kDepthImageFragmentShader = R"(#version 330
+in vec2 vUv;
+uniform sampler2D uTex;
+uniform float uDepthMax;
+out vec4 fragColor;
+void main()
+{
+    vec3 b = floor(texture(uTex, vUv).rgb * 255.0 + 0.5);
+    float z = b.r + b.g * 256.0 + b.b * 65536.0;
+    gl_FragDepth = 1.0 - clamp(z / uDepthMax, 0.0, 1.0);
+    fragColor = vec4(0.0);
+}
+)";
+
         // The 2D onto the window (what raylib's default shader did): window pixels from the top left, texel times the
         // vertex colour (bytes, 255 = 1.0).
         const char *kFlatVertexShader = R"(#version 330
@@ -408,6 +424,12 @@ void main()
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
         gl::GLint locViewport = -1, locFlatTex = -1;
+        // Material::depthFromTexture's program and its uniforms.
+        gl::GLuint depthImageShader = 0;
+        struct
+        {
+            gl::GLint m = -1, screen = -1, depthMax = -1, uvMap = -1, useQ = -1, tex = -1;
+        } depthImage;
         gl::GLuint flatVao = 0, flatVbo = 0;
         size_t flatVboBytes = 0;
         std::vector<FlatVertex> flat; // the 2D being gathered for one draw
@@ -875,8 +897,15 @@ void main()
             const gl::Api &g = gl::api();
             shader = linkProgram(kVertexShader, kFragmentShader);
             flatShader = linkProgram(kFlatVertexShader, kFlatFragmentShader);
-            if (shader == 0 || flatShader == 0)
+            depthImageShader = linkProgram(kVertexShader, kDepthImageFragmentShader);
+            if (shader == 0 || flatShader == 0 || depthImageShader == 0)
                 return false;
+            depthImage.m = g.GetUniformLocation(depthImageShader, "uM");
+            depthImage.screen = g.GetUniformLocation(depthImageShader, "uScreen");
+            depthImage.depthMax = g.GetUniformLocation(depthImageShader, "uDepthMax");
+            depthImage.uvMap = g.GetUniformLocation(depthImageShader, "uUvMap");
+            depthImage.useQ = g.GetUniformLocation(depthImageShader, "uUseQ");
+            depthImage.tex = g.GetUniformLocation(depthImageShader, "uTex");
             locM = g.GetUniformLocation(shader, "uM");
             locScreen = g.GetUniformLocation(shader, "uScreen");
             locDepthMax = g.GetUniformLocation(shader, "uDepthMax");
@@ -2183,6 +2212,22 @@ void main()
             {
                 g.Disable(gl::kScissorTest);
                 scissored = false;
+            }
+            if (m.depthFromTexture && textured)
+            {
+                // The texture's Z as the depth (point sampled: a Z is never filtered), through its own program.
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, gl::kNearest);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMagFilter, gl::kNearest);
+                g.UseProgram(gpu.depthImageShader);
+                g.Uniform4fv(gpu.depthImage.m, 4, matrix);
+                g.Uniform4fv(gpu.depthImage.screen, 1, screenRect);
+                g.Uniform1f(gpu.depthImage.depthMax, screen.depthMax);
+                g.Uniform4fv(gpu.depthImage.uvMap, 1, uvAsGiven);
+                g.Uniform1i(gpu.depthImage.useQ, 0);
+                g.Uniform1i(gpu.depthImage.tex, 0);
+                g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
+                g.UseProgram(gpu.shader);
+                continue;
             }
             g.DrawArrays(m.lines ? gl::kLines : gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
         }

@@ -113,6 +113,10 @@ namespace bozo::render
         // own, as a GS draw into another frame address with the same ZBUF would: a game's depth planes compared
         // with the scene into an image. The target takes the main frame's dimensions; its colour is its own.
         bool frameDepth = false;
+        // The texture is a GS Z buffer image (each texel's R, G, B the Z's low, middle and high bytes, as a 24-bit Z
+        // buffer holds it): the draw writes that Z as its depth, per texel, and no colour (a pre-rendered scene's depth
+        // uploaded before the 3D, Onimusha's rooms). The depth test and write follow depthTest / depthWrite.
+        bool depthFromTexture = false;
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
         // Images 9..15 are auxiliary targets like 1..7 (not the previous frame). An image keeps its pixels until a
