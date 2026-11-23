@@ -36,6 +36,7 @@ namespace bozo::host
         if (registry)
         {
             vu0Programs_ = registry->vu0Programs();
+            vu0Code_ = registry->vu0CodeMemory();
             transfersAlwaysDone_ = registry->transfersAreAlwaysDone();
             d.setSyncVAtVblank(registry->syncVCallbackIsAtVblank());
         }
@@ -178,6 +179,12 @@ namespace bozo::host
         for(int id=1;id<16;++id) if(const auto *t=d_->kernel().thread(id))
             std::fprintf(stderr,"[native:fault] thread %d state=%u wait=%u object=%u entry=%x pc=%x\n",id,unsigned(t->state),t->waitReason,t->waitObject,t->entry,t->frames.empty()?0:t->frames.front()->ctx.pc);
         const uint32_t root=thread && !thread->frames.empty() ? thread->frames.front()->ctx.pc : 0;
+        // BOZO_FAULT_REGISTERS=1: the faulting context's 128-bit GPRs (the pc a fault reports is the last one the
+        // generated code set: a call's return point, a branch target), to find the access that faulted.
+        if (ctx && std::getenv("BOZO_FAULT_REGISTERS"))
+            for (int r = 0; r < 32; ++r)
+                std::fprintf(stderr, "[native:fault] r%-2d %016llx%016llx%s", r, (unsigned long long)ctx->r[r].ud[1],
+                             (unsigned long long)ctx->r[r].ud[0], r % 2 ? "\n" : "  ");
         endReason_ = std::format("FAULT: {} (frame {}, pc 0x{:x}, root 0x{:x} {}, clock {}, last frame {})", what, stats_.frames,
                                 ctx ? ctx->pc : 0,root,functionAt(root),d_?d_->now(ctx):0,lastFrameCycle_);
         throw ee::EndRun{};
@@ -290,6 +297,13 @@ namespace bozo::host
     {
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register read at 0x{:x}", address));
+        if (vu0Code_ && (address & 0x1FFFFFFFu) >= 0x11000000u && (address & 0x1FFFFFFFu) < 0x11004000u && size <= 16)
+        {
+            // VU0's code memory (port::Registry::vu0CodeMemory): its 4 KB, mirrored.
+            value[0] = value[1] = 0;
+            std::memcpy(value, vu0Code_ + (address & 0xFF0u) + (address & 0xFu & ~(size - 1u)), size);
+            return;
+        }
         ++stats_.ioAccesses;
         if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][0];
         watchdog(ctx);
@@ -311,6 +325,11 @@ namespace bozo::host
     {
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register write at 0x{:x}", address));
+        if (vu0Code_ && (address & 0x1FFFFFFFu) >= 0x11000000u && (address & 0x1FFFFFFFu) < 0x11004000u && size <= 16)
+        {
+            std::memcpy(vu0Code_ + (address & 0xFF0u) + (address & 0xFu & ~(size - 1u)), value, size);
+            return;
+        }
         ++stats_.ioAccesses;
         if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][1];
         if (!libs::ioKnown(address, size, true))

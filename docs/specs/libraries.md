@@ -624,6 +624,13 @@ free host looks there first; a port with any has only those, a VCALLMS at anothe
 (whose images and entries are TMB's) is not consulted. A program runs inline on the calling context and VU0's data memory:
 it must not block or change pc or ra. Without registrations nothing changes. `bozo-run`'s pinned host stays on the table.
 
+**A port's VU0 code memory.** `Registry::vu0CodeMemory(memory)`: a port that keeps the microcode its programs run from
+(Shinobido's VU0 interpreter, loaded from the game's VIF0 chains) gives its 4 KB, and the EE's loads and stores at
+0x11000000-0x11003FFF (VU0's code memory, mirrored) reach them instead of faulting as an unknown device. Shinobido needs
+it: its collision search indexes the VU0 data arrays with the lane its last round chose, -1 when none, which reads just
+below VU0's data memory (0x11003fec), in the code memory's mirror, as the console does. `BOZO_FAULT_REGISTERS=1` prints the
+faulting context's registers with a fault (its reported pc is the last one the generated code set).
+
 ## 11. Hardware registers (`io`)
 
 Native: the remaining register/status compatibility operations (`bozo/libs/io.h`, `libs/io.cpp`). No DMA, VIF, GIF,
