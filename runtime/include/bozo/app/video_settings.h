@@ -51,6 +51,8 @@ namespace bozo::app::video
         // Texture smoothing (Renderer::setTextureSmoothing, live): 0 off (the default: as the console samples), 1 trilinear
         // levels made from the textures, 2..16 the same with that much anisotropic filtering.
         int textureSmoothing = 0;
+        // Anti-aliasing (Renderer::setAntiAliasing, live): 0 off (the default), 2, 4 or 8 samples a pixel (MSAA).
+        int antiAliasing = 0;
         // Texture replacements (bozo/render/texture_replace.h): a folder of <identity>.png files; "" the user folder's
         // texture_pack when it exists, "off" none.
         std::string texturePack;
@@ -68,6 +70,10 @@ namespace bozo::app::video
     // texture_smoothing / PS2X_TEXTURE_SMOOTHING: "off", "trilinear", "2x" .. "16x" (false for anything else).
     bool parseTextureSmoothing(const std::string &text, int &level);
     std::string textureSmoothingName(int level);
+
+    // anti_aliasing / PS2X_ANTI_ALIASING: "off", "2x", "4x" or "8x" (false for anything else).
+    bool parseAntiAliasing(const std::string &text, int &samples);
+    std::string antiAliasingName(int samples);
 
     // frame_rate / PS2X_FRAME_RATE: "game", "monitor" or a number (false for anything else).
     bool parseFrameRate(const char *text, int &rate);

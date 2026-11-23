@@ -260,7 +260,14 @@ namespace bozo::app
         if (videoSettings)
             video::applyAtStartup(window);
         else
+        {
             renderer.setRenderScale(options.renderScale);
+            // Without the player's video settings (a scripted run): PS2X_ANTI_ALIASING alone, off by default.
+            int samples = 0;
+            if (const char *aa = std::getenv("PS2X_ANTI_ALIASING"); aa && *aa)
+                video::parseAntiAliasing(aa, samples);
+            renderer.setAntiAliasing(samples);
+        }
         Panel panel;
         if (options.panel)
             panel.init(window, context);

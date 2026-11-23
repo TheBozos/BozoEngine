@@ -391,6 +391,11 @@ namespace bozo::render
         // 1 trilinear, 2..16 trilinear with that much anisotropic filtering (as far as the GPU goes). Live.
         void setTextureSmoothing(int level) { m_textureSmoothing.store(std::clamp(level, 0, 16), std::memory_order_relaxed); }
         int textureSmoothing() const { return m_textureSmoothing.load(std::memory_order_relaxed); }
+        // Anti-aliasing (a PC option, off by default): the frame's 3D drawn into a multisampled target with that many
+        // samples a pixel (2, 4 or 8, as far as the GPU goes; 0 or 1 none), resolved wherever the frame is read (its
+        // copies, the depth tiles, the present). Live.
+        void setAntiAliasing(int samples) { m_antiAliasing.store(std::clamp(samples, 0, 16), std::memory_order_relaxed); }
+        int antiAliasing() const { return m_antiAliasing.load(std::memory_order_relaxed); }
         // Present thread: frees the GPU objects (before the context goes).
         void releaseGpu();
 
@@ -452,6 +457,7 @@ namespace bozo::render
         std::atomic<float> m_renderScale{1.0f};
         std::atomic<uint32_t> m_textureUpscale{1u};
         std::atomic<int> m_textureSmoothing{0};
+        std::atomic<int> m_antiAliasing{0};
 
         // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.
         std::deque<std::shared_ptr<const Frame>> m_history;
