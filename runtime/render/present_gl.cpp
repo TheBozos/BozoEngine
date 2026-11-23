@@ -446,6 +446,87 @@ void main()
             return g.CheckFramebufferStatus(gl::kFramebuffer)==gl::kFramebufferComplete;
         }
         int maxAnisotropy = 1; // the GPU's (init)
+        // Anti-aliasing (Renderer::antiAliasing): the frame's 3D drawn into msFbo, a multisampled colour and depth-stencil
+        // of the target's size, and resolved (blitted) into fbo wherever the frame is read: the copies a material samples,
+        // the depth an image pass reads, the depth tiles and the present. The auxiliary targets stay single-sampled; one
+        // sharing the frame's depth gets the resolved depth. msSamples 0: none, fbo drawn directly.
+        gl::GLuint msFbo = 0, msColour = 0, msDepth = 0;
+        int msSamples = 0, msWidth = 0, msHeight = 0;
+        int maxSamples = 1; // the GPU's (init)
+        int msRefused = 0;  // samples the GPU refused at this size: not tried again until either changes
+        gl::GLuint drawFbo() const { return msSamples ? msFbo : fbo; }
+        // The multisampled target for `samples` (clamped to the GPU's; under 2: none) at the target's size; false when the
+        // GPU refuses it (then none).
+        bool multisample(int samples)
+        {
+            const gl::Api &g = gl::api();
+            samples = std::min(samples, maxSamples);
+            if (samples < 2)
+                samples = 0;
+            if (samples == msSamples && (samples == 0 || (msWidth == targetWidth && msHeight == targetHeight)))
+                return true;
+            if (samples != 0 && samples == msRefused && msWidth == targetWidth && msHeight == targetHeight)
+                return false;
+            msSamples = 0;
+            if (samples == 0)
+                return true;
+            if (msFbo == 0)
+            {
+                g.GenFramebuffers(1, &msFbo);
+                g.GenRenderbuffers(1, &msColour);
+                g.GenRenderbuffers(1, &msDepth);
+            }
+            g.BindRenderbuffer(gl::kRenderbuffer, msColour);
+            g.RenderbufferStorageMultisample(gl::kRenderbuffer, samples, gl::kRgba8, targetWidth, targetHeight);
+            g.BindRenderbuffer(gl::kRenderbuffer, msDepth);
+            g.RenderbufferStorageMultisample(gl::kRenderbuffer, samples, gl::kDepth24Stencil8, targetWidth, targetHeight);
+            g.BindFramebuffer(gl::kFramebuffer, msFbo);
+            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kColorAttachment0, gl::kRenderbuffer, msColour);
+            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthStencilAttachment, gl::kRenderbuffer, msDepth);
+            const bool complete = g.CheckFramebufferStatus(gl::kFramebuffer) == gl::kFramebufferComplete;
+            g.BindFramebuffer(gl::kFramebuffer, presentTo);
+            msWidth = targetWidth;
+            msHeight = targetHeight;
+            msRefused = complete ? 0 : samples;
+            if (!complete)
+            {
+                std::fprintf(stderr, "[renderer] the %d x %d target with %d samples is incomplete: no anti-aliasing\n", targetWidth,
+                             targetHeight, samples);
+                return false;
+            }
+            msSamples = samples;
+            std::fprintf(stderr, "[renderer] anti-aliasing: %d samples a pixel\n", samples);
+            return true;
+        }
+        // The multisampled frame resolved into fbo (colour, depth and stencil), which is left bound; without
+        // anti-aliasing fbo is only bound. The blit takes the scissor and, on some drivers, the write masks: both opened
+        // for it and given back.
+        void resolve()
+        {
+            const gl::Api &g = gl::api();
+            if (msSamples == 0)
+            {
+                g.BindFramebuffer(gl::kFramebuffer, fbo);
+                return;
+            }
+            gl::GLint scissor = 0, depthMask = 1, colourMask[4] = {1, 1, 1, 1};
+            g.GetIntegerv(gl::kScissorTest, &scissor);
+            g.GetIntegerv(gl::kDepthWritemask, &depthMask);
+            g.GetIntegerv(gl::kColorWritemask, colourMask);
+            g.Disable(gl::kScissorTest);
+            g.DepthMask(gl::kTrue);
+            g.ColorMask(gl::kTrue, gl::kTrue, gl::kTrue, gl::kTrue);
+            g.BindFramebuffer(gl::kReadFramebuffer, msFbo);
+            g.BindFramebuffer(gl::kDrawFramebuffer, fbo);
+            g.BlitFramebuffer(0, 0, targetWidth, targetHeight, 0, 0, targetWidth, targetHeight,
+                              gl::kColorBufferBit | gl::kDepthBufferBit | gl::kStencilBufferBit, gl::kNearest);
+            g.BindFramebuffer(gl::kFramebuffer, fbo);
+            if (scissor)
+                g.Enable(gl::kScissorTest);
+            g.DepthMask(depthMask ? gl::kTrue : gl::kFalse);
+            g.ColorMask(colourMask[0] ? gl::kTrue : gl::kFalse, colourMask[1] ? gl::kTrue : gl::kFalse,
+                        colourMask[2] ? gl::kTrue : gl::kFalse, colourMask[3] ? gl::kTrue : gl::kFalse);
+        }
         struct GpuTexture
         {
             gl::GLuint id = 0;
@@ -839,6 +920,11 @@ void main()
                 if (g.GetError() != 0)
                     most = 1;
                 maxAnisotropy = std::max(1, static_cast<int>(most));
+                gl::GLint samples = 1;
+                g.GetIntegerv(gl::kMaxSamples, &samples);
+                if (g.GetError() != 0)
+                    samples = 1;
+                maxSamples = std::max(1, static_cast<int>(samples));
             }
             locLodScale = g.GetUniformLocation(shader, "uLodScale");
             locLodBias = g.GetUniformLocation(shader, "uLodBias");
@@ -893,6 +979,13 @@ void main()
                 g.DeleteRenderbuffers(1, &depth);
             if (fbo != 0)
                 g.DeleteFramebuffers(1, &fbo);
+            for (gl::GLuint *r : {&msColour, &msDepth})
+                if (*r != 0)
+                    g.DeleteRenderbuffers(1, r);
+            if (msFbo != 0)
+                g.DeleteFramebuffers(1, &msFbo);
+            msFbo = msColour = msDepth = 0;
+            msSamples = 0;
             for (gl::GLuint *b : {&vbo, &flatVbo})
                 if (*b != 0)
                     g.DeleteBuffers(1, b);
@@ -1625,6 +1718,7 @@ void main()
         const int w = std::max(1, static_cast<int>(std::lround(width * scale))), h = std::max(1, static_cast<int>(std::lround(height * scale)));
         if (!gpu.target(w, h))
             return false;
+        gpu.multisample(antiAliasing());
         // Filtered to the window when the render scale makes it another size, as it is (point) otherwise.
         if (const bool filtered = scale != 1.0f; filtered != gpu.targetFiltered)
         {
@@ -1774,7 +1868,7 @@ void main()
         m_lastPresent = info;
 
         const Screen &screen = frame->screen;
-        g.BindFramebuffer(gl::kFramebuffer, gpu.fbo);
+        g.BindFramebuffer(gl::kFramebuffer, gpu.drawFbo());
         g.Viewport(0, 0, w, h);
         g.Disable(gl::kScissorTest);
         g.DepthMask(gl::kTrue);
@@ -1848,6 +1942,8 @@ void main()
                         throw std::runtime_error("native shared depth requires matching image dimensions");
                     if (size && !shared) { drawWidth=size >> 16; drawHeight=size & 0xffff; }
                     if(m.targetWidth){drawWidth=m.targetWidth;drawHeight=m.targetHeight;}
+                    if (shared)
+                        gpu.resolve(); // the frame's depth so far, for a target sharing it
                     if (!gpu.auxiliaryTarget(drawingTarget,drawWidth,drawHeight,shared))
                         throw std::runtime_error("native render target framebuffer incomplete");
                     if (!touched[drawingTarget] || explicitResize) {
@@ -1857,7 +1953,7 @@ void main()
                         g.Clear(gl::kColorBufferBit | (shared ? 0 : gl::kDepthBufferBit));
                         touched[drawingTarget]=true;
                     }
-                } else g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                } else g.BindFramebuffer(gl::kFramebuffer,gpu.drawFbo());
                 g.Viewport(0,0,drawWidth,drawHeight);
             }
             const Rect clip = clipOf(batch);
@@ -1964,9 +2060,9 @@ void main()
                     g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,gl::kNearest);
                     g.TexParameteri(gl::kTexture2D,gl::kTextureWrapS,gl::kClampToEdge);
                     g.TexParameteri(gl::kTexture2D,gl::kTextureWrapT,gl::kClampToEdge);
-                    g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                    gpu.resolve();
                     g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,w,h);
-                    g.BindFramebuffer(gl::kFramebuffer,drawingTarget?gpu.auxiliary[drawingTarget].fbo:gpu.fbo);
+                    g.BindFramebuffer(gl::kFramebuffer,drawingTarget?gpu.auxiliary[drawingTarget].fbo:gpu.drawFbo());
                     g.Uniform1i(gpu.locImageDepthTex,1);
                     g.Uniform4fv(gpu.locImageWeights,64,processing->depthWeights.data());
                 }
@@ -2007,7 +2103,10 @@ void main()
                     source=t.colour;
                 } else {
                     const int sw=m.source ? drawWidth : w, sh=m.source ? drawHeight : h;
-                    g.BindFramebuffer(gl::kFramebuffer,m.source ? gpu.auxiliary[m.source].fbo : gpu.fbo);
+                    if (m.source)
+                        g.BindFramebuffer(gl::kFramebuffer,gpu.auxiliary[m.source].fbo);
+                    else
+                        gpu.resolve();
                     if (!gpu.targetCopy || gpu.copyWidth!=sw || gpu.copyHeight!=sh) {
                         if (gpu.targetCopy) g.DeleteTextures(1,&gpu.targetCopy);
                         gpu.targetCopy=gpu.makeTexture(nullptr,sw,sh,gl::kClampToEdge);
@@ -2017,7 +2116,7 @@ void main()
                     g.BindTexture(gl::kTexture2D,source);
                     g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,sw,sh);
                 }
-                g.BindFramebuffer(gl::kFramebuffer,drawingTarget ? gpu.auxiliary[drawingTarget].fbo : gpu.fbo);
+                g.BindFramebuffer(gl::kFramebuffer,drawingTarget ? gpu.auxiliary[drawingTarget].fbo : gpu.drawFbo());
                 g.BindTexture(gl::kTexture2D,source);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,m.nearest ? gl::kNearest : gl::kLinear);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,m.nearest ? gl::kNearest : gl::kLinear);
@@ -2045,7 +2144,11 @@ void main()
                 g.BindTexture(gl::kTexture2D, gpu.targetCopy);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kLinear);
                 g.TexParameterf(gl::kTexture2D,gl::kTextureLodBias,0);
+                if (!drawingTarget && gpu.msSamples)
+                    gpu.resolve();
                 g.CopyTexSubImage2D(gl::kTexture2D, 0, 0, 0, 0, 0, w, h);
+                if (!drawingTarget && gpu.msSamples)
+                    g.BindFramebuffer(gl::kFramebuffer, gpu.msFbo);
                 const float toTarget[4] = {1.0f / screen.width, 0.0f, -1.0f / screen.height, 1.0f};
                 g.Uniform4fv(gpu.locUvMap, 1, toTarget);
                 g.Uniform1i(gpu.locTextured, 1);
@@ -2085,7 +2188,7 @@ void main()
         }
         g.Disable(gl::kStencilTest);
         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
-        g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+        gpu.resolve(); // the frame as it is shown: the depth tiles and the present read it
         g.Viewport(0,0,w,h);
         g.Disable(gl::kScissorTest);
         g.BindVertexArray(0);

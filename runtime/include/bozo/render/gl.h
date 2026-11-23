@@ -67,6 +67,7 @@ namespace bozo::render::gl
     constexpr GLenum kCompileStatus = 0x8B81, kLinkStatus = 0x8B82, kInfoLogLength = 0x8B84;
     constexpr GLenum kPackAlignment = 0x0D05, kUnpackAlignment = 0x0CF5;
     constexpr GLenum kFront = 0x0404, kBack = 0x0405;
+    constexpr GLenum kMaxSamples = 0x8D57, kColorWritemask = 0x0C23, kDepthWritemask = 0x0B72;
     constexpr GLenum kVendor = 0x1F00, kRenderer = 0x1F01, kVersion = 0x1F02;
     constexpr GLenum kViewport = 0x0BA2;
 
@@ -152,7 +153,9 @@ namespace bozo::render::gl
     X(void, GenRenderbuffers, (GLsizei n, GLuint *renderbuffers))                                                      \
     X(void, DeleteRenderbuffers, (GLsizei n, const GLuint *renderbuffers))                                             \
     X(void, BindRenderbuffer, (GLenum target, GLuint renderbuffer))                                                    \
-    X(void, RenderbufferStorage, (GLenum target, GLenum internalFormat, GLsizei width, GLsizei height))
+    X(void, RenderbufferStorage, (GLenum target, GLenum internalFormat, GLsizei width, GLsizei height))               \
+    X(void, RenderbufferStorageMultisample, (GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width,      \
+                                             GLsizei height))
 
     struct Api
     {

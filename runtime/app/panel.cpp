@@ -597,6 +597,18 @@ namespace bozo::app
         envNote("PS2X_TEXTURE_SMOOTHING");
         ImGui::TextDisabled("Distant textures without the shimmer: smaller copies made from each (applies at once).");
 
+        static const int kAntiAliasings[] = {0, 2, 4, 8};
+        static const char *kAntiAliasingNames[] = {"Off (as the console)", "2x MSAA", "4x MSAA", "8x MSAA"};
+        int antiAliasingIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kAntiAliasings); ++i)
+            if (edited.antiAliasing == kAntiAliasings[i])
+                antiAliasingIndex = i;
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Anti-aliasing", &antiAliasingIndex, kAntiAliasingNames, IM_ARRAYSIZE(kAntiAliasingNames)))
+            edited.antiAliasing = kAntiAliasings[antiAliasingIndex];
+        envNote("PS2X_ANTI_ALIASING");
+        ImGui::TextDisabled("The 3D's jagged edges smoothed, several samples a pixel (applies at once).");
+
         ImGui::Checkbox("Pause in the background", &edited.pauseInBackground);
         envNote("PS2X_PAUSE_IN_BACKGROUND");
         ImGui::TextDisabled("The game holds while another window has the focus or this one is minimised.");
