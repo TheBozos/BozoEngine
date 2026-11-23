@@ -21,8 +21,9 @@ union SDL_Event;
 
 namespace bozo::app
 {
-    // Save states in the panel: the slot F5 / F7 use (F6 picks it) and the settings' "Save states" tab (each slot:
-    // when it was saved, Save, Load), registered by the window when the game has save states.
+    // Save states in the panel: the slot F5 / F7 use (F6 picks it) and the settings' "Save states" tab (each slot: the
+    // picture taken at its save, stateSlotPicturePath, larger under the pointer; when it was saved; Save, Load),
+    // registered by the window when the game has save states.
     int stateSlot();
     void setStateSlot(int slot);
     void registerStateTab(std::function<void(int)> save, std::function<void(int)> load);
@@ -47,11 +48,17 @@ namespace bozo::app
         void draw();
 
         bool settingsOpen() const;
+        // The settings window opened or closed, as F2 does (the window's SettingsWindow binding: a gamepad's middle
+        // button by default). Opened, it takes the focus: a gamepad steers it (ImGui's gamepad navigation).
+        void toggleSettings();
         bool overlayShown() const;
         // What the game's devices should not get now: the keyboard (a binding being captured, a text field typed in),
         // the mouse (the settings window is open: the cursor is the panel's).
         bool holdsKeyboard() const;
         bool holdsMouse() const;
+        // The gamepads: while the settings window is open they steer it (D-pad / left stick move, Cross activates,
+        // Circle cancels), not the game.
+        bool holdsGamepads() const;
 
         struct Impl;
 

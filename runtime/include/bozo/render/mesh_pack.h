@@ -198,6 +198,10 @@ namespace bozo::render::packs
         }
         // The last image bound that holds this address (null file included).
         bool find(uint32_t address, Image &out) const;
+        // Save states: the images bound so far, and putting a saved list back (a port saves each image's base, size
+        // and pack index; the binding's own check ran when the game loaded the file, before it changed it in memory).
+        std::vector<Image> images() const;
+        void restore(std::vector<Image> images);
 
     private:
         mutable std::mutex m_mutex;

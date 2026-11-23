@@ -14,6 +14,10 @@ leave existing frame digests unchanged.
   Its index is `clamp(floor((1-windowDepth)*depthScale),0,255)`. Each table entry
   is normalized to 0..1. The depth image is a private OpenGL copy taken before
   this batch, not a delayed CPU depth query. This operation excludes convolution.
+  With `depthColours`, `depthWeights` holds 64 RGBA entries (each 0..1, alpha
+  1.0 being the GS's 0x80) and the index is clamped to 63; the entry replaces
+  the texel. With `Blend::DestinationBySource` this adds a depth fog colour and
+  attenuates the scene by the entry's alpha.
 - `alphaSource` multiplies output alpha by another auxiliary image's green
   channel, with `clamp(green*alphaScale,0,1)`. The source must have a producer in
   the current frame and cannot be the draw target. It samples bilinearly in

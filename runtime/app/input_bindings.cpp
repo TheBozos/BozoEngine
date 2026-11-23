@@ -11,6 +11,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -103,11 +104,13 @@ namespace bozo::app::input
         const char *const kActionNames[ActionCount] = {
             "up", "down", "left", "right", "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3",
             "r3", "start", "select", "left_stick_left", "left_stick_right", "left_stick_up", "left_stick_down",
-            "right_stick_left", "right_stick_right", "right_stick_up", "right_stick_down"};
+            "right_stick_left", "right_stick_right", "right_stick_up", "right_stick_down", "fast_forward", "settings_window",
+            "save_state", "load_state"};
         const char *const kActionLabels[ActionCount] = {
             "Up", "Down", "Left", "Right", "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3",
             "R3", "Start", "Select", "Left stick left", "Left stick right", "Left stick up", "Left stick down",
-            "Right stick left", "Right stick right", "Right stick up", "Right stick down"};
+            "Right stick left", "Right stick right", "Right stick up", "Right stick down", "Fast forward (held)",
+            "Settings window (F2)", "Save state (F5)", "Load state (F7)"};
         // The PS2 buttons in Action order for the 16 buttons.
         const uint16_t kButtonBits[16] = {libs::kPadUp,  libs::kPadDown, libs::kPadLeft,  libs::kPadRight,
                                           libs::kPadCross, libs::kPadCircle, libs::kPadSquare, libs::kPadTriangle,
@@ -180,6 +183,10 @@ namespace bozo::app::input
                 p.actions[RightStickRight].push_back(axis(SDL_GAMEPAD_AXIS_RIGHTX, 1));
                 p.actions[RightStickUp].push_back(axis(SDL_GAMEPAD_AXIS_RIGHTY, -1));
                 p.actions[RightStickDown].push_back(axis(SDL_GAMEPAD_AXIS_RIGHTY, 1));
+                // Fast forward: a DualShock 4 / DualSense's touchpad click (no PS2 button has it).
+                p.actions[FastForward].push_back(pad(SDL_GAMEPAD_BUTTON_TOUCHPAD));
+                // The settings window: the middle button (PS, Xbox, Home), as a console's own menu.
+                p.actions[SettingsWindow].push_back(pad(SDL_GAMEPAD_BUTTON_GUIDE));
             }
             // Player 1's keyboard (US key positions), as before.
             Profile &p1 = config.players[0];
@@ -195,7 +202,8 @@ namespace bozo::app::input
                 {LeftStickUp, {SDL_SCANCODE_UP, SDL_SCANCODE_W}}, {LeftStickDown, {SDL_SCANCODE_DOWN, SDL_SCANCODE_S}},
                 {LeftStickLeft, {SDL_SCANCODE_LEFT, SDL_SCANCODE_A}}, {LeftStickRight, {SDL_SCANCODE_RIGHT, SDL_SCANCODE_D}},
                 {RightStickUp, {SDL_SCANCODE_I, 0}}, {RightStickDown, {SDL_SCANCODE_K, 0}},
-                {RightStickLeft, {SDL_SCANCODE_J, 0}}, {RightStickRight, {SDL_SCANCODE_L, 0}}};
+                {RightStickLeft, {SDL_SCANCODE_J, 0}}, {RightStickRight, {SDL_SCANCODE_L, 0}},
+                {FastForward, {SDL_SCANCODE_GRAVE, 0}}};
             for (const auto &entry : kKeyboard)
                 for (int code : entry.keys)
                     if (code)
@@ -260,6 +268,16 @@ namespace bozo::app::input
                 if (name == "gamepad")
                 {
                     profile.gamepad = value == "auto" ? -1 : std::clamp(std::atoi(value.c_str()), -1, 3);
+                    continue;
+                }
+                if (name == "rumble")
+                {
+                    if (value == "on" || value == "true")
+                        profile.rumble = 100;
+                    else if (value == "off" || value == "false")
+                        profile.rumble = 0;
+                    else
+                        profile.rumble = std::clamp(std::atoi(value.c_str()), 0, 100);
                     continue;
                 }
                 for (int action = 0; action < ActionCount; ++action)
@@ -348,6 +366,22 @@ namespace bozo::app::input
 
     std::mutex &configMutex() { return g_mutex; }
 
+    namespace
+    {
+        std::atomic<uint64_t> g_rumbleTest[kPlayers] = {};
+    }
+
+    void testRumble(int player)
+    {
+        if (player >= 0 && player < kPlayers)
+            g_rumbleTest[player].store(SDL_GetTicks() + 500, std::memory_order_relaxed);
+    }
+
+    uint64_t rumbleTestUntil(int player)
+    {
+        return player >= 0 && player < kPlayers ? g_rumbleTest[player].load(std::memory_order_relaxed) : 0;
+    }
+
     Config &config()
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -385,7 +419,8 @@ namespace bozo::app::input
         {
             const Profile &profile = g_config.players[player];
             file << "\n[player" << (player + 1) << "]\ngamepad = "
-                 << (profile.gamepad < 0 ? std::string("auto") : std::to_string(profile.gamepad)) << "\n";
+                 << (profile.gamepad < 0 ? std::string("auto") : std::to_string(profile.gamepad)) << "\nrumble = "
+                 << profile.rumble << "\n";
             for (int action = 0; action < ActionCount; ++action)
             {
                 file << kActionNames[action] << " =";
@@ -397,6 +432,20 @@ namespace bozo::app::input
         file << "\n[mouse]\nsensitivity = " << g_config.mouse.sensitivity << "\ninvert_y = "
              << (g_config.mouse.invertY ? "true" : "false") << "\ncapture = " << (g_config.mouse.capture ? "true" : "false") << "\n";
         return static_cast<bool>(file);
+    }
+
+    uint32_t windowActions(int player, const Devices &devices, SDL_Gamepad *gamepad)
+    {
+        player = std::clamp(player, 0, kPlayers - 1);
+        uint32_t held = 0;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        ensureLoaded();
+        const Profile &profile = g_config.players[player];
+        for (int action = kFirstWindowAction; action < ActionCount; ++action)
+            for (const Binding &binding : profile.actions[action])
+                if (strength(binding, devices, gamepad) > 0.5f)
+                    held |= 1u << (action - kFirstWindowAction);
+        return held;
     }
 
     libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad)

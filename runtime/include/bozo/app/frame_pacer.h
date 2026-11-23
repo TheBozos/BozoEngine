@@ -43,11 +43,43 @@ public:
     [[nodiscard]] uint64_t frames() const noexcept { return m_frames.load(std::memory_order_relaxed); }
     [[nodiscard]] double lastStepSeconds() const noexcept { return m_lastStep.load(std::memory_order_relaxed); }
 
+    // Any thread: while set, a paced game holds at its frame end (the window sets it while it is in the background and
+    // the player's video settings ask for it: video::Settings::pauseInBackground; cleared before the game is stopped).
+    // The sound runs dry meanwhile (the game's thread is what pushes it); the frame after counts one period.
+    static std::atomic<bool> &backgroundHold() noexcept
+    {
+        static std::atomic<bool> hold{false};
+        return hold;
+    }
+
+    // Any thread: fast forward, the game's speed in percent of the cap (100 normal, 300 three times as fast, 0 as fast
+    // as the host makes frames). Set by the window while the player holds its key (video::Settings::fastForward). A
+    // paced game's frames are held to the cap times this, and each counts as one period of the cap (the step returned:
+    // a game that steps by real time goes as fast as one that counts frames). The sound, on the host's clock, keeps
+    // its pace.
+    static std::atomic<uint32_t> &speedPercent() noexcept
+    {
+        static std::atomic<uint32_t> speed{100};
+        return speed;
+    }
+
     // Waits until the cap allows the next frame to start, then returns the time since the previous frame end.
     double frameEnd()
     {
         using Clock = std::chrono::steady_clock;
-        const uint32_t cap = m_cap.load(std::memory_order_relaxed);
+        const uint32_t baseCap = m_cap.load(std::memory_order_relaxed);
+        const uint32_t speed = m_paced.load(std::memory_order_relaxed) ? speedPercent().load(std::memory_order_relaxed) : 100u;
+        const bool fast = speed != 100u && baseCap != 0u;
+        const uint32_t cap = !fast ? baseCap : speed == 0u ? 0u : std::max<uint32_t>(1u, baseCap * speed / 100u);
+        if (m_paced.load(std::memory_order_relaxed) && backgroundHold().load(std::memory_order_acquire))
+        {
+            while (backgroundHold().load(std::memory_order_acquire))
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            // Back on the schedule from now, the pause not counted as the game's time (nor as a frame's work).
+            m_previous = Clock::now() - std::chrono::duration_cast<Clock::duration>(
+                                            std::chrono::duration<double>(1.0 / std::max<uint32_t>(cap, 1u)));
+            m_lastReturn = Clock::now();
+        }
         Clock::time_point now = Clock::now();
         Clock::time_point due{};
         if (statsWanted() && m_frames.load(std::memory_order_relaxed) != 0u)
@@ -73,8 +105,9 @@ public:
         // this step and, the schedule kept at `due`, again in the next): the steps summed about 1 % more than the real
         // time at a cap of 60, and the EE clock charged from them ran that much fast (TMB_TRACE_CLOCK, phase 4 M4b).
         // Unpaced (no due), next is now: the step as before.
-        const double step = bozo::det::enabled() ? 1.0 / static_cast<double>(cap != 0u ? cap : 60u)
-                                                 : std::min(std::chrono::duration<double>(next - m_previous).count(), kMaxStepSeconds);
+        const double step = fast ? 1.0 / static_cast<double>(baseCap)
+                            : bozo::det::enabled() ? 1.0 / static_cast<double>(cap != 0u ? cap : 60u)
+                                                   : std::min(std::chrono::duration<double>(next - m_previous).count(), kMaxStepSeconds);
         m_previous = next;
         m_lastReturn = Clock::now();
         m_lastStep.store(step, std::memory_order_relaxed);

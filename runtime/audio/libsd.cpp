@@ -23,9 +23,9 @@ namespace bozo::audio
         constexpr uint32_t kKon = 0x1500u, kKoff = 0x1600u, kEndX = 0x1700u, kVMixL = 0x1800u, kVMixEL = 0x1900u,
                            kVMixR = 0x1A00u, kVMixER = 0x1B00u;
         // Addresses.
-        constexpr uint32_t kEea = 0x1D00u, kTsa = 0x1E00u, kSsa = 0x2040u, kLsax = 0x2140u, kNax = 0x2240u;
+        constexpr uint32_t kEea = 0x1D00u, kTsa = 0x1E00u, kIrqa = 0x1F00u, kSsa = 0x2040u, kLsax = 0x2140u, kNax = 0x2240u;
         // Core attributes.
-        constexpr uint32_t kEffectEnable = 0x2u;
+        constexpr uint32_t kEffectEnable = 0x2u, kIrqEnable = 0x4u; // SD_CORE_EFFECT_ENABLE, SD_CORE_IRQ_ENABLE
 
         int coreOf(uint32_t entry)
         {
@@ -59,11 +59,13 @@ namespace bozo::audio
     {
         m_mixer.setInputHalfCallback([this](int group, int half)
                                      { inputHalf(static_cast<uint32_t>(group), static_cast<uint32_t>(half)); });
+        m_mixer.setIrqCallback([this](int core) { spu2Interrupt(core); });
     }
 
     Libsd::~Libsd()
     {
         m_mixer.setInputHalfCallback({});
+        m_mixer.setIrqCallback({});
     }
 
     uint32_t Libsd::physical(uint32_t address)
@@ -151,8 +153,16 @@ namespace bozo::audio
             case kAdsr1: return m_mixer.adsr(core, voice, 0);
             case kAdsr2: return m_mixer.adsr(core, voice, 1);
             case kEnvX: return m_mixer.envelope(core, voice);
-            case kVolXL: return m_mixer.volume(core, voice, 0) & 0x7FFFu;
-            case kVolXR: return m_mixer.volume(core, voice, 1) & 0x7FFFu;
+            // VOLXL / VOLXR: the voice's current volume, as the SPU2 reports it: its volume (where a sweep has brought it,
+            // bit 15) scaled by its envelope (ENVX). 0 once a released voice's envelope has ended or a decreasing sweep
+            // has run down (Capcom's SNDDRVCD sweeps a voice's volume down and waits for that before reusing it).
+            case kVolXL:
+            case kVolXR:
+            {
+                sync();
+                const uint32_t level = m_mixer.currentVolume(core, voice, (entry & 0xFF00u) == kVolXL ? 0 : 1);
+                return (level * (m_mixer.envelope(core, voice) & 0x7FFFu)) / 0x7FFFu;
+            }
             default: break;
             }
         }
@@ -218,6 +228,8 @@ namespace bozo::audio
         }
         if ((entry & 0xFF00u) == kTsa)
             m_state.transferAddress[core] = value;
+        if ((entry & 0xFF00u) == kIrqa)
+            m_mixer.setIrqAddress(core, value);
         if ((entry & 0xFF00u) == kEea)
             m_state.effectEnd[core] = value | 0x1FFFFu;
         m_state.addresses[entry & 0xFF01u] = value;
@@ -243,6 +255,8 @@ namespace bozo::audio
     {
         if ((entry & ~1u) == kEffectEnable)
             m_mixer.setEffectEnable(coreOf(entry), value != 0u);
+        if ((entry & ~1u) == kIrqEnable)
+            m_mixer.setIrqEnabled(coreOf(entry), value != 0u);
         m_state.coreAttributes[entry] = value;
     }
 
@@ -350,6 +364,11 @@ namespace bozo::audio
     {
         sync();
         mode &= 3u;
+        // The SPU2's transfer start address is in units of 8 halfwords, as a voice's start and loop are (the mixer
+        // keeps those 16-byte aligned): an unaligned address is the block it lies in. Shinobido's driver allocates its
+        // music buffers down from the last byte (0x1fffff - 0x28000 = 0x1d7fff) and passes that address both to
+        // sceSdVoiceTrans and to the voice's SSA; written at the exact byte, every block was 15 bytes off its decode.
+        sound &= ~15u;
         if (mode == 0u || mode == 3u)
         {
             std::vector<uint8_t> data(size);
@@ -424,7 +443,13 @@ namespace bozo::audio
         }
         if (!m_mixer.inputPlaying(static_cast<int>(channel)))
             return 0u;
-        const uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));
+        // With setStatusBlockAhead, the input DMA's transfer address: the next 1 KB block it fetches, one block ahead
+        // of the sample being played (the SPU2 holds the block it plays). A driver that keeps its ring full by this
+        // address (Shinobido's movie sound: free = address - 0x400 - written) needs it ahead: at the play position
+        // itself, a ring just filled reads as empty and is overwritten before it is played.
+        uint32_t offset = m_mixer.inputOffset(static_cast<int>(channel));
+        if (const uint32_t ring = m_state.blockSize[channel] / 1024u * 1024u; m_statusBlockAhead && ring != 0u)
+            offset = (offset / 1024u + 1u) * 1024u % ring;
         const uint32_t second = offset >= m_state.blockSize[channel] / 2u ? 1u : 0u;
         return (second << 24u) | (m_state.blockBuffer[channel] + offset);
     }
@@ -445,6 +470,23 @@ namespace bozo::audio
         const uint32_t previous = m_state.transHandler[channel].function;
         m_state.transHandler[channel] = Callback{function, argument, gp};
         return previous;
+    }
+
+    // sceSdSetSpu2IntrHandler(handler, argument): the SPU2's interrupt (a core's IRQ address reached) calls
+    // handler(1 << core, argument) as an interrupt handler.
+    uint32_t Libsd::setSpu2IntrHandler(uint32_t function, uint32_t argument, uint32_t gp)
+    {
+        sync();
+        const uint32_t previous = m_state.spu2Handler.function;
+        m_state.spu2Handler = Callback{function, argument, gp};
+        return previous;
+    }
+
+    void Libsd::spu2Interrupt(int core)
+    {
+        const Callback &handler = m_state.spu2Handler;
+        if (handler.function != 0u)
+            m_host.interruptCall(handler.function, 1u << core, handler.argument, handler.gp, kTransferDelay);
     }
 
     uint32_t Libsd::setIrqCallback(uint32_t function)
@@ -653,7 +695,7 @@ namespace bozo::audio
         case 32u: result = setEffectMode(a[0], a[1]); return true;
         case 33u: result = setEffectModeParams(a[0], a[1]); return true;
         case 26u: result = setTransIntrHandler(a[0], a[1], a[2], gp); return true;
-        case 27u: sync(); return true; // sceSdSetSpu2IntrHandler
+        case 27u: result = setSpu2IntrHandler(a[0], a[1], gp); return true;
         case 13u: result = note2Pitch(a[0], a[1], a[2], a[3]); return true;
         case 14u: result = pitch2Note(a[0], a[1], a[2]); return true;
         case 28u: result = transIntrHandlerArgument(a[0]); return true;

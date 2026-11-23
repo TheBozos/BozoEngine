@@ -10,10 +10,12 @@
 #include "bozo/app/panel.h"
 
 #include "bozo/app/app.h"
+#include "bozo/app/frame_pacer.h"
 #include "bozo/app/input_bindings.h"
 #include "bozo/app/settings_tabs.h"
 #include "bozo/app/video_settings.h"
 #include "bozo/app/window.h"
+#include "bozo/render/gl.h"
 
 #include <SDL3/SDL.h>
 
@@ -22,6 +24,7 @@
 #include "imgui_impl_sdl3.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -39,6 +42,31 @@ namespace bozo::app
     namespace
     {
         void drawNotice();
+
+        // While the game is fast-forwarded (FramePacer::speedPercent, set by the window): its speed at the top left.
+        void drawFastForward()
+        {
+            const uint32_t speed = FramePacer::speedPercent().load(std::memory_order_relaxed);
+            if (speed == 100u)
+                return;
+            const ImGuiViewport *viewport = ImGui::GetMainViewport();
+            const float pad = 10.0f * ImGui::GetStyle().FontScaleDpi;
+            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + pad, viewport->WorkPos.y + pad), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.45f);
+            const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                           ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+            if (ImGui::Begin("##fast-forward", nullptr, flags))
+            {
+                if (speed == 0u)
+                    ImGui::TextUnformatted(">> unlimited");
+                else if (speed % 100u == 0u)
+                    ImGui::Text(">> %ux", speed / 100u);
+                else
+                    ImGui::Text(">> %u%%", speed);
+            }
+            ImGui::End();
+        }
     }
 
     struct Panel::Impl
@@ -46,6 +74,7 @@ namespace bozo::app
         SDL_Window *window = nullptr;
         bool ready = false;
         bool settings = false; // F2
+        bool focusSettings = false; // just opened: the settings window takes the focus (gamepad navigation)
         bool overlay = false;  // F3
         std::string openTab;   // PS2X_SETTINGS_OPEN's tab, selected once
         std::string iniPath;   // imgui.ini (ImGui keeps the pointer)
@@ -72,7 +101,7 @@ namespace bozo::app
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
         const std::filesystem::path &user = userDirectory();
         m.iniPath = (user.empty() ? std::filesystem::path("imgui.ini") : user / "imgui.ini").string();
         io.IniFilename = m.iniPath.c_str();
@@ -88,6 +117,8 @@ namespace bozo::app
             ImGui::DestroyContext();
             return false;
         }
+        // Every gamepad steers the settings window (any player's), not only the first plugged in.
+        ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);
         m.window = window;
         m.ready = true;
         if (const char *show = std::getenv("PS2X_SHOW_FPS"); show && *show == '1')
@@ -95,6 +126,7 @@ namespace bozo::app
         if (const char *open = std::getenv("PS2X_SETTINGS_OPEN"); open && *open)
         {
             m.settings = true;
+            m.focusSettings = true;
             m.openTab = open;
         }
         return true;
@@ -120,9 +152,7 @@ namespace bozo::app
         {
             if (event.key.scancode == SDL_SCANCODE_F2)
             {
-                m.settings = !m.settings;
-                if (!m.settings)
-                    m.bindingAction = -1;
+                toggleSettings();
                 return;
             }
             if (event.key.scancode == SDL_SCANCODE_F3)
@@ -142,8 +172,11 @@ namespace bozo::app
                                    binding.source == input::Source::MouseMove;
                 if (!(mouse && ImGui::GetIO().WantCaptureMouse))
                 {
+                    // config() takes the same (non-recursive) mutex: fetched before the lock, as the other callers do.
+                    // Under the lock it threw "resource deadlock would occur" at the first input after Add.
+                    input::Config &config = input::config();
                     std::lock_guard<std::mutex> lock(input::configMutex());
-                    std::vector<input::Binding> &list = input::config().players[m.controlsPlayer].actions[m.bindingAction];
+                    std::vector<input::Binding> &list = config.players[m.controlsPlayer].actions[m.bindingAction];
                     if (std::find(list.begin(), list.end(), binding) == list.end())
                         list.push_back(binding);
                     m.bindingAction = -1;
@@ -160,6 +193,17 @@ namespace bozo::app
     }
 
     bool Panel::settingsOpen() const { return impl_->ready && impl_->settings; }
+    void Panel::toggleSettings()
+    {
+        Impl &m = *impl_;
+        if (!m.ready)
+            return;
+        m.settings = !m.settings;
+        m.focusSettings = m.settings;
+        if (!m.settings)
+            m.bindingAction = -1;
+    }
+    bool Panel::holdsGamepads() const { return impl_->ready && impl_->settings; }
     bool Panel::overlayShown() const { return impl_->ready && impl_->overlay; }
     bool Panel::holdsKeyboard() const
     {
@@ -180,6 +224,7 @@ namespace bozo::app
         if (m.overlay)
             m.drawOverlay();
         drawNotice();
+        drawFastForward();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
@@ -230,6 +275,11 @@ namespace bozo::app
         return (dir / ("slot" + std::to_string(slot) + ".state")).string();
     }
 
+    std::string stateSlotPicturePath(int slot)
+    {
+        return std::filesystem::path(stateSlotPath(slot)).replace_extension(".png").string();
+    }
+
     std::string stateSlotSummary(int slot)
     {
         const std::filesystem::path path = stateSlotPath(slot);
@@ -248,6 +298,57 @@ namespace bozo::app
     namespace
     {
         std::atomic<int> s_stateSlot{0};
+
+        // The Save states tab's thumbnails: each slot's picture as a texture, loaded again when its file changes (the
+        // window's thread, which owns the GL context; a file still being written fails to load and is tried again).
+        struct Thumbnail
+        {
+            render::gl::GLuint texture = 0;
+            std::filesystem::file_time_type loaded{};
+            int width = 0, height = 0;
+        };
+        std::array<Thumbnail, kStateSlots> s_thumbnails;
+
+        const Thumbnail &thumbnail(int slot)
+        {
+            Thumbnail &t = s_thumbnails[static_cast<size_t>(slot)];
+            const std::string path = stateSlotPicturePath(slot);
+            std::error_code ec;
+            const auto written = std::filesystem::last_write_time(path, ec);
+            const render::gl::Api &g = render::gl::api();
+            if (ec)
+            {
+                if (t.texture)
+                    g.DeleteTextures(1, &t.texture);
+                t = Thumbnail{};
+                return t;
+            }
+            if (t.texture && written == t.loaded)
+                return t;
+            SDL_Surface *file = SDL_LoadPNG(path.c_str());
+            SDL_Surface *rgba = file ? SDL_ConvertSurface(file, SDL_PIXELFORMAT_RGBA32) : nullptr;
+            if (rgba)
+            {
+                if (!t.texture)
+                    g.GenTextures(1, &t.texture);
+                g.BindTexture(render::gl::kTexture2D, t.texture);
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureMinFilter, static_cast<render::gl::GLint>(render::gl::kLinear));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureMagFilter, static_cast<render::gl::GLint>(render::gl::kLinear));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureWrapS, static_cast<render::gl::GLint>(render::gl::kClampToEdge));
+                g.TexParameteri(render::gl::kTexture2D, render::gl::kTextureWrapT, static_cast<render::gl::GLint>(render::gl::kClampToEdge));
+                g.PixelStorei(render::gl::kUnpackAlignment, 4);
+                g.TexImage2D(render::gl::kTexture2D, 0, static_cast<render::gl::GLint>(render::gl::kRgba8), rgba->w, rgba->h, 0,
+                             render::gl::kRgba, render::gl::kUnsignedByte, rgba->pixels);
+                g.BindTexture(render::gl::kTexture2D, 0);
+                t.loaded = written;
+                t.width = rgba->w;
+                t.height = rgba->h;
+                SDL_DestroySurface(rgba);
+            }
+            if (file)
+                SDL_DestroySurface(file);
+            return t;
+        }
     }
     int stateSlot() { return s_stateSlot.load(std::memory_order_relaxed); }
     void setStateSlot(int slot) { s_stateSlot.store(((slot % kStateSlots) + kStateSlots) % kStateSlots); }
@@ -257,13 +358,37 @@ namespace bozo::app
         ui::registerTab("Save states", [save, load] {
             ImGui::TextDisabled("F5 saves the selected slot, F7 loads it, F6 / Shift+F6 selects the next / previous.");
             ImGui::Separator();
+            const float unit = ImGui::GetStyle().FontScaleDpi;
+            const ImVec2 picture(96.0f * unit, 72.0f * unit);
             for (int slot = 0; slot < kStateSlots; ++slot)
             {
                 ImGui::PushID(slot);
                 const std::string summary = stateSlotSummary(slot);
+                const float buttons = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 120.0f * unit;
+                // The picture taken when it was saved (a blank box without one), larger under the pointer.
+                const Thumbnail &t = thumbnail(slot);
+                const bool hasPicture = t.texture && !summary.ends_with(": empty");
+                if (hasPicture)
+                {
+                    const ImTextureID id = static_cast<ImTextureID>(t.texture);
+                    ImGui::Image(id, picture);
+                    if (ImGui::BeginItemTooltip())
+                    {
+                        ImGui::Image(id, ImVec2(static_cast<float>(t.width) * unit, static_cast<float>(t.height) * unit));
+                        ImGui::EndTooltip();
+                    }
+                }
+                else
+                    ImGui::Dummy(ImVec2(picture.x, ImGui::GetFrameHeight())); // an empty slot's row stays one line
+                ImGui::SameLine();
+                // The slot's line, centred on its picture (a group: SameLine stays on its line).
+                const float groupX = ImGui::GetCursorPosX();
+                ImGui::BeginGroup();
+                if (hasPicture)
+                    ImGui::Dummy(ImVec2(0.0f, (picture.y - ImGui::GetFrameHeight()) * 0.5f - ImGui::GetStyle().ItemSpacing.y));
                 if (ImGui::RadioButton(summary.c_str(), stateSlot() == slot))
                     setStateSlot(slot);
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120.0f * ImGui::GetStyle().FontScaleDpi);
+                ImGui::SameLine(buttons - groupX);
                 if (ImGui::Button("Save"))
                 {
                     setStateSlot(slot);
@@ -277,6 +402,7 @@ namespace bozo::app
                     load(slot);
                 }
                 ImGui::EndDisabled();
+                ImGui::EndGroup();
                 ImGui::PopID();
             }
             ImGui::Separator();
@@ -313,6 +439,11 @@ namespace bozo::app
     {
         const float unit = ImGui::GetStyle().FontScaleDpi;
         ImGui::SetNextWindowSize(ImVec2(640.0f * unit, 600.0f * unit), ImGuiCond_FirstUseEver);
+        if (focusSettings)
+        {
+            ImGui::SetNextWindowFocus();
+            focusSettings = false;
+        }
         if (!ImGui::Begin("Settings (F2)", &settings))
         {
             ImGui::End();
@@ -453,6 +584,53 @@ namespace bozo::app
         envNote("PS2X_TEXTURE_FILTER");
         ImGui::TextDisabled("The game's textures redrawn 2 or 4 times as large (applies at once; made in the background).");
 
+        static const int kSmoothings[] = {0, 1, 2, 4, 8, 16};
+        static const char *kSmoothingNames[] = {"Off (as the console)", "Trilinear", "Anisotropic 2x", "Anisotropic 4x",
+                                                "Anisotropic 8x", "Anisotropic 16x"};
+        int smoothingIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kSmoothings); ++i)
+            if (edited.textureSmoothing == kSmoothings[i])
+                smoothingIndex = i;
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Texture smoothing", &smoothingIndex, kSmoothingNames, IM_ARRAYSIZE(kSmoothingNames)))
+            edited.textureSmoothing = kSmoothings[smoothingIndex];
+        envNote("PS2X_TEXTURE_SMOOTHING");
+        ImGui::TextDisabled("Distant textures without the shimmer: smaller copies made from each (applies at once).");
+
+        static const int kAntiAliasings[] = {0, 2, 4, 8};
+        static const char *kAntiAliasingNames[] = {"Off (as the console)", "2x MSAA", "4x MSAA", "8x MSAA"};
+        int antiAliasingIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kAntiAliasings); ++i)
+            if (edited.antiAliasing == kAntiAliasings[i])
+                antiAliasingIndex = i;
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::Combo("Anti-aliasing", &antiAliasingIndex, kAntiAliasingNames, IM_ARRAYSIZE(kAntiAliasingNames)))
+            edited.antiAliasing = kAntiAliasings[antiAliasingIndex];
+        envNote("PS2X_ANTI_ALIASING");
+        ImGui::TextDisabled("The 3D's jagged edges smoothed, several samples a pixel (applies at once).");
+
+        ImGui::Checkbox("Pause in the background", &edited.pauseInBackground);
+        envNote("PS2X_PAUSE_IN_BACKGROUND");
+        ImGui::TextDisabled("The game holds while another window has the focus or this one is minimised.");
+
+        static const int kFastForwards[] = {200, 300, 400, 0};
+        static const char *kFastForwardNames[] = {"2x", "3x", "4x", "Unlimited (as fast as the PC goes)"};
+        int fastIndex = -1;
+        for (int i = 0; i < IM_ARRAYSIZE(kFastForwards); ++i)
+            if (edited.fastForward == kFastForwards[i])
+                fastIndex = i;
+        const std::string fastLabel = fastIndex >= 0 ? kFastForwardNames[fastIndex] : video::fastForwardName(edited.fastForward);
+        ImGui::SetNextItemWidth(240.0f * unit);
+        if (ImGui::BeginCombo("Fast forward", fastLabel.c_str()))
+        {
+            for (int i = 0; i < IM_ARRAYSIZE(kFastForwards); ++i)
+                if (ImGui::Selectable(kFastForwardNames[i], i == fastIndex))
+                    edited.fastForward = kFastForwards[i];
+            ImGui::EndCombo();
+        }
+        envNote("PS2X_FAST_FORWARD");
+        ImGui::TextDisabled("The game's speed while Fast forward is held (` by default, the Controls tab binds it).");
+
         // The player's texture pack (docs/texture-replace.md), when there is one: on or off (texture_pack = off).
         {
             static std::string s_lastOn; // a set folder (video.ini, PS2X_TEXTURE_PACK) given back when turned on again
@@ -546,14 +724,20 @@ namespace bozo::app
             ImGui::SetNextItemWidth(90.0f * unit);
             ImGui::InputInt("Gamepad (-1: auto)", &profile.gamepad);
             profile.gamepad = std::clamp(profile.gamepad, -1, 3);
+            ImGui::SameLine(0.0f, 30.0f * unit);
+            ImGui::SetNextItemWidth(120.0f * unit);
+            ImGui::SliderInt("Rumble", &profile.rumble, 0, 100, profile.rumble ? "%d%%" : "off", ImGuiSliderFlags_AlwaysClamp);
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Test"))
+            input::testRumble(controlsPlayer);
         ImGui::TextWrapped("Add: then press a key or a gamepad button, push a stick or trigger, or click, roll the wheel or "
                            "move the mouse over the game picture. Click a binding to remove it.");
 
         if (ImGui::BeginTable("bindings", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
                               ImVec2(0.0f, ImGui::GetContentRegionAvail().y - 120.0f * unit)))
         {
-            ImGui::TableSetupColumn("PS2", ImGuiTableColumnFlags_WidthFixed, 130.0f * unit);
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 150.0f * unit);
             ImGui::TableSetupColumn("Bindings", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 70.0f * unit);
             for (int action = 0; action < input::ActionCount; ++action)

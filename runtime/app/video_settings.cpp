@@ -77,6 +77,18 @@ namespace bozo::app::video
             return true;
         }
 
+        // on / off (also 1 / 0, true / false, yes / no); false for anything else.
+        bool parseSwitch(std::string_view text, bool &on)
+        {
+            if (text == "on" || text == "1" || text == "true" || text == "yes")
+                on = true;
+            else if (text == "off" || text == "0" || text == "false" || text == "no")
+                on = false;
+            else
+                return false;
+            return true;
+        }
+
         bool parseSize(const char *text, int &width, int &height)
         {
             int w = 0, h = 0;
@@ -99,6 +111,17 @@ namespace bozo::app::video
                 settings.textureUpscale.factor = 1u;
             if (settings.textureUpscale.filter != render::UpscaleFilter::Smooth)
                 settings.textureUpscale.filter = render::UpscaleFilter::Edge;
+            int smoothing = 0; // 0, 1, or a power of two up to 16
+            for (int level : {16, 8, 4, 2, 1})
+                if (settings.textureSmoothing >= level)
+                {
+                    smoothing = level;
+                    break;
+                }
+            settings.textureSmoothing = smoothing;
+            settings.antiAliasing = settings.antiAliasing >= 8 ? 8 : settings.antiAliasing >= 4 ? 4 : settings.antiAliasing >= 2 ? 2 : 0;
+            if (settings.fastForward != 0)
+                settings.fastForward = std::clamp(settings.fastForward, 200, 1000);
         }
 
         void load(Settings &settings)
@@ -128,8 +151,16 @@ namespace bozo::app::video
                     render::parseUpscaleFactor(value, settings.textureUpscale.factor);
                 else if (name == "texture_filter")
                     render::parseUpscaleFilter(value, settings.textureUpscale.filter);
+                else if (name == "texture_smoothing")
+                    parseTextureSmoothing(value, settings.textureSmoothing);
+                else if (name == "anti_aliasing")
+                    parseAntiAliasing(value, settings.antiAliasing);
                 else if (name == "texture_pack")
                     settings.texturePack = value;
+                else if (name == "pause_in_background")
+                    parseSwitch(value, settings.pauseInBackground);
+                else if (name == "fast_forward")
+                    parseFastForward(value, settings.fastForward);
             }
         }
 
@@ -226,6 +257,64 @@ namespace bozo::app::video
 
     std::string frameRateName(int rate) { return rate == 0 ? "game" : rate < 0 ? "monitor" : std::to_string(rate); }
 
+    bool parseFastForward(const std::string &text, int &percent)
+    {
+        if (text == "unlimited" || text == "0")
+        {
+            percent = 0;
+            return true;
+        }
+        const int n = std::atoi(text.c_str()); // "3x" (atoi stops at the x) or a percent
+        if (!text.empty() && (text.back() == 'x' || text.back() == 'X') && n >= 2 && n <= 10)
+            percent = n * 100;
+        else if (n >= 200 && n <= 1000)
+            percent = n;
+        else
+            return false;
+        return true;
+    }
+
+    std::string fastForwardName(int percent)
+    {
+        if (percent == 0)
+            return "unlimited";
+        return percent % 100 == 0 ? std::to_string(percent / 100) + "x" : std::to_string(percent);
+    }
+
+    bool parseTextureSmoothing(const std::string &text, int &level)
+    {
+        if (text == "off" || text == "0")
+            level = 0;
+        else if (text == "trilinear" || text == "1")
+            level = 1;
+        else if (const int n = std::atoi(text.c_str()); n >= 2 && n <= 16 && (n & (n - 1)) == 0)
+            level = n; // "2x" .. "16x" (atoi stops at the x)
+        else
+            return false;
+        return true;
+    }
+
+    std::string textureSmoothingName(int level)
+    {
+        return level <= 0 ? "off" : level == 1 ? "trilinear" : std::to_string(level) + "x";
+    }
+
+    bool parseAntiAliasing(const std::string &text, int &samples)
+    {
+        if (text == "off" || text == "0" || text == "1")
+            samples = 0;
+        else if (const int n = std::atoi(text.c_str()); n == 2 || n == 4 || n == 8)
+            samples = n; // "2x" .. "8x" (atoi stops at the x)
+        else
+            return false;
+        return true;
+    }
+
+    std::string antiAliasingName(int samples)
+    {
+        return samples < 2 ? "off" : std::to_string(samples) + "x";
+    }
+
     const char *modeName(WindowMode mode)
     {
         switch (mode)
@@ -268,6 +357,14 @@ namespace bozo::app::video
             render::parseUpscaleFilter(filter, settings.textureUpscale.filter);
         if (const char *pack = std::getenv("PS2X_TEXTURE_PACK"); pack && *pack)
             settings.texturePack = pack;
+        if (const char *smoothing = std::getenv("PS2X_TEXTURE_SMOOTHING"); smoothing && *smoothing)
+            parseTextureSmoothing(smoothing, settings.textureSmoothing);
+        if (const char *aa = std::getenv("PS2X_ANTI_ALIASING"); aa && *aa)
+            parseAntiAliasing(aa, settings.antiAliasing);
+        if (const char *pause = std::getenv("PS2X_PAUSE_IN_BACKGROUND"); pause && *pause)
+            parseSwitch(pause, settings.pauseInBackground);
+        if (const char *fast = std::getenv("PS2X_FAST_FORWARD"); fast && *fast)
+            parseFastForward(fast, settings.fastForward);
         sanitize(settings);
         g_current = settings;
         g_current.mode = WindowMode::Windowed; // the window opens as a window; applyAtStartup goes on from there
@@ -284,6 +381,8 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(target.renderScale);
         render::Renderer::instance().setFrameRate(target.frameRate);
         render::Renderer::instance().setTextureUpscale(target.textureUpscale);
+        render::Renderer::instance().setTextureSmoothing(target.textureSmoothing);
+        render::Renderer::instance().setAntiAliasing(target.antiAliasing);
         applyTexturePack(target.texturePack);
         g_current = target;
         publish();
@@ -416,6 +515,8 @@ namespace bozo::app::video
         render::Renderer::instance().setRenderScale(g_edited.renderScale);
         render::Renderer::instance().setFrameRate(g_edited.frameRate);
         render::Renderer::instance().setTextureUpscale(g_edited.textureUpscale);
+        render::Renderer::instance().setTextureSmoothing(g_edited.textureSmoothing);
+        render::Renderer::instance().setAntiAliasing(g_edited.antiAliasing);
         if (g_edited.texturePack != g_current.texturePack)
             applyTexturePack(g_edited.texturePack);
         g_current = g_edited;
@@ -447,6 +548,12 @@ namespace bozo::app::video
                 "# made (edge: sharp edges kept, smooth: bicubic; PS2X_TEXTURE_FILTER). texture_pack: a folder of texture\n"
                 "# replacements, <identity>.png files the player made (off: none; unset: texture_pack in this folder when it\n"
                 "# exists; PS2X_TEXTURE_PACK, PS2X_TEXTURE_PACK_RELOAD=1 to read changed files again while playing).\n"
+                "# texture_smoothing: off (textures sampled as the console does), trilinear (levels made from them: distant\n"
+                "# textures stop shimmering) or 2x .. 16x (trilinear with that much anisotropic filtering;\n"
+                "# PS2X_TEXTURE_SMOOTHING). anti_aliasing: off, 2x, 4x or 8x (the 3D's edges smoothed with that many samples\n"
+                "# a pixel, MSAA; PS2X_ANTI_ALIASING). pause_in_background: on (the game held while another window has the focus or\n"
+                "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND). fast_forward: the game's speed while\n"
+                "# fast forward is held (input.ini fast_forward; ` by default): 2x .. 10x or unlimited (as fast as the PC goes; PS2X_FAST_FORWARD).\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
@@ -454,7 +561,11 @@ namespace bozo::app::video
              << "gs_scale = " << s.gsScale << "\n"
              << "frame_rate = " << frameRateName(s.frameRate) << "\n"
              << "texture_upscale = " << render::upscaleFactorName(s.textureUpscale.factor) << "\n"
-             << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n";
+             << "texture_filter = " << render::upscaleFilterName(s.textureUpscale.filter) << "\n"
+             << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n"
+             << "anti_aliasing = " << antiAliasingName(s.antiAliasing) << "\n"
+             << "pause_in_background = " << (s.pauseInBackground ? "on" : "off") << "\n"
+             << "fast_forward = " << fastForwardName(s.fastForward) << "\n";
         if (!s.texturePack.empty())
             file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);

@@ -7,6 +7,8 @@
 
 #include "bozo/app/app.h"
 #include "bozo/app/device_pad.h"
+#include "bozo/app/frame_pacer.h"
+#include "bozo/app/input_bindings.h"
 #include "bozo/app/panel.h"
 #include "bozo/app/png.h"
 #include "bozo/app/video_settings.h"
@@ -22,6 +24,8 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -62,6 +66,7 @@ namespace bozo::app
         {
         public:
             CaptureWriter() : m_thread([this] { run(); }) {}
+            void readOffscreen(bool offscreen) { m_offscreen = offscreen; }
             ~CaptureWriter()
             {
                 {
@@ -72,21 +77,24 @@ namespace bozo::app
                 m_thread.join();
             }
 
-            // The picture (pixels w x h) now, saved as path: framebuffer `from`'s colour (0: the window's back buffer,
-            // whose pixels are undefined while the window is covered, minimised or its display asleep).
-            void capture(const std::string &path, int w, int h, render::gl::GLuint from = 0)
+            // The back buffer (pixels w x h) now, saved as path; `compressed`: through SDL_SavePNG (a player's
+            // screenshot, F12; a save state's picture, scaled down to `maxWidth` when it is set), else the quick
+            // uncompressed writer (captures, many a second).
+            void capture(const std::string &path, int w, int h, bool compressed = false, int maxWidth = 0)
             {
                 const render::gl::Api &g = render::gl::api();
                 Job job;
                 job.path = path;
                 job.width = w;
                 job.height = h;
+                job.compressed = compressed;
+                job.maxWidth = maxWidth;
                 job.pixels.resize(static_cast<size_t>(w) * h * 4u);
-                g.BindFramebuffer(render::gl::kReadFramebuffer, from);
-                g.ReadBuffer(from ? render::gl::kColorAttachment0 : render::gl::kBack);
+                // From the back buffer, or from the offscreen picture the window presents into when nothing may depend
+                // on the window being visible (WindowOptions::captureScene / hidden, PS2X_CAPTURE_SCENE=1).
+                g.ReadBuffer(m_offscreen ? render::gl::GLenum(0x8CE0) /* GL_COLOR_ATTACHMENT0 */ : render::gl::kBack);
                 g.PixelStorei(render::gl::kPackAlignment, 4);
                 g.ReadPixels(0, 0, w, h, render::gl::kRgba, render::gl::kUnsignedByte, job.pixels.data());
-                g.BindFramebuffer(render::gl::kReadFramebuffer, 0);
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
                     m_jobs.push_back(std::move(job));
@@ -99,6 +107,8 @@ namespace bozo::app
             {
                 std::string path;
                 int width = 0, height = 0;
+                bool compressed = false;
+                int maxWidth = 0;
                 std::vector<uint8_t> pixels; // bottom-up, as GL reads them
             };
 
@@ -120,7 +130,28 @@ namespace bozo::app
                     for (int y = 0; y < job.height; ++y) // bottom-up to top-down
                         std::copy_n(job.pixels.data() + static_cast<size_t>(job.height - 1 - y) * stride, stride,
                                     rows.data() + static_cast<size_t>(y) * stride);
-                    const bool ok = writePng(job.path, rows.data(), static_cast<uint32_t>(job.width), static_cast<uint32_t>(job.height));
+                    bool ok = false;
+                    if (job.compressed)
+                    {
+                        for (size_t i = 3; i < rows.size(); i += 4)
+                            rows[i] = 0xFF; // the picture's alpha is the renderer's, not the player's
+                        if (SDL_Surface *surface = SDL_CreateSurfaceFrom(job.width, job.height, SDL_PIXELFORMAT_RGBA32,
+                                                                         rows.data(), static_cast<int>(stride)))
+                        {
+                            SDL_Surface *saved = surface;
+                            if (job.maxWidth > 0 && job.width > job.maxWidth)
+                                if (SDL_Surface *small = SDL_ScaleSurface(surface, job.maxWidth,
+                                                                          std::max(1, job.height * job.maxWidth / job.width),
+                                                                          SDL_SCALEMODE_LINEAR))
+                                    saved = small;
+                            ok = SDL_SavePNG(saved, job.path.c_str());
+                            if (saved != surface)
+                                SDL_DestroySurface(saved);
+                            SDL_DestroySurface(surface);
+                        }
+                    }
+                    else
+                        ok = writePng(job.path, rows.data(), static_cast<uint32_t>(job.width), static_cast<uint32_t>(job.height));
                     std::fprintf(stderr, "[window] %s %s\n", ok ? "saved" : "could not save", job.path.c_str());
                 }
             }
@@ -129,8 +160,41 @@ namespace bozo::app
             std::condition_variable m_wake;
             std::deque<Job> m_jobs;
             bool m_stop = false;
+            bool m_offscreen = false; // captures read the offscreen picture (WindowOptions::captureScene)
             std::thread m_thread;
         };
+
+        // A save state's picture is taken at the next present after its save was asked (F5 or the Save states tab).
+        std::atomic<int> g_pictureSlot{-1};
+
+        // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
+        // number added when two fall in the same second.
+        std::string screenshotPath()
+        {
+            std::filesystem::path dir;
+            if (const char *env = std::getenv("PS2X_SCREENSHOT_DIR"); env && *env)
+                dir = env;
+            else
+                dir = userDirectory().empty() ? std::filesystem::path("screenshots") : userDirectory() / "screenshots";
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            const std::time_t now = std::time(nullptr);
+            std::tm local{};
+#if defined(_WIN32)
+            localtime_s(&local, &now);
+#else
+            localtime_r(&now, &local);
+#endif
+            char stamp[32];
+            std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &local);
+            // The last name given counts as taken too: its file may not be written yet (the writer's thread).
+            static std::filesystem::path s_last;
+            std::filesystem::path path = dir / ("screenshot_" + std::string(stamp) + ".png");
+            for (int n = 2; (path == s_last || std::filesystem::exists(path, ec)) && n < 100; ++n)
+                path = dir / ("screenshot_" + std::string(stamp) + "_" + std::to_string(n) + ".png");
+            s_last = path;
+            return path.string();
+        }
 
         std::vector<double> parseSeconds(const char *text)
         {
@@ -168,7 +232,8 @@ namespace bozo::app
         const int openHeight = videoSettings ? video::edited().height : options.height;
         SDL_Window *window = SDL_CreateWindow(options.title.c_str(), openWidth, openHeight,
                                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                                  (!videoSettings && options.fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+                                                  (options.hidden ? SDL_WINDOW_HIDDEN : 0) |
+                                                  (!videoSettings && !options.hidden && options.fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (!window)
         {
             std::fprintf(stderr, "[window] SDL_CreateWindow: %s\n", SDL_GetError());
@@ -195,12 +260,24 @@ namespace bozo::app
         if (videoSettings)
             video::applyAtStartup(window);
         else
+        {
             renderer.setRenderScale(options.renderScale);
+            // Without the player's video settings (a scripted run): PS2X_ANTI_ALIASING alone, off by default.
+            int samples = 0;
+            if (const char *aa = std::getenv("PS2X_ANTI_ALIASING"); aa && *aa)
+                video::parseAntiAliasing(aa, samples);
+            renderer.setAntiAliasing(samples);
+        }
         Panel panel;
         if (options.panel)
             panel.init(window, context);
+        const auto saveState = [save = game.saveState](int slot)
+        {
+            save(slot);
+            g_pictureSlot.store(slot, std::memory_order_relaxed);
+        };
         if (game.saveState && game.loadState)
-            registerStateTab(game.saveState, game.loadState);
+            registerStateTab(saveState, game.loadState);
 
         GameThread thread;
         thread.game = &game;
@@ -247,6 +324,12 @@ namespace bozo::app
         // PS2X_CAPTURE_BURST_AT=<s>[,<s>...]: F9 pressed at those seconds (unattended checks of the bursts).
         std::vector<double> burstAt = parseSeconds(std::getenv("PS2X_CAPTURE_BURST_AT"));
         size_t nextBurstAt = 0;
+        // PS2X_SCREENSHOT_AT=<s>[,<s>...]: F12 pressed at those seconds.
+        std::vector<double> screenshotAt = parseSeconds(std::getenv("PS2X_SCREENSHOT_AT"));
+        size_t nextScreenshotAt = 0;
+        // PS2X_STATE_SAVE_AT=<s>[,<s>...]: F5 pressed at those seconds (the selected slot, its picture).
+        std::vector<double> stateSaveAt = parseSeconds(std::getenv("PS2X_STATE_SAVE_AT"));
+        size_t nextStateSaveAt = 0;
         const auto ensureDir = [](const std::string &dir)
         {
             std::error_code ec;
@@ -260,7 +343,15 @@ namespace bozo::app
         int sequences = 0, sequenceLeft = 0, sequenceIndex = 0;
         std::ofstream sequenceLog;
         bool burst = false;
+        bool screenshot = false; // F12: the next present's game picture
         CaptureWriter writer;
+        // The window presents into an offscreen picture (then copied to the window when it is shown) when captures must
+        // not depend on the window being visible: a hidden or covered window's back buffer reads back black.
+        static const bool sceneByEnv = [] { const char *v = std::getenv("PS2X_CAPTURE_SCENE"); return v && *v == '1'; }();
+        const bool offscreen = options.captureScene || options.hidden || sceneByEnv;
+        writer.readOffscreen(offscreen);
+        render::gl::GLuint offFbo = 0, offColour = 0, offDepth = 0;
+        int offWidth = 0, offHeight = 0;
         bool quit = false;
 
         using Clock = std::chrono::steady_clock;
@@ -273,15 +364,23 @@ namespace bozo::app
         uint64_t runFirstFrames = 0;
         Clock::time_point runFirst{};
         uint64_t seen = 0;
-        render::gl::GLuint pictureFbo = 0, pictureColour = 0, pictureDepth = 0; // the game's picture (see below)
-        int pictureWidth = 0, pictureHeight = 0;
+        uint64_t lockstepFrames = 0; // lockstep: the frames ended at the last present
         int swapRate = 0; // the frame rate the swap interval was set for
         Clock::time_point nextPresent{};
+        // The cursor over the game hides after two seconds without moving (shown again by any motion or button, and
+        // while the settings window is open). PS2X_KEEP_CURSOR=1 leaves it shown.
+        static const bool keepCursor = [] { const char *v = std::getenv("PS2X_KEEP_CURSOR"); return v && *v == '1'; }();
+        Clock::time_point cursorMoved = start;
+        bool cursorHidden = false;
+        uint32_t windowActions = 0; // the window's actions held at the last pad update (input::windowActions)
         while (!quit)
         {
             SDL_Event event;
             while (SDL_PollEvent(&event))
             {
+                if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                    event.type == SDL_EVENT_MOUSE_WHEEL)
+                    cursorMoved = Clock::now();
                 panel.handleEvent(event);
                 if (videoSettings)
                     video::handleEvent(event);
@@ -292,7 +391,7 @@ namespace bozo::app
                 else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
                 {
                     if (event.key.scancode == SDL_SCANCODE_F5 && game.saveState)
-                        game.saveState(stateSlot());
+                        saveState(stateSlot());
                     else if (event.key.scancode == SDL_SCANCODE_F7 && game.loadState)
                         game.loadState(stateSlot());
                     else if (event.key.scancode == SDL_SCANCODE_F6 && game.saveState)
@@ -300,6 +399,8 @@ namespace bozo::app
                         setStateSlot(stateSlot() + ((event.key.mod & SDL_KMOD_SHIFT) ? -1 : 1));
                         notify(stateSlotSummary(stateSlot()));
                     }
+                    else if (event.key.scancode == SDL_SCANCODE_F12)
+                        screenshot = true;
                     else if (event.key.scancode == SDL_SCANCODE_F8 && sequenceLeft == 0)
                         sequenceLeft = -1; // starts at this present
                     else if (event.key.scancode == SDL_SCANCODE_F9)
@@ -316,10 +417,140 @@ namespace bozo::app
             }
             if (videoSettings)
                 video::frameUpdate();
+            // PS2X_VIRTUAL_PAD=<s>:<button>[,...] (scripted checks of what a gamepad does to the window: its bindings, the
+            // settings window's gamepad navigation): a virtual SDL gamepad, attached at the start, presses each button
+            // (SDL's names: guide, a, b, dpdown, touchpad, ...; or input.ini's: MIDDLE, RIGHT_FACE_LEFT, ...) for 0.15 s
+            // at that second from the start. A hidden window has no focus: with PS2X_INPUT_BACKGROUND=1 the devices are
+            // read anyway.
+            {
+                struct Press
+                {
+                    double at;
+                    SDL_GamepadButton button;
+                    int stage; // 0 waiting, 1 down, 2 done
+                };
+                static std::vector<Press> s_presses;
+                static SDL_Joystick *s_virtual = nullptr;
+                static const bool s_wanted = [&]
+                {
+                    const char *text = std::getenv("PS2X_VIRTUAL_PAD");
+                    for (std::string rest = text ? text : ""; !rest.empty();)
+                    {
+                        const size_t comma = rest.find(',');
+                        const std::string step = rest.substr(0, comma);
+                        rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                        const size_t colon = step.find(':');
+                        const std::string name = colon == std::string::npos ? std::string() : step.substr(colon + 1);
+                        SDL_GamepadButton button = name.empty() ? SDL_GAMEPAD_BUTTON_INVALID : SDL_GetGamepadButtonFromString(name.c_str());
+                        input::Binding binding; // or input.ini's name (RIGHT_FACE_LEFT, MIDDLE, ...)
+                        if (button == SDL_GAMEPAD_BUTTON_INVALID && !name.empty() && input::parseBinding("pad:" + name, binding) &&
+                            binding.source == input::Source::GamepadButton && binding.code < SDL_GAMEPAD_BUTTON_COUNT)
+                            button = static_cast<SDL_GamepadButton>(binding.code);
+                        if (button != SDL_GAMEPAD_BUTTON_INVALID)
+                            s_presses.push_back({std::atof(step.c_str()), button, 0});
+                        else
+                            std::fprintf(stderr, "[window] PS2X_VIRTUAL_PAD: no button in '%s'\n", step.c_str());
+                    }
+                    if (s_presses.empty())
+                        return false;
+                    SDL_VirtualJoystickDesc desc;
+                    SDL_INIT_INTERFACE(&desc);
+                    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+                    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+                    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+                    desc.name = "Virtual gamepad (PS2X_VIRTUAL_PAD)";
+                    const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+                    s_virtual = id ? SDL_OpenJoystick(id) : nullptr;
+                    std::fprintf(stderr, "[window] virtual gamepad %s\n", s_virtual ? "attached" : SDL_GetError());
+                    return s_virtual != nullptr;
+                }();
+                if (s_wanted)
+                {
+                    const double at = seconds(start, Clock::now());
+                    for (Press &p : s_presses)
+                        if (p.stage == 0 && at >= p.at)
+                        {
+                            SDL_SetJoystickVirtualButton(s_virtual, p.button, true);
+                            p.stage = 1;
+                            std::fprintf(stderr, "[window] virtual gamepad: %s\n", SDL_GetGamepadStringForButton(p.button));
+                        }
+                        else if (p.stage == 1 && at >= p.at + 0.15)
+                        {
+                            SDL_SetJoystickVirtualButton(s_virtual, p.button, false);
+                            p.stage = 2;
+                        }
+                }
+            }
+            if (!keepCursor && !options.hidden)
+            {
+                const bool hide = !panel.settingsOpen() && Clock::now() - cursorMoved > std::chrono::seconds(2) &&
+                                  (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS);
+                if (hide != cursorHidden)
+                {
+                    hide ? SDL_HideCursor() : SDL_ShowCursor();
+                    cursorHidden = hide;
+                }
+            }
+            // The player's "Pause in the background": the game holds at its frame end while the window has no focus
+            // (or is minimised); the window keeps presenting the last picture.
+            {
+                const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+                const bool away = !(flags & SDL_WINDOW_INPUT_FOCUS) || (flags & SDL_WINDOW_MINIMIZED);
+                const bool hold = videoSettings && video::current().pauseInBackground && away && !quit;
+                if (FramePacer::backgroundHold().exchange(hold, std::memory_order_acq_rel) != hold)
+                    std::fprintf(stderr, "[window] %s\n", hold ? "in the background: the game holds" : "the game goes on");
+            }
+            // Fast forward: while a player's FastForward binding is held (input.ini fast_forward, the Controls tab; player
+            // 1's ` key, left of 1, by default; the pad's last update: focused, not while the panel takes the keyboard),
+            // the game runs at the player's speed (video::Settings::fastForward; FramePacer::speedPercent).
+            // PS2X_FAST_FORWARD_AT=<from>-<to>[,...]: held between those seconds from the start (scripted checks).
+            {
+                static const std::vector<std::pair<double, double>> s_spans = []
+                {
+                    std::vector<std::pair<double, double>> spans;
+                    const char *text = std::getenv("PS2X_FAST_FORWARD_AT");
+                    for (std::string rest = text ? text : ""; !rest.empty();)
+                    {
+                        const size_t comma = rest.find(',');
+                        double from = 0.0, to = 0.0;
+                        if (std::sscanf(rest.substr(0, comma).c_str(), "%lf-%lf", &from, &to) == 2 && to > from)
+                            spans.emplace_back(from, to);
+                        rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    }
+                    return spans;
+                }();
+                bool held = (windowActions & (1u << (input::FastForward - input::kFirstWindowAction))) != 0;
+                const double at = seconds(start, Clock::now());
+                for (const auto &[from, to] : s_spans)
+                    held = held || (at >= from && at < to);
+                // Without the player's video settings (a scripted run): PS2X_FAST_FORWARD alone, 3x by default.
+                static const int s_fallback = []
+                {
+                    int percent = 300;
+                    if (const char *fast = std::getenv("PS2X_FAST_FORWARD"); fast && *fast)
+                        video::parseFastForward(fast, percent);
+                    return percent;
+                }();
+                const uint32_t speed = held ? static_cast<uint32_t>(videoSettings ? video::current().fastForward : s_fallback) : 100u;
+                if (FramePacer::speedPercent().exchange(speed, std::memory_order_relaxed) != speed)
+                    std::fprintf(stderr, "[window] fast forward %s\n", held ? video::fastForwardName(static_cast<int>(speed)).c_str() : "off");
+            }
             if (pad)
             {
-                pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse());
+                pad->setHeld(panel.holdsKeyboard(), panel.holdsMouse(), panel.holdsGamepads());
                 pad->update((SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0);
+                // The window's actions bound like the pad's buttons (input.ini, the Controls tab): the settings window,
+                // save and load a state at their press (F2, F5, F7's); fast forward while held (above, the next loop).
+                const uint32_t now = pad->windowActions();
+                const uint32_t pressed = now & ~windowActions;
+                windowActions = now;
+                const auto bit = [](int action) { return 1u << (action - input::kFirstWindowAction); };
+                if (pressed & bit(input::SettingsWindow))
+                    panel.toggleSettings();
+                if ((pressed & bit(input::SaveState)) && game.saveState)
+                    saveState(stateSlot());
+                if ((pressed & bit(input::LoadState)) && game.loadState)
+                    game.loadState(stateSlot());
             }
             if (thread.done.load(std::memory_order_acquire))
                 break;
@@ -337,7 +568,20 @@ namespace bozo::app
             }
             bool isFresh;
             if (rate == 0)
+            {
                 isFresh = renderer.waitForFrame(seen, 1.0 / 30.0);
+                if (options.lockstep)
+                {
+                    if (!isFresh)
+                        continue; // lockstep: no frame presented twice
+                    // A frame publishes its picture before it counts as ended: the present waits for that end (a second
+                    // at most), so its frame count (the captures' names) is the picture's own frame.
+                    const auto limit = Clock::now() + std::chrono::seconds(1);
+                    while (game.framesEnded() == lockstepFrames && Clock::now() < limit && !thread.done.load(std::memory_order_acquire))
+                        std::this_thread::yield();
+                    lockstepFrames = game.framesEnded();
+                }
+            }
             else
             {
                 if (rate > 0)
@@ -386,36 +630,26 @@ namespace bozo::app
             SDL_GetWindowSizeInPixels(window, &pw, &ph);
             pw = std::max(pw, 1);
             ph = std::max(ph, 1);
-            // The game's picture is drawn into a framebuffer of the window's size, then copied to the window: captures
-            // read it there, whether or not the window can be seen.
-            if (pictureWidth != pw || pictureHeight != ph)
+            if (offscreen && (offFbo == 0 || offWidth != pw || offHeight != ph))
             {
-                if (!pictureFbo)
+                if (offFbo == 0)
                 {
-                    g.GenFramebuffers(1, &pictureFbo);
-                    g.GenRenderbuffers(1, &pictureColour);
-                    g.GenRenderbuffers(1, &pictureDepth);
+                    g.GenFramebuffers(1, &offFbo);
+                    g.GenTextures(1, &offColour);
+                    g.GenRenderbuffers(1, &offDepth);
                 }
-                g.BindRenderbuffer(render::gl::kRenderbuffer, pictureColour);
-                g.RenderbufferStorage(render::gl::kRenderbuffer, render::gl::kRgba8, pw, ph);
-                g.BindRenderbuffer(render::gl::kRenderbuffer, pictureDepth);
+                g.BindTexture(render::gl::kTexture2D, offColour);
+                g.TexImage2D(render::gl::kTexture2D, 0, static_cast<render::gl::GLint>(render::gl::kRgba8), pw, ph, 0, render::gl::kRgba,
+                             render::gl::kUnsignedByte, nullptr);
+                g.BindRenderbuffer(render::gl::kRenderbuffer, offDepth);
                 g.RenderbufferStorage(render::gl::kRenderbuffer, render::gl::kDepth24Stencil8, pw, ph);
-                g.BindFramebuffer(render::gl::kFramebuffer, pictureFbo);
-                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kColorAttachment0, render::gl::kRenderbuffer,
-                                          pictureColour);
-                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kDepthStencilAttachment,
-                                          render::gl::kRenderbuffer, pictureDepth);
-                if (g.CheckFramebufferStatus(render::gl::kFramebuffer) != render::gl::kFramebufferComplete)
-                {
-                    std::fprintf(stderr, "[window] the %d x %d picture framebuffer is incomplete: drawing to the window\n", pw, ph);
-                    g.DeleteFramebuffers(1, &pictureFbo);
-                    pictureFbo = 0;
-                }
-                pictureWidth = pw;
-                pictureHeight = ph;
+                g.BindFramebuffer(render::gl::kFramebuffer, offFbo);
+                g.FramebufferTexture2D(render::gl::kFramebuffer, render::gl::kColorAttachment0, render::gl::kTexture2D, offColour, 0);
+                g.FramebufferRenderbuffer(render::gl::kFramebuffer, render::gl::kDepthStencilAttachment, render::gl::kRenderbuffer, offDepth);
+                offWidth = pw;
+                offHeight = ph;
             }
-            renderer.setPresentFramebuffer(pictureFbo);
-            g.BindFramebuffer(render::gl::kFramebuffer, pictureFbo);
+            g.BindFramebuffer(render::gl::kFramebuffer, offscreen ? offFbo : 0);
             g.Viewport(0, 0, pw, ph);
             g.Disable(render::gl::kScissorTest);
             g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -429,16 +663,10 @@ namespace bozo::app
             else
                 rh = rw / options.aspect;
             renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
-            if (pictureFbo)
-            {
-                g.BindFramebuffer(render::gl::kReadFramebuffer, pictureFbo);
-                g.BindFramebuffer(render::gl::kDrawFramebuffer, 0);
-                g.BlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph, render::gl::kColorBufferBit, render::gl::kNearest);
-                g.BindFramebuffer(render::gl::kFramebuffer, 0);
-                g.Viewport(0, 0, pw, ph);
-            }
             ++presents;
             ++ratesPresents;
+            if (options.lockstep && options.onPresented) // (interpolating: reported too, so a holding host never stalls)
+                options.onPresented(seen);
 
             const uint64_t frames = game.framesEnded();
             const double elapsed = seconds(start, now);
@@ -454,9 +682,29 @@ namespace bozo::app
             {
                 char name[64];
                 std::snprintf(name, sizeof(name), "frame_%06llu.png", static_cast<unsigned long long>(framesBefore));
-                writer.capture(captureDir + "/" + name, pw, ph, pictureFbo);
+                writer.capture(captureDir + "/" + name, pw, ph);
                 if (options.onCaptured)
                     options.onCaptured(framesBefore);
+            }
+            while (nextScreenshotAt < screenshotAt.size() && elapsed >= screenshotAt[nextScreenshotAt])
+            {
+                ++nextScreenshotAt;
+                screenshot = true;
+            }
+            while (nextStateSaveAt < stateSaveAt.size() && elapsed >= stateSaveAt[nextStateSaveAt])
+            {
+                ++nextStateSaveAt;
+                if (game.saveState)
+                    saveState(stateSlot());
+            }
+            if (const int slot = g_pictureSlot.exchange(-1, std::memory_order_relaxed); slot >= 0)
+                writer.capture(stateSlotPicturePath(slot), pw, ph, true, 320);
+            if (screenshot)
+            {
+                screenshot = false;
+                const std::string path = screenshotPath();
+                writer.capture(path, pw, ph, true);
+                notify("Screenshot: " + std::filesystem::path(path).filename().string());
             }
             if (interval > 0.0 && seconds(lastInterval, now) >= interval)
             {
@@ -464,7 +712,7 @@ namespace bozo::app
                 ensureDir(intervalDir);
                 char name[64];
                 std::snprintf(name, sizeof(name), "interval_%08llu.png", ms);
-                writer.capture(intervalDir + "/" + name, pw, ph, pictureFbo);
+                writer.capture(intervalDir + "/" + name, pw, ph);
             }
 
             // The overlay's rates, every half second.
@@ -535,6 +783,14 @@ namespace bozo::app
                 std::snprintf(name, sizeof(name), "burst_%08llu.png", ms);
                 writer.capture(captureDir + "/" + name, pw, ph);
             }
+            if (offscreen)
+            {
+                // The offscreen picture to the window (shown or not), then the panel goes on top as usual.
+                g.BindFramebuffer(render::gl::kReadFramebuffer, offFbo);
+                g.BindFramebuffer(render::gl::kDrawFramebuffer, 0);
+                g.BlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph, render::gl::kColorBufferBit, render::gl::GLenum(0x2600) /* GL_NEAREST */);
+                g.BindFramebuffer(render::gl::kFramebuffer, 0);
+            }
             SDL_GL_SwapWindow(window);
 
             if (options.stats && seconds(statsSince, now) >= 2.0)
@@ -561,6 +817,8 @@ namespace bozo::app
             std::fprintf(stderr, "[window] %llu game frames in %.2f s since the first picture: %.2f frames/s\n",
                          static_cast<unsigned long long>(frames), span, span > 0.0 ? frames / span : 0.0);
         }
+        FramePacer::backgroundHold().store(false, std::memory_order_release); // a held game must reach its stop
+        FramePacer::speedPercent().store(100u, std::memory_order_relaxed);
         game.stop();
         int result = 0;
         SDL_WaitThread(gameThread, &result);

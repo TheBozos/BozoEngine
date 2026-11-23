@@ -55,6 +55,9 @@ namespace bozo::render
             bool depthLookup = false;
             float depthScale = 255;
             std::array<float,256> depthWeights{};
+            // With depthLookup: depthWeights holds 64 RGBA entries instead (each 0..1; alpha 1.0 is the GS's 0x80),
+            // the index clamped to 63; the entry replaces the sampled texel (a port's depth fog ramp).
+            bool depthColours = false;
             // Multiply output alpha by an auxiliary image's green channel.
             // Zero disables it; reading the draw target itself is rejected.
             uint8_t alphaSource = 0;
@@ -110,12 +113,18 @@ namespace bozo::render
         // own, as a GS draw into another frame address with the same ZBUF would: a game's depth planes compared
         // with the scene into an image. The target takes the main frame's dimensions; its colour is its own.
         bool frameDepth = false;
+        // The texture is a GS Z buffer image (each texel's R, G, B the Z's low, middle and high bytes, as a 24-bit Z
+        // buffer holds it): the draw writes that Z as its depth, per texel, and no colour (a pre-rendered scene's depth
+        // uploaded before the 3D, Onimusha's rooms). The depth test and write follow depthTest / depthWrite.
+        bool depthFromTexture = false;
         uint16_t frameWidth = 0, frameHeight = 0;
         static constexpr uint8_t kPreviousFrame = 8;
         // Images 9..15 are auxiliary targets like 1..7 (not the previous frame). An image keeps its pixels until a
         // draw into it in a later frame: a game's frame snapshot drawn while it fades is copied once, then sampled.
         static constexpr uint8_t kAuxiliaryImages = 16;
         bool nearest = false;
+        // The vertices are line segments (pairs, one pixel wide: the GS's LINE / LINE STRIP) instead of triangles.
+        bool lines = false;
         // Native colour correction after texturing/fog, before blending:
         // RGB = clamp(gain * max(0, min(RGB, high) - low), 0, 1).
         // Alpha is preserved. Off by default; values are copied with the batch.
@@ -189,6 +198,9 @@ namespace bozo::render
         } stencilOp = StencilOp::None;
         bool stencilNotZero = false;
         bool stencilClear = false;
+        // stencilOp counts where the depth test fails instead (z-fail, "Carmack's reverse"): closed volumes then count
+        // right when the camera is inside one or a volume crosses the near plane, where z-pass darkens a wedge.
+        bool stencilDepthFail = false;
         // Kept for the draw-list hash's layout (the reference's GS-context batches); a native port never sets it.
         bool fromGsContext = false;
         bool alphaBlend = true;
@@ -360,9 +372,6 @@ namespace bozo::render
         // the window (pixels from its top left; the current framebuffer, its viewport the window); false when there is
         // nothing to draw yet.
         bool present(float x, float y, float width, float height);
-        // The framebuffer present() draws into (0: the window's). A window that captures its pictures presents into one
-        // of its own: a covered, minimised or sleeping window's own pixels read back undefined (black).
-        void setPresentFramebuffer(unsigned framebuffer) { m_presentFramebuffer = framebuffer; }
         // Waits up to timeout seconds for a frame (or a movie picture) published after the one counted in seen, and
         // counts it there: the window shows each game frame once, on the game's clock.
         bool waitForFrame(uint64_t &seen, double timeout);
@@ -380,6 +389,17 @@ namespace bozo::render
             const uint32_t packed = m_textureUpscale.load(std::memory_order_relaxed);
             return TextureUpscale{static_cast<uint8_t>(packed & 0xffu), static_cast<UpscaleFilter>(packed >> 8)};
         }
+        // Texture smoothing (a PC option, off by default): a frame draw whose material has no mip levels of its own
+        // (Material::mipmap.levels 0, not nearest) samples levels made from its texture at upload, trilinear, by the screen
+        // footprint: distant textures stop shimmering. 0 off (level 0 only, as the GS samples a texture without levels),
+        // 1 trilinear, 2..16 trilinear with that much anisotropic filtering (as far as the GPU goes). Live.
+        void setTextureSmoothing(int level) { m_textureSmoothing.store(std::clamp(level, 0, 16), std::memory_order_relaxed); }
+        int textureSmoothing() const { return m_textureSmoothing.load(std::memory_order_relaxed); }
+        // Anti-aliasing (a PC option, off by default): the frame's 3D drawn into a multisampled target with that many
+        // samples a pixel (2, 4 or 8, as far as the GPU goes; 0 or 1 none), resolved wherever the frame is read (its
+        // copies, the depth tiles, the present). Live.
+        void setAntiAliasing(int samples) { m_antiAliasing.store(std::clamp(samples, 0, 16), std::memory_order_relaxed); }
+        int antiAliasing() const { return m_antiAliasing.load(std::memory_order_relaxed); }
         // Present thread: frees the GPU objects (before the context goes).
         void releaseGpu();
 
@@ -439,8 +459,9 @@ namespace bozo::render
         std::condition_variable m_publishedChanged;
         FrameDraws m_draws;
         std::atomic<float> m_renderScale{1.0f};
-        unsigned m_presentFramebuffer = 0; // present thread only
         std::atomic<uint32_t> m_textureUpscale{1u};
+        std::atomic<int> m_textureSmoothing{0};
+        std::atomic<int> m_antiAliasing{0};
 
         // Interpolation's frames (newest last, a few game frames' worth) and the clock they are placed on, under m_mutex.
         std::deque<std::shared_ptr<const Frame>> m_history;

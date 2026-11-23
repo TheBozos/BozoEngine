@@ -35,11 +35,14 @@ namespace bozo::render::gl
     // ---- Constants (OpenGL 3.3 core) ----
     constexpr GLenum kFalse = 0, kTrue = 1;
     constexpr GLenum kTriangles = 0x0004;
+    constexpr GLenum kLines = 0x0001;
     constexpr GLenum kUnsignedByte = 0x1401, kUnsignedInt = 0x1405, kFloat = 0x1406;
     constexpr GLenum kZero = 0, kOne = 1, kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303;
     constexpr GLenum kDstAlpha = 0x0304;
     constexpr GLenum kNearestMipmapNearest = 0x2700, kLinearMipmapNearest = 0x2701, kNearestMipmapLinear = 0x2702;
     constexpr GLenum kLinearMipmapLinear = 0x2703, kTextureLodBias = 0x8501, kTextureMaxLevel = 0x813D, kTextureBaseLevel = 0x813C;
+    // Anisotropic filtering (GL 4.6 core, EXT_texture_filter_anisotropic before): the same enums.
+    constexpr GLenum kTextureMaxAnisotropy = 0x84FE, kMaxTextureMaxAnisotropy = 0x84FF;
     constexpr GLenum kFuncAdd = 0x8006, kFuncSubtract = 0x800A, kFuncReverseSubtract = 0x800B;
     constexpr GLenum kConstantAlpha = 0x8003, kOneMinusConstantAlpha = 0x8004, kOneMinusDstAlpha = 0x0305;
     constexpr GLenum kLess = 0x0201, kNotEqual = 0x0205, kAlways = 0x0207;
@@ -64,6 +67,7 @@ namespace bozo::render::gl
     constexpr GLenum kCompileStatus = 0x8B81, kLinkStatus = 0x8B82, kInfoLogLength = 0x8B84;
     constexpr GLenum kPackAlignment = 0x0D05, kUnpackAlignment = 0x0CF5;
     constexpr GLenum kFront = 0x0404, kBack = 0x0405;
+    constexpr GLenum kMaxSamples = 0x8D57, kColorWritemask = 0x0C23, kDepthWritemask = 0x0B72;
     constexpr GLenum kVendor = 0x1F00, kRenderer = 0x1F01, kVersion = 0x1F02;
     constexpr GLenum kViewport = 0x0BA2;
 
@@ -141,15 +145,17 @@ namespace bozo::render::gl
     X(void, GenFramebuffers, (GLsizei n, GLuint *framebuffers))                                                        \
     X(void, DeleteFramebuffers, (GLsizei n, const GLuint *framebuffers))                                               \
     X(void, BindFramebuffer, (GLenum target, GLuint framebuffer))                                                      \
+    X(void, BlitFramebuffer, (GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1,   \
+                              GLbitfield mask, GLenum filter))                                                         \
     X(void, FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level))   \
     X(void, FramebufferRenderbuffer, (GLenum target, GLenum attachment, GLenum rbtarget, GLuint renderbuffer))         \
     X(GLenum, CheckFramebufferStatus, (GLenum target))                                                                 \
-    X(void, BlitFramebuffer, (GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0,            \
-                              GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter))                                \
     X(void, GenRenderbuffers, (GLsizei n, GLuint *renderbuffers))                                                      \
     X(void, DeleteRenderbuffers, (GLsizei n, const GLuint *renderbuffers))                                             \
     X(void, BindRenderbuffer, (GLenum target, GLuint renderbuffer))                                                    \
-    X(void, RenderbufferStorage, (GLenum target, GLenum internalFormat, GLsizei width, GLsizei height))
+    X(void, RenderbufferStorage, (GLenum target, GLenum internalFormat, GLsizei width, GLsizei height))               \
+    X(void, RenderbufferStorageMultisample, (GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width,      \
+                                             GLsizei height))
 
     struct Api
     {

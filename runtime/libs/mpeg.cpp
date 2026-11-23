@@ -16,7 +16,6 @@ namespace bozo::libs
 {
     namespace
     {
-        constexpr uint32_t kPicturesAhead = 8;   // the demux stops this many pictures ahead of the game
         constexpr uint32_t kFieldsPerPicture = 2; // TMB's movies: 29.97 pictures a second, two fields each
         constexpr uint32_t kCbNodata = 1;          // sceMpegAddCallback type
         constexpr uint32_t kStrVideo = 0, kStrPcm = 2; // sceMpegAddStrCallback types
@@ -93,7 +92,7 @@ namespace bozo::libs
             s.scanned = i;
         }
 
-        bool ended(const MpegState &s) { return s.sequenceEnd || s.programEnd; }
+        bool ended(const MpegState &s) { return s.sequenceEnd || s.programEnd || s.inputEnded; }
 
         // Whether display picture k can be decoded: its data and the next picture's are whole (the decoder holds one
         // picture back), or the stream has ended and its data is whole.
@@ -181,25 +180,37 @@ namespace bozo::libs
                    (static_cast<int64_t>(b[2] >> 1) << 15) | (static_cast<int64_t>(b[3]) << 7) | (b[4] >> 1);
         }
 
-        // A stream packet whole in the demux: its callback, if the game registered one for its stream (its data, the
-        // callback queued as a handler on the calling thread, kind 4), and the decoder's or the sound sink's share of it.
-        void packet(Libraries &l, Guest &g, MpegState &s, uint64_t at, uint8_t id, size_t payload, size_t length, int64_t pts,
-                    int64_t dts)
+        // The decoder's or the sound sink's share of a stream packet.
+        void take(Libraries &l, MpegState &s, uint8_t id, const uint8_t *data, size_t length, int64_t pts)
         {
-            const uint8_t *data = s.pending.data() + (at - s.pendingAt) + payload;
-            int type = -1;
             if (id == 0xE0)
             {
-                type = kStrVideo;
                 s.es.insert(s.es.end(), data, data + length);
                 scan(s);
             }
             else if (id == 0xBD)
-            {
-                type = kStrPcm;
                 sound(l, s, data, length, pts);
+        }
+
+        // A stream packet whole in the demux: its callback, if the game registered one for its stream (its data, the
+        // callback queued as a handler on the calling thread, kind 4), and the decoder's or the sound sink's share of it
+        // (with MpegOptions::sdkDemux, held until the callback took the packet).
+        void packet(Libraries &l, Guest &g, MpegState &s, uint64_t at, uint8_t id, size_t payload, size_t length, int64_t pts,
+                    int64_t dts)
+        {
+            const uint8_t *data = s.pending.data() + (at - s.pendingAt) + payload;
+            const int type = id == 0xE0 ? static_cast<int>(kStrVideo) : id == 0xBD ? static_cast<int>(kStrPcm) : -1;
+            const bool callback = type >= 0 && s.strCallbacks[type].set;
+            if (callback && l.mpegOptions.sdkDemux)
+            {
+                s.heldAt = at;
+                s.heldId = id;
+                s.held.assign(data, data + length);
+                s.heldPts = pts;
             }
-            if (type < 0 || !s.strCallbacks[type].set)
+            else
+                take(l, s, id, data, length, pts);
+            if (!callback)
                 return;
             const MpegState::Callback &cb = s.strCallbacks[type];
             const uint64_t streamAt = at + payload;
@@ -277,6 +288,8 @@ namespace bozo::libs
                     packet(l, g, s, s.pendingAt + i, id, payload, total - payload, pts, dts);
                 }
                 i += total;
+                if (l.mpegOptions.sdkDemux && !s.callbacksDue.empty())
+                    break; // the callback runs before the demux goes on
             }
             s.pending.erase(s.pending.begin(), s.pending.begin() + static_cast<std::ptrdiff_t>(i));
             s.pendingAt += i;
@@ -284,8 +297,9 @@ namespace bozo::libs
 
         // ---- The functions ----
 
-        // sceMpegInit(): 0.
-        void init(Libraries &, Guest &g) { g.ret(0); }
+        // sceMpegInit(): 0 (the SDK's 1 off the reference layout). Nothing is reset: a game may call it from its Nodata
+        // callback, in the middle of a stream.
+        void init(Libraries &l, Guest &g) { g.ret(l.mpegOptions.referenceLayout ? 0 : 1); }
 
         // sceMpegCreate(mp, work, size): the sceMpeg and its work area as the reference sets them, 0x600 bytes from the
         // game's heap; returns work + 0x118.
@@ -298,8 +312,15 @@ namespace bozo::libs
             s.mp = mp;
             s.work = work;
             s.size = size;
-            s.block = l.gameHeap().allocate(0x600);
             s.decoder = makeVideoDecoder();
+            if (!l.mpegOptions.referenceLayout)
+            {
+                if (l.movieSound)
+                    l.movieSound->start();
+                g.ret(1);
+                return;
+            }
+            s.block = l.gameHeap().allocate(0x600);
             const uint32_t table[9] = {0x171A50, 0x171C58, 0x171CC0, 0x171D28, 0x171D90, 0x171AB8, 0x171B20, 0x171B88, 0x171BF0};
             g.write32(0x1717BC, mp);
             g.write(0x171800, table, sizeof(table));
@@ -325,7 +346,7 @@ namespace bozo::libs
             g.retU(work + 0x118);
         }
 
-        // sceMpegDelete(mp): 0.
+        // sceMpegDelete(mp): 0 (the SDK's 1 off the reference layout).
         void destroy(Libraries &l, Guest &g)
         {
             MpegState &s = state(l);
@@ -334,14 +355,15 @@ namespace bozo::libs
             s.decoded.clear();
             if (l.movieSound)
                 l.movieSound->stop();
-            g.ret(0);
+            g.ret(l.mpegOptions.referenceLayout ? 0 : 1);
         }
 
         // sceMpegReset(mp): the picture count and libmpeg's static word at 0x171904 cleared (no result).
-        void reset(Libraries &, Guest &g)
+        void reset(Libraries &l, Guest &g)
         {
             g.write32(g.arg(0) + 8, 0);
-            g.write32(0x171904, 0);
+            if (l.mpegOptions.referenceLayout)
+                g.write32(0x171904, 0);
         }
 
         // sceMpegAddCallback(mp, type, function, data): how many callbacks are set (1, 2, ...).
@@ -349,9 +371,33 @@ namespace bozo::libs
         {
             MpegState &s = state(l);
             const uint32_t type = g.arg(1);
+            const uint32_t previous = type < 8 ? s.callbacks[type].function : 0;
             if (type < 8)
                 s.callbacks[type] = {g.arg(2), g.arg(3), g.context()->r[28].uw[0], true};
-            g.ret(static_cast<int32_t>(++s.callbacksAdded));
+            ++s.callbacksAdded;
+            if (l.mpegOptions.referenceLayout)
+                g.ret(static_cast<int32_t>(s.callbacksAdded));
+            else
+                g.retU(previous); // the SDK's: the callback the type had
+        }
+
+        // sceMpegAddBs(mp, data, bytes): coded video for the decoder, as the game reads it (no program stream). The
+        // SDK sends ((bytes + 19) >> 4) << 4 bytes to the IPU, so as many are taken. 1.
+        void addBs(Libraries &l, Guest &g)
+        {
+            MpegState &s = state(l);
+            const uint32_t data = g.arg(1), bytes = ((g.arg(2) + 19u) >> 4) << 4;
+            const size_t at = s.es.size();
+            s.es.resize(at + bytes);
+            for (uint32_t k = 0; k < bytes; ++k)
+                s.es[at + k] = g.read8(data + k);
+            scan(s);
+            if (s.waiting && available(s, s.delivered))
+            {
+                l.dispatcher()->kernel().wake(s.waiting, 0, true, ee::kWaitMpeg);
+                s.waiting = 0;
+            }
+            g.ret(1);
         }
 
         // sceMpegAddStrCallback(mp, type, channel, function, data): 0.
@@ -374,10 +420,12 @@ namespace bozo::libs
         }
 
         // sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize): with ring 0 (sceMpegDemuxPss) `data` is read straight
-        // and ringSize is not an argument. A sector at a time while fewer than kPicturesAhead
+        // and ringSize is not an argument. A sector at a time while fewer than MpegOptions::picturesAhead
         // pictures are ahead of the game (ahead(): the coded pictures begun, the sequence end and the program end, less
         // those delivered; nothing after the program end is read); each whole packet of a registered stream gets its
         // callback. Returns the bytes taken.
+        void demuxOn(Libraries &l, Guest &g, uint32_t bytes);
+
         void demux(Libraries &l, Guest &g)
         {
             MpegState &s = state(l);
@@ -393,8 +441,15 @@ namespace bozo::libs
                 s.ringBias = static_cast<uint32_t>(((data - s.ring) + s.ringSize - (s.consumed % s.ringSize)) % s.ringSize);
             else
                 s.linearBase = data - s.consumed;
+            if (l.mpegOptions.sdkDemux)
+            {
+                s.callAt = s.consumed;
+                s.refused = false;
+                demuxOn(l, g, bytes);
+                return;
+            }
             uint32_t taken = 0;
-            while (taken + 0x800 <= bytes && ahead(s) < s.delivered + kPicturesAhead)
+            while (taken + 0x800 <= bytes && ahead(s) < s.delivered + l.mpegOptions.picturesAhead)
             {
                 if (s.ring)
                 {
@@ -424,6 +479,47 @@ namespace bozo::libs
             g.ret(static_cast<int32_t>(taken));
         }
 
+        // The SDK's demux (MpegOptions::sdkDemux), from the call's start or as its thread resumes after a callback:
+        // the bytes given read as the packets need them (while fewer than picturesAhead pictures are ahead), each
+        // packet with a callback stopping the demux until its handler ends (the thread waits for it), a packet refused
+        // ending the call before it. The call returns the bytes of the whole packets taken; what follows them is read
+        // again by the next call.
+        void demuxOn(Libraries &l, Guest &g, uint32_t bytes)
+        {
+            MpegState &s = state(l);
+            while (!s.refused)
+            {
+                parse(l, g, s);
+                if (!s.callbacksDue.empty())
+                {
+                    const MpegState::DueCallback c = s.callbacksDue.front();
+                    s.callbacksDue.clear();
+                    const int32_t thread = l.dispatcher()->kernel().running();
+                    l.queueHandler(c.handler, Resume{kResumeMpegDemuxCallbackEnd, {static_cast<uint32_t>(thread), c.entry}});
+                    l.waitFor(ee::kWaitMpeg, 2, s.mp, 0, Resume{kResumeMpegDemuxNext, {bytes}});
+                    return;
+                }
+                const uint64_t read = s.consumed - s.callAt;
+                if (s.programEnd || read >= bytes || ahead(s) >= s.delivered + l.mpegOptions.picturesAhead)
+                    break;
+                const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(0x800, bytes - read));
+                for (uint32_t k = 0; k < chunk; ++k)
+                    s.pending.push_back(
+                        s.ring ? g.read8(s.ring + static_cast<uint32_t>((s.consumed + k + s.ringBias) % s.ringSize))
+                               : g.read8(static_cast<uint32_t>(s.linearBase + s.consumed + k)));
+                s.consumed += chunk;
+            }
+            // A part packet stays in the ring.
+            s.pending.clear();
+            s.consumed = s.pendingAt;
+            if (s.waiting && available(s, s.delivered))
+            {
+                l.dispatcher()->kernel().wake(s.waiting, 0, true, ee::kWaitMpeg);
+                s.waiting = 0;
+            }
+            g.ret(static_cast<int32_t>(s.pendingAt - s.callAt));
+        }
+
         // sceMpegIsEnd(mp): 1 once the stream has ended, every picture was delivered and the last one's display time is
         // over (the vblank count past the first's plus two fields a picture); until then a sceMpegGetPicture gets an
         // empty delivery. When the game took the last picture late (story's seventh movie, played one picture a game
@@ -434,6 +530,12 @@ namespace bozo::libs
         void isEnd(Libraries &l, Guest &g)
         {
             const MpegState &s = state(l);
+            if (!l.mpegOptions.paced)
+            {
+                // The game paces itself: the end once the input has ended and every picture has gone out.
+                g.ret(s.aborted || (ended(s) && s.flushed && s.decoded.empty() && s.delivered >= s.pictureStarts) ? 1 : 0);
+                return;
+            }
             const uint64_t endsAt = s.base + static_cast<uint64_t>(kFieldsPerPicture) * s.pictureStarts;
             // A last picture the game took late (after its two fields' slot: base + 2 x its number) is still on screen:
             // 0 until an empty delivery has counted one more slot.
@@ -505,7 +607,9 @@ namespace bozo::libs
             if (!available(s, s.delivered))
             {
                 const uint8_t data[32] = {static_cast<uint8_t>(kCbNodata)};
-                const uint32_t entry = l.gameHeap().allocate(0x20);
+                const bool reference = l.mpegOptions.referenceLayout, sdk = l.mpegOptions.sdkNodata;
+                // The callback's data: from the game's heap (the reference's), or the work area's first bytes.
+                const uint32_t entry = reference ? l.gameHeap().allocate(0x20) : s.work;
                 g.write(entry, data, 32);
                 const MpegState::Callback &cb = s.callbacks[kCbNodata];
                 ee::QueuedHandler h;
@@ -513,17 +617,22 @@ namespace bozo::libs
                 h.pc = cb.function;
                 h.a[0] = s.mp;
                 h.a[1] = entry;
+                if (sdk)
+                    h.a[2] = cb.data;
                 h.gp = cb.gp;
                 h.completion = true;
                 const int32_t thread = k.running();
-                // Its end wakes the thread, unless a demux already did.
-                l.queueHandler(h, Resume{kResumeMpegNodataEnd, {static_cast<uint32_t>(thread), entry}});
+                // Its end wakes the thread, unless a demux already did. With the SDK's callback, a 0 it returns ends the
+                // input. a[2] flags (0 keeps the reference's behaviour): 1 the entry is the work area (nothing to
+                // release), 2 the SDK's callback (its 0 ends the input).
+                const uint32_t flags = (reference ? 0u : 1u) | (sdk ? 2u : 0u);
+                l.queueHandler(h, Resume{kResumeMpegNodataEnd, {static_cast<uint32_t>(thread), entry, flags}});
                 l.io.ipuDemand = true; // the IPU's input was taken (libraries.md section 11)
                 s.waiting = thread;
                 l.waitFor(ee::kWaitMpeg, 1, s.mp, 0, Resume{kResumeMpegGetPicture, {rgb, mbcount}});
                 return;
             }
-            if (s.delivered > 0 && !(ended(s) && s.delivered >= s.pictureStarts)) // the empty delivery is not paced
+            if (l.mpegOptions.paced && s.delivered > 0 && !(ended(s) && s.delivered >= s.pictureStarts)) // the empty delivery is not paced
             {
                 const uint64_t due = s.base + kFieldsPerPicture * s.delivered;
                 if (k.vblankCount() <= due)
@@ -551,8 +660,11 @@ namespace bozo::libs
         case kResumeMpegNodataEnd:
         {
             const int32_t thread = static_cast<int32_t>(r.a[0]);
-            l.gameHeap().release(r.a[1]);
+            if (!(r.a[2] & 1u))
+                l.gameHeap().release(r.a[1]);
             MpegState &s = state(l);
+            if ((r.a[2] & 2u) && g.context()->r[2].uw[0] == 0)
+                s.inputEnded = true;
             if (s.waiting == thread)
             {
                 s.waiting = 0;
@@ -565,6 +677,30 @@ namespace bozo::libs
             break;
         case kResumeMpegDeliver:
             deliver(l, g, r.a[0], r.a[1]);
+            break;
+        case kResumeMpegDemuxCallbackEnd:
+        {
+            // A stream callback's end (MpegOptions::sdkDemux): a packet taken goes to the decoder or the sound sink; a
+            // sound packet refused (0) ends the demux call before it. The demuxing thread is woken either way.
+            MpegState &s = state(l);
+            l.gameHeap().release(r.a[1]);
+            // The video is the decoder's from the demux: the game's own copy (its IPU input, which nothing drains
+            // without an IPU) refusing it does not stop the stream.
+            if (g.context()->r[2].uw[0] != 0 || s.heldId == 0xE0)
+                take(l, s, s.heldId, s.held.data(), s.held.size(), s.heldPts);
+            else
+            {
+                s.pending.clear();
+                s.pendingAt = s.heldAt;
+                s.consumed = s.heldAt;
+                s.refused = true;
+            }
+            s.held.clear();
+            l.dispatcher()->kernel().wake(static_cast<int32_t>(r.a[0]), 0, true, ee::kWaitMpeg);
+            break;
+        }
+        case kResumeMpegDemuxNext:
+            demuxOn(l, g, r.a[0]);
             break;
         }
     }
@@ -580,6 +716,7 @@ namespace bozo::libs
         out.push_back({"sceMpegAddCallback", kMpeg, addCallback});
         out.push_back({"sceMpegAddStrCallback", kMpeg, addStrCallback});
         out.push_back({"sceMpegDemuxPssRing", kMpeg, demux});
+        out.push_back({"sceMpegAddBs", kMpeg, addBs});
         out.push_back({"sceMpegGetPicture", kMpeg, getPicture});
         out.push_back({"sceMpegIsEnd", kMpeg, isEnd});
         out.push_back({"videoCallback__FP7sceMpegP16sceMpegCbDataStrPv", kMpeg, videoCallback});

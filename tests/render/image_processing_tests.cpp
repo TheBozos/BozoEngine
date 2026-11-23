@@ -15,7 +15,7 @@ int main(){
     if(held->batches[0].material.imageProcessing->alphaScale!=1 || publish(m)==filtered)++failures;
     const auto reject=[&](Material bad){r.beginFrame(Screen{});bool caught=false;try{r.draw(bad,id,v,3);}catch(const std::invalid_argument &){caught=true;}
         r.endFrame();r.takeFrameDraws();if(!caught || !r.published()->batches.empty())++failures;};
-    for(unsigned which=0;which<17;++which){
+    for(unsigned which=0;which<19;++which){
         Material bad=m;auto b=std::make_shared<Material::ImageProcessing>(*p);bad.imageProcessing=b;
         const auto nan=std::numeric_limits<float>::quiet_NaN();
         switch(which){case 0:b->radius=17;break;case 1:b->alphaSource=8;break;case 2:b->alphaSource=1;break;
@@ -25,9 +25,26 @@ int main(){
         case 10:bad.targetHeight=0;break;case 11:bad.targetWidth=5000;break;case 12:bad.target=0;break;
         // Lerp chains: off-axis step, an offset off the 1/16 grid, a fractional alpha, too many taps.
         case 13:b->chainTaps=1;b->step={0.5f,0.5f};break;case 14:b->chainTaps=1;b->step={1,0};b->chainOffset[0]=0.01f;break;
-        case 15:b->chainTaps=1;b->step={1,0};b->chainAlpha[0]=0.5f;break;case 16:b->chainTaps=33;b->step={1,0};break;}
+        case 15:b->chainTaps=1;b->step={1,0};b->chainAlpha[0]=0.5f;break;case 16:b->chainTaps=33;b->step={1,0};break;
+        // Depth colours: without a depth lookup; an alpha above 1 (GS 0x80).
+        case 17:b->depthColours=true;break;case 18:b->depthLookup=true;b->depthColours=true;b->depthWeights[7]=1.5f;break;}
         reject(bad);
     }
+    // Depth colours: the mode is part of the digest.
+    {Material lookup=m;lookup.fromFrame=0;auto grey=std::make_shared<Material::ImageProcessing>();grey->depthLookup=true;lookup.imageProcessing=grey;
+     const auto greyHash=publish(lookup);auto colours=std::make_shared<Material::ImageProcessing>(*grey);colours->depthColours=true;
+     lookup.imageProcessing=colours;const auto colourHash=publish(lookup);
+     auto plainGrey=std::make_shared<Material::ImageProcessing>(*grey);lookup.imageProcessing=plainGrey;
+     if(colourHash==greyHash || colourHash==publish(lookup) || r.published()->batches.empty())++failures;}
+    // Line batches: segment pairs, part of the digest; an odd count, image processing or an overlay rejects.
+    {Material line;line.textured=false;line.lines=true;Vertex pair[2]{};
+     const auto withLines=[&]{r.beginFrame(Screen{});r.draw(line,id,pair,2);r.endFrame();return r.takeFrameDraws().hash;}();
+     Material solid=line;solid.lines=false;Vertex tri[3]{};r.beginFrame(Screen{});r.draw(solid,id,tri,3);r.endFrame();const auto triangles=r.takeFrameDraws().hash;
+     if(withLines==triangles || r.published()->batches.empty())++failures;
+     for(unsigned which=0;which<3;++which){r.beginFrame(Screen{});bool rejected=false;
+        try{if(which==0)r.draw(line,id,tri,3);else if(which==1){auto p=line;p.imageProcessing=std::make_shared<Material::ImageProcessing>();r.draw(p,id,pair,2);}
+            else r.drawOverlay(line,pair,2,nullptr);}catch(const std::invalid_argument &){rejected=true;}
+        r.endFrame();r.takeFrameDraws();if(!rejected)++failures;}}
     bool caught=false;try{r.drawOverlay(m,v,3,nullptr);}catch(const std::invalid_argument &){caught=true;}if(!caught)++failures;
-    std::printf("native image publication, immutable parameters, digests and 17 admission guards: %u failures\n",failures);return failures?1:0;
+    std::printf("native image publication, immutable parameters, digests and 19 admission guards: %u failures\n",failures);return failures?1:0;
 }

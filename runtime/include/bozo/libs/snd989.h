@@ -88,6 +88,8 @@ namespace bozo::libs::snd989
         // The movie's sound buffer the driver allocated for the next InitMovieSound (0x3b).
         void setMovieBuffer(uint32_t address) { m_movieBuffer = address; }
 
+        // Save states (bozo/state.h): the IOP memory, the clocks, the mixer, libsd and 989SND's own model.
+        void serialize(state::Archive &a);
         audio::Mixer &mixer() { return *m_mixer; }
         uint64_t iopClock() const { return m_clock; }
         // The IOP clock at EE cycle `ee` (P, the lead included).

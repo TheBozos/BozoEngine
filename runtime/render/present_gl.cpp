@@ -177,6 +177,7 @@ uniform int uImageRadius;
 uniform vec4 uImageStep;
 uniform vec4 uImageKernel[5];
 uniform int uImageDepth;
+uniform int uImageDepthColours;
 uniform sampler2D uImageDepthTex;
 uniform vec4 uImageWeights[64];
 uniform vec4 uImageSize;
@@ -242,8 +243,13 @@ void main()
     vec4 texel = uTextured != 0 ? sampled() * vec4(1.0, 1.0, 1.0, 255.0 / 128.0) : vec4(1.0); // GS alpha
     if(uImageDepth != 0) {
         float depth=texture(uImageDepthTex,gl_FragCoord.xy/uImageSize.xy).r;
-        int index=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,255.0));
-        texel=vec4(vec3(uImageWeights[index/4][index%4]),1.0);
+        if(uImageDepthColours != 0) {
+            int entry=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,63.0));
+            texel=uImageWeights[entry];
+        } else {
+            int index=int(clamp(floor((1.0-depth)*uImageSize.z),0.0,255.0));
+            texel=vec4(vec3(uImageWeights[index/4][index%4]),1.0);
+        }
     }
     if (uTarget == 1)
         texel.a = 1.0;
@@ -274,6 +280,22 @@ void main()
         fragColor.a = 1.0;
     if(uImageAlpha != 0)
         fragColor.a*=clamp(texture(uImageAlphaTex,gl_FragCoord.xy/uImageSize.xy).g*uImageSize.w,0.0,1.0);
+}
+)";
+
+        // Material::depthFromTexture: the texel's R, G, B as a 24-bit GS Z (low byte first), written as the fragment's
+        // depth on the vertex shader's mapping (window depth 1 - Z / uDepthMax); the colour is masked by the draw.
+        const char *kDepthImageFragmentShader = R"(#version 330
+in vec2 vUv;
+uniform sampler2D uTex;
+uniform float uDepthMax;
+out vec4 fragColor;
+void main()
+{
+    vec3 b = floor(texture(uTex, vUv).rgb * 255.0 + 0.5);
+    float z = b.r + b.g * 256.0 + b.b * 65536.0;
+    gl_FragDepth = 1.0 - clamp(z / uDepthMax, 0.0, 1.0);
+    fragColor = vec4(0.0);
 }
 )";
 
@@ -394,7 +416,7 @@ void main()
         gl::GLint locM = -1, locScreen = -1, locDepthMax = -1, locUvMap = -1, locUvBounds = -1, locDirectColour = -1, locTex = -1, locTextured = -1, locTarget = -1,
                   locAlphaTest = -1, locAlphaFunc = -1, locUseQ = -1, locAlphaRef = -1, locOpaque = -1, locFog = -1, locTextureFunction = -1, locTextureAlpha = -1, locFogColour = -1,
                   locLevels = -1, locLevelGain = -1, locLevelHigh = -1, locLevelLow = -1,
-                  locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthTex=-1,
+                  locImageRadius=-1,locImageStep=-1,locImageKernel=-1,locImageDepth=-1,locImageDepthColours=-1,locImageDepthTex=-1,
                   locImageWeights=-1,locImageSize=-1,locImageAlpha=-1,locImageAlphaTex=-1,
                   locImageChain=-1,locImageChainTaps=-1,locImageChainColour=-1,
                   locLodMode = -1, locLodScale = -1, locLodBias = -1;
@@ -402,12 +424,19 @@ void main()
         size_t vboBytes = 0;
         gl::GLuint flatShader = 0;
         gl::GLint locViewport = -1, locFlatTex = -1;
+        // Material::depthFromTexture's program and its uniforms.
+        gl::GLuint depthImageShader = 0;
+        struct
+        {
+            gl::GLint m = -1, screen = -1, depthMax = -1, uvMap = -1, useQ = -1, tex = -1;
+        } depthImage;
         gl::GLuint flatVao = 0, flatVbo = 0;
         size_t flatVboBytes = 0;
         std::vector<FlatVertex> flat; // the 2D being gathered for one draw
         gl::GLuint white = 0;         // 1 x 1 white: an untextured 2D draw
         // The frame's target (raylib's render texture: RGBA8 colour, a depth renderbuffer).
         gl::GLuint fbo = 0, colour = 0, depth = 0;
+        gl::GLuint presentTo = 0; // the framebuffer present() was called with (the window's, or a capture's own)
         gl::GLuint imageDepth=0;
         int imageDepthWidth=0,imageDepthHeight=0;
         int targetWidth = 0, targetHeight = 0;
@@ -438,6 +467,88 @@ void main()
             g.FramebufferRenderbuffer(gl::kFramebuffer,gl::kDepthAttachment,gl::kRenderbuffer,shared ? depth : t.depth);
             return g.CheckFramebufferStatus(gl::kFramebuffer)==gl::kFramebufferComplete;
         }
+        int maxAnisotropy = 1; // the GPU's (init)
+        // Anti-aliasing (Renderer::antiAliasing): the frame's 3D drawn into msFbo, a multisampled colour and depth-stencil
+        // of the target's size, and resolved (blitted) into fbo wherever the frame is read: the copies a material samples,
+        // the depth an image pass reads, the depth tiles and the present. The auxiliary targets stay single-sampled; one
+        // sharing the frame's depth gets the resolved depth. msSamples 0: none, fbo drawn directly.
+        gl::GLuint msFbo = 0, msColour = 0, msDepth = 0;
+        int msSamples = 0, msWidth = 0, msHeight = 0;
+        int maxSamples = 1; // the GPU's (init)
+        int msRefused = 0;  // samples the GPU refused at this size: not tried again until either changes
+        gl::GLuint drawFbo() const { return msSamples ? msFbo : fbo; }
+        // The multisampled target for `samples` (clamped to the GPU's; under 2: none) at the target's size; false when the
+        // GPU refuses it (then none).
+        bool multisample(int samples)
+        {
+            const gl::Api &g = gl::api();
+            samples = std::min(samples, maxSamples);
+            if (samples < 2)
+                samples = 0;
+            if (samples == msSamples && (samples == 0 || (msWidth == targetWidth && msHeight == targetHeight)))
+                return true;
+            if (samples != 0 && samples == msRefused && msWidth == targetWidth && msHeight == targetHeight)
+                return false;
+            msSamples = 0;
+            if (samples == 0)
+                return true;
+            if (msFbo == 0)
+            {
+                g.GenFramebuffers(1, &msFbo);
+                g.GenRenderbuffers(1, &msColour);
+                g.GenRenderbuffers(1, &msDepth);
+            }
+            g.BindRenderbuffer(gl::kRenderbuffer, msColour);
+            g.RenderbufferStorageMultisample(gl::kRenderbuffer, samples, gl::kRgba8, targetWidth, targetHeight);
+            g.BindRenderbuffer(gl::kRenderbuffer, msDepth);
+            g.RenderbufferStorageMultisample(gl::kRenderbuffer, samples, gl::kDepth24Stencil8, targetWidth, targetHeight);
+            g.BindFramebuffer(gl::kFramebuffer, msFbo);
+            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kColorAttachment0, gl::kRenderbuffer, msColour);
+            g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthStencilAttachment, gl::kRenderbuffer, msDepth);
+            const bool complete = g.CheckFramebufferStatus(gl::kFramebuffer) == gl::kFramebufferComplete;
+            g.BindFramebuffer(gl::kFramebuffer, presentTo);
+            msWidth = targetWidth;
+            msHeight = targetHeight;
+            msRefused = complete ? 0 : samples;
+            if (!complete)
+            {
+                std::fprintf(stderr, "[renderer] the %d x %d target with %d samples is incomplete: no anti-aliasing\n", targetWidth,
+                             targetHeight, samples);
+                return false;
+            }
+            msSamples = samples;
+            std::fprintf(stderr, "[renderer] anti-aliasing: %d samples a pixel\n", samples);
+            return true;
+        }
+        // The multisampled frame resolved into fbo (colour, depth and stencil), which is left bound; without
+        // anti-aliasing fbo is only bound. The blit takes the scissor and, on some drivers, the write masks: both opened
+        // for it and given back.
+        void resolve()
+        {
+            const gl::Api &g = gl::api();
+            if (msSamples == 0)
+            {
+                g.BindFramebuffer(gl::kFramebuffer, fbo);
+                return;
+            }
+            gl::GLint scissor = 0, depthMask = 1, colourMask[4] = {1, 1, 1, 1};
+            g.GetIntegerv(gl::kScissorTest, &scissor);
+            g.GetIntegerv(gl::kDepthWritemask, &depthMask);
+            g.GetIntegerv(gl::kColorWritemask, colourMask);
+            g.Disable(gl::kScissorTest);
+            g.DepthMask(gl::kTrue);
+            g.ColorMask(gl::kTrue, gl::kTrue, gl::kTrue, gl::kTrue);
+            g.BindFramebuffer(gl::kReadFramebuffer, msFbo);
+            g.BindFramebuffer(gl::kDrawFramebuffer, fbo);
+            g.BlitFramebuffer(0, 0, targetWidth, targetHeight, 0, 0, targetWidth, targetHeight,
+                              gl::kColorBufferBit | gl::kDepthBufferBit | gl::kStencilBufferBit, gl::kNearest);
+            g.BindFramebuffer(gl::kFramebuffer, fbo);
+            if (scissor)
+                g.Enable(gl::kScissorTest);
+            g.DepthMask(depthMask ? gl::kTrue : gl::kFalse);
+            g.ColorMask(colourMask[0] ? gl::kTrue : gl::kFalse, colourMask[1] ? gl::kTrue : gl::kFalse,
+                        colourMask[2] ? gl::kTrue : gl::kFalse, colourMask[3] ? gl::kTrue : gl::kFalse);
+        }
         struct GpuTexture
         {
             gl::GLuint id = 0;
@@ -451,6 +562,7 @@ void main()
             uint8_t holds = 0;         // what it was sent: 0 the texture as it is, 1 its upscaled copy, 2 its replacement
             size_t bytes = 0;        // sent to the GPU (generated levels not counted)
             const Texture *shared = nullptr; // a larger copy's: the GPU texture is sharedCopies' (not this slot's own)
+            int anisotropy = 1;      // the texture's anisotropic filtering as last set (texture smoothing)
         };
         // Larger copies (replacements, upscaled copies) on the GPU, by the copy (the same object for the same texels: the
         // replacements' and the upscaler's caches give it back): a slot whose key changed for the same texture (a game's
@@ -706,11 +818,52 @@ void main()
         }
 
         // The texture bound, its mip levels and filters as the material samples them: the uniforms that choose the level.
+        // The texture's levels made from its level 0 (the GPU's level `shift`) once, when it has none of its own.
+        void generateLevels(GpuTexture &slot)
+        {
+            const gl::Api &g = gl::api();
+            if (slot.levels != slot.shift || slot.generated || !slot.source || !slot.source->levels.empty())
+                return;
+            if (slot.shift != 0)
+                g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, slot.shift);
+            g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, 1000);
+            g.GenerateMipmap(gl::kTexture2D);
+            if (slot.shift != 0)
+                g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, 0);
+            uint32_t size = std::max(slot.source->width, slot.source->height);
+            while (size > 1u)
+                size >>= 1, ++slot.levels;
+            slot.generated = true;
+        }
+        void setAnisotropy(GpuTexture &slot, int anisotropy)
+        {
+            anisotropy = std::clamp(anisotropy, 1, maxAnisotropy);
+            if (slot.anisotropy == anisotropy)
+                return;
+            gl::api().TexParameterf(gl::kTexture2D, gl::kTextureMaxAnisotropy, static_cast<float>(anisotropy));
+            slot.anisotropy = anisotropy;
+        }
+
         void sampleLevels(uint64_t key, const Material &m)
         {
             const gl::Api &g = gl::api();
             const Material::Mipmap &mip = m.mipmap;
             GpuTexture &slot = textures[key];
+            // Texture smoothing (Renderer::setTextureSmoothing): a draw without levels of its own samples generated ones,
+            // trilinear by the screen footprint, with anisotropic filtering past 1.
+            const int smoothing = Renderer::instance().textureSmoothing();
+            if (mip.levels == 0u && smoothing > 0 && !m.nearest && slot.source)
+            {
+                generateLevels(slot);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, slot.levels);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, gl::kLinearMipmapLinear);
+                g.TexParameterf(gl::kTexture2D, gl::kTextureLodBias, 0.0f);
+                g.Uniform1i(locLodMode, 0);
+                setAnisotropy(slot, smoothing);
+                return;
+            }
+            if (maxAnisotropy > 1)
+                setAnisotropy(slot, 1);
             if (mip.levels == 0u && slot.shift != 0 && slot.levels >= slot.shift)
             {
                 // A larger copy (upscaled or replaced) of a texture drawn without levels: its levels down to the texture's
@@ -728,19 +881,7 @@ void main()
                 g.Uniform1i(locLodMode, 0);
                 return;
             }
-            if (slot.levels == slot.shift && !slot.generated && slot.source && slot.source->levels.empty())
-            {
-                if (slot.shift != 0)
-                    g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, slot.shift);
-                g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, 1000);
-                g.GenerateMipmap(gl::kTexture2D);
-                if (slot.shift != 0)
-                    g.TexParameteri(gl::kTexture2D, gl::kTextureBaseLevel, 0);
-                uint32_t size = std::max(slot.source->width, slot.source->height);
-                while (size > 1u)
-                    size >>= 1, ++slot.levels;
-                slot.generated = true;
-            }
+            generateLevels(slot);
             g.TexParameteri(gl::kTexture2D, gl::kTextureMaxLevel, std::min<int>(mip.levels + slot.shift, slot.levels));
             static constexpr gl::GLenum kFilters[2][2] = {{gl::kNearestMipmapNearest, gl::kNearestMipmapLinear},
                                                          {gl::kLinearMipmapNearest, gl::kLinearMipmapLinear}};
@@ -756,8 +897,15 @@ void main()
             const gl::Api &g = gl::api();
             shader = linkProgram(kVertexShader, kFragmentShader);
             flatShader = linkProgram(kFlatVertexShader, kFlatFragmentShader);
-            if (shader == 0 || flatShader == 0)
+            depthImageShader = linkProgram(kVertexShader, kDepthImageFragmentShader);
+            if (shader == 0 || flatShader == 0 || depthImageShader == 0)
                 return false;
+            depthImage.m = g.GetUniformLocation(depthImageShader, "uM");
+            depthImage.screen = g.GetUniformLocation(depthImageShader, "uScreen");
+            depthImage.depthMax = g.GetUniformLocation(depthImageShader, "uDepthMax");
+            depthImage.uvMap = g.GetUniformLocation(depthImageShader, "uUvMap");
+            depthImage.useQ = g.GetUniformLocation(depthImageShader, "uUseQ");
+            depthImage.tex = g.GetUniformLocation(depthImageShader, "uTex");
             locM = g.GetUniformLocation(shader, "uM");
             locScreen = g.GetUniformLocation(shader, "uScreen");
             locDepthMax = g.GetUniformLocation(shader, "uDepthMax");
@@ -782,6 +930,7 @@ void main()
             locImageStep=g.GetUniformLocation(shader,"uImageStep");
             locImageKernel=g.GetUniformLocation(shader,"uImageKernel[0]");
             locImageDepth=g.GetUniformLocation(shader,"uImageDepth");
+            locImageDepthColours=g.GetUniformLocation(shader,"uImageDepthColours");
             locImageDepthTex=g.GetUniformLocation(shader,"uImageDepthTex");
             locImageWeights=g.GetUniformLocation(shader,"uImageWeights[0]");
             locImageSize=g.GetUniformLocation(shader,"uImageSize");
@@ -793,6 +942,19 @@ void main()
             locTextureFunction = g.GetUniformLocation(shader, "uTextureFunction");
             locTextureAlpha = g.GetUniformLocation(shader, "uTextureAlpha");
             locLodMode = g.GetUniformLocation(shader, "uLodMode");
+            {
+                // The GPU's anisotropic filtering limit (1: none; a driver without the extension sets an error, cleared).
+                gl::GLint most = 1;
+                g.GetIntegerv(gl::kMaxTextureMaxAnisotropy, &most);
+                if (g.GetError() != 0)
+                    most = 1;
+                maxAnisotropy = std::max(1, static_cast<int>(most));
+                gl::GLint samples = 1;
+                g.GetIntegerv(gl::kMaxSamples, &samples);
+                if (g.GetError() != 0)
+                    samples = 1;
+                maxSamples = std::max(1, static_cast<int>(samples));
+            }
             locLodScale = g.GetUniformLocation(shader, "uLodScale");
             locLodBias = g.GetUniformLocation(shader, "uLodBias");
             locViewport = g.GetUniformLocation(flatShader, "uViewport");
@@ -846,6 +1008,13 @@ void main()
                 g.DeleteRenderbuffers(1, &depth);
             if (fbo != 0)
                 g.DeleteFramebuffers(1, &fbo);
+            for (gl::GLuint *r : {&msColour, &msDepth})
+                if (*r != 0)
+                    g.DeleteRenderbuffers(1, r);
+            if (msFbo != 0)
+                g.DeleteFramebuffers(1, &msFbo);
+            msFbo = msColour = msDepth = 0;
+            msSamples = 0;
             for (gl::GLuint *b : {&vbo, &flatVbo})
                 if (*b != 0)
                     g.DeleteBuffers(1, b);
@@ -894,7 +1063,7 @@ void main()
             g.FramebufferTexture2D(gl::kFramebuffer, gl::kColorAttachment0, gl::kTexture2D, colour, 0);
             g.FramebufferRenderbuffer(gl::kFramebuffer, gl::kDepthStencilAttachment, gl::kRenderbuffer, depth);
             const bool complete = g.CheckFramebufferStatus(gl::kFramebuffer) == gl::kFramebufferComplete;
-            g.BindFramebuffer(gl::kFramebuffer, 0);
+            g.BindFramebuffer(gl::kFramebuffer, presentTo);
             if (!complete)
             {
                 std::fprintf(stderr, "[renderer] the %d x %d target is incomplete\n", width, height);
@@ -1536,6 +1705,13 @@ void main()
             }
         }
         Gpu &gpu = *m_gpu;
+        {
+            // The caller's framebuffer (GL_FRAMEBUFFER_BINDING): the window's, or a capture's offscreen one. The frame's
+            // target is drawn, then the picture goes there.
+            gl::GLint bound = 0;
+            g.GetIntegerv(0x8CA6, &bound);
+            gpu.presentTo = static_cast<gl::GLuint>(bound);
+        }
         gpu.largeUploads = 0;
         static const bool s_textureStats = [] { const char *v = std::getenv("PS2X_TEXTURE_STATS"); return v && *v && *v != '0'; }();
         if (const TextureUpscale upscale = textureUpscale(); (upscale.on() || s_textureStats || TextureReplacements::instance().active()) && presentNow - gpu.textureStatsAt >= 10.0)
@@ -1571,6 +1747,7 @@ void main()
         const int w = std::max(1, static_cast<int>(std::lround(width * scale))), h = std::max(1, static_cast<int>(std::lround(height * scale)));
         if (!gpu.target(w, h))
             return false;
+        gpu.multisample(antiAliasing());
         // Filtered to the window when the render scale makes it another size, as it is (point) otherwise.
         if (const bool filtered = scale != 1.0f; filtered != gpu.targetFiltered)
         {
@@ -1720,7 +1897,7 @@ void main()
         m_lastPresent = info;
 
         const Screen &screen = frame->screen;
-        g.BindFramebuffer(gl::kFramebuffer, gpu.fbo);
+        g.BindFramebuffer(gl::kFramebuffer, gpu.drawFbo());
         g.Viewport(0, 0, w, h);
         g.Disable(gl::kScissorTest);
         g.DepthMask(gl::kTrue);
@@ -1794,6 +1971,8 @@ void main()
                         throw std::runtime_error("native shared depth requires matching image dimensions");
                     if (size && !shared) { drawWidth=size >> 16; drawHeight=size & 0xffff; }
                     if(m.targetWidth){drawWidth=m.targetWidth;drawHeight=m.targetHeight;}
+                    if (shared)
+                        gpu.resolve(); // the frame's depth so far, for a target sharing it
                     if (!gpu.auxiliaryTarget(drawingTarget,drawWidth,drawHeight,shared))
                         throw std::runtime_error("native render target framebuffer incomplete");
                     if (!touched[drawingTarget] || explicitResize) {
@@ -1803,7 +1982,7 @@ void main()
                         g.Clear(gl::kColorBufferBit | (shared ? 0 : gl::kDepthBufferBit));
                         touched[drawingTarget]=true;
                     }
-                } else g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                } else g.BindFramebuffer(gl::kFramebuffer,gpu.drawFbo());
                 g.Viewport(0,0,drawWidth,drawHeight);
             }
             const Rect clip = clipOf(batch);
@@ -1845,7 +2024,11 @@ void main()
             {
                 g.Enable(gl::kStencilTest);
                 g.StencilFunc(gl::kAlways, 0, 0xFFu);
-                g.StencilOp(gl::kKeep, gl::kKeep, m.stencilOp == Material::StencilOp::IncrementWrap ? gl::kIncrWrap : gl::kDecrWrap);
+                const gl::GLenum count = m.stencilOp == Material::StencilOp::IncrementWrap ? gl::kIncrWrap : gl::kDecrWrap;
+                if (m.stencilDepthFail)
+                    g.StencilOp(gl::kKeep, count, gl::kKeep);
+                else
+                    g.StencilOp(gl::kKeep, gl::kKeep, count);
             }
             else if (m.stencilNotZero)
             {
@@ -1880,6 +2063,7 @@ void main()
             const auto *processing=m.imageProcessing.get();
             g.Uniform1i(gpu.locImageRadius,processing?processing->radius:0);
             g.Uniform1i(gpu.locImageDepth,processing && processing->depthLookup);
+            g.Uniform1i(gpu.locImageDepthColours,processing && processing->depthLookup && processing->depthColours);
             g.Uniform1i(gpu.locImageAlpha,processing && processing->alphaSource);
             g.Uniform1i(gpu.locImageChain,processing?processing->chainTaps:0);
             if(processing && processing->chainTaps){
@@ -1905,9 +2089,9 @@ void main()
                     g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,gl::kNearest);
                     g.TexParameteri(gl::kTexture2D,gl::kTextureWrapS,gl::kClampToEdge);
                     g.TexParameteri(gl::kTexture2D,gl::kTextureWrapT,gl::kClampToEdge);
-                    g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+                    gpu.resolve();
                     g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,w,h);
-                    g.BindFramebuffer(gl::kFramebuffer,drawingTarget?gpu.auxiliary[drawingTarget].fbo:gpu.fbo);
+                    g.BindFramebuffer(gl::kFramebuffer,drawingTarget?gpu.auxiliary[drawingTarget].fbo:gpu.drawFbo());
                     g.Uniform1i(gpu.locImageDepthTex,1);
                     g.Uniform4fv(gpu.locImageWeights,64,processing->depthWeights.data());
                 }
@@ -1948,7 +2132,10 @@ void main()
                     source=t.colour;
                 } else {
                     const int sw=m.source ? drawWidth : w, sh=m.source ? drawHeight : h;
-                    g.BindFramebuffer(gl::kFramebuffer,m.source ? gpu.auxiliary[m.source].fbo : gpu.fbo);
+                    if (m.source)
+                        g.BindFramebuffer(gl::kFramebuffer,gpu.auxiliary[m.source].fbo);
+                    else
+                        gpu.resolve();
                     if (!gpu.targetCopy || gpu.copyWidth!=sw || gpu.copyHeight!=sh) {
                         if (gpu.targetCopy) g.DeleteTextures(1,&gpu.targetCopy);
                         gpu.targetCopy=gpu.makeTexture(nullptr,sw,sh,gl::kClampToEdge);
@@ -1958,7 +2145,7 @@ void main()
                     g.BindTexture(gl::kTexture2D,source);
                     g.CopyTexSubImage2D(gl::kTexture2D,0,0,0,0,0,sw,sh);
                 }
-                g.BindFramebuffer(gl::kFramebuffer,drawingTarget ? gpu.auxiliary[drawingTarget].fbo : gpu.fbo);
+                g.BindFramebuffer(gl::kFramebuffer,drawingTarget ? gpu.auxiliary[drawingTarget].fbo : gpu.drawFbo());
                 g.BindTexture(gl::kTexture2D,source);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,m.nearest ? gl::kNearest : gl::kLinear);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMagFilter,m.nearest ? gl::kNearest : gl::kLinear);
@@ -1986,7 +2173,11 @@ void main()
                 g.BindTexture(gl::kTexture2D, gpu.targetCopy);
                 g.TexParameteri(gl::kTexture2D,gl::kTextureMinFilter,gl::kLinear);
                 g.TexParameterf(gl::kTexture2D,gl::kTextureLodBias,0);
+                if (!drawingTarget && gpu.msSamples)
+                    gpu.resolve();
                 g.CopyTexSubImage2D(gl::kTexture2D, 0, 0, 0, 0, 0, w, h);
+                if (!drawingTarget && gpu.msSamples)
+                    g.BindFramebuffer(gl::kFramebuffer, gpu.msFbo);
                 const float toTarget[4] = {1.0f / screen.width, 0.0f, -1.0f / screen.height, 1.0f};
                 g.Uniform4fv(gpu.locUvMap, 1, toTarget);
                 g.Uniform1i(gpu.locTextured, 1);
@@ -2022,11 +2213,27 @@ void main()
                 g.Disable(gl::kScissorTest);
                 scissored = false;
             }
-            g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
+            if (m.depthFromTexture && textured)
+            {
+                // The texture's Z as the depth (point sampled: a Z is never filtered), through its own program.
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMinFilter, gl::kNearest);
+                g.TexParameteri(gl::kTexture2D, gl::kTextureMagFilter, gl::kNearest);
+                g.UseProgram(gpu.depthImageShader);
+                g.Uniform4fv(gpu.depthImage.m, 4, matrix);
+                g.Uniform4fv(gpu.depthImage.screen, 1, screenRect);
+                g.Uniform1f(gpu.depthImage.depthMax, screen.depthMax);
+                g.Uniform4fv(gpu.depthImage.uvMap, 1, uvAsGiven);
+                g.Uniform1i(gpu.depthImage.useQ, 0);
+                g.Uniform1i(gpu.depthImage.tex, 0);
+                g.DrawArrays(gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
+                g.UseProgram(gpu.shader);
+                continue;
+            }
+            g.DrawArrays(m.lines ? gl::kLines : gl::kTriangles, static_cast<gl::GLint>(batch.first), static_cast<gl::GLsizei>(batch.count));
         }
         g.Disable(gl::kStencilTest);
         g.ColorMask(gl::kTrue,gl::kTrue,gl::kTrue,gl::kTrue);
-        g.BindFramebuffer(gl::kFramebuffer,gpu.fbo);
+        gpu.resolve(); // the frame as it is shown: the depth tiles and the present read it
         g.Viewport(0,0,w,h);
         g.Disable(gl::kScissorTest);
         g.BindVertexArray(0);
@@ -2034,7 +2241,7 @@ void main()
             readDepthTiles(w, h, screen);
         g.DepthMask(gl::kTrue);
         g.Disable(gl::kDepthTest);
-        g.BindFramebuffer(gl::kFramebuffer, m_presentFramebuffer);
+        g.BindFramebuffer(gl::kFramebuffer, gpu.presentTo);
         g.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
         // Under the frame, as the display merges it: the picture the game shows through circuit 2 (a menu's movie frame,

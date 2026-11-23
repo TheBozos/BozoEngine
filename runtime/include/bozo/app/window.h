@@ -7,8 +7,11 @@
 // (bozo/app/device_pad.h).
 //
 // Keys (milestone M4): F2 the settings window and F3 the frame rate counter (bozo/app/panel.h); F8 a capture sequence
-// and F9 a burst of captures (window.cpp says where and how); F11 or Alt+Enter switches fullscreen (with the video
-// settings: to the last full-screen mode, bozo/app/video_settings.h). Closing the window ends the game at its next frame.
+// and F9 a burst of captures (window.cpp says where and how); F12 a screenshot, the game's picture without the panel
+// (a PNG in the user folder's screenshots, PS2X_SCREENSHOT_DIR another folder); F11 or Alt+Enter switches fullscreen
+// (with the video settings: to the last full-screen mode, bozo/app/video_settings.h); the FastForward binding (` by default) held fast
+// forwards a paced game (FramePacer::speedPercent at video::Settings::fastForward). Closing the window ends the game at
+// its next frame.
 #pragma once
 
 #include <cstdint>
@@ -34,12 +37,25 @@ namespace bozo::app
         // that present began, so its picture is at least that frame's). A host that holds its game at a capture frame
         // until then (tmb-check --window: the pinned run) gets exactly that frame's picture.
         std::function<void(uint64_t frames)> onCaptured;
-        uint64_t quitAfterFrames = 0;        // close once the game ended this many frames (0: never)
+        // Lockstep (reproducible runs; at the game's own frame rate, not interpolating): each published frame is
+        // presented exactly once, in order. The window presents only a frame it has not presented (no repeat after
+        // its 1/30 s wait), and calls onPresented with Renderer::publishes() of the frame just presented. A host that
+        // holds its game after each publish until then gets every frame presented, none twice: what the pictures keep
+        // from present to present (Material::kPreviousFrame, the render targets: TTA's Nazgul Scream ghosting)
+        // then follows the game's frames instead of the window's timing.
+        bool lockstep = false;
+        std::function<void(uint64_t publishes)> onPresented;
+        uint64_t quitAfterFrames = 0;       // close once the game ended this many frames (0: never)
         bool stats = true;                   // every 2 s on stderr: game frames and presents a second, frame times
         // The window's size, mode and render scale from video::edited() (the port called video::loadAtStartup and
         // applied its command line there) instead of width / height / fullscreen / renderScale.
         bool videoSettings = false;
         bool panel = true; // F2 / F3 (Dear ImGui)
+        // A test run that shows nothing: the window is never shown (the game still renders into the renderer's target),
+        // and captures read that target (captureScene: the renderer's picture, its size, no overlays; also
+        // PS2X_CAPTURE_SCENE=1), since a hidden or covered window's back buffer reads back black.
+        bool hidden = false;
+        bool captureScene = false;
     };
 
     // What the window runs and how it talks to it.
@@ -56,6 +72,8 @@ namespace bozo::app
     // A save state slot's file: the user folder's states/slotN.state (made when missing), or the current folder's
     // when there is no user folder.
     std::string stateSlotPath(int slot);
+    // Its picture (slotN.png beside it): the game's picture when it was saved, the Save states tab's thumbnail.
+    std::string stateSlotPicturePath(int slot);
     constexpr int kStateSlots = 10;
     // "Slot 3: saved 2026-11-18 14:02" or "Slot 3: empty".
     std::string stateSlotSummary(int slot);

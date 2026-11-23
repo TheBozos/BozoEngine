@@ -128,6 +128,7 @@ namespace bozo::audio
         for (uint32_t i = 0; i < bytes; ++i)
             m_memory[(address + i) % kSoundMemory] = data[i];
         m_stats.uploaded += bytes;
+        reachIrq(address, bytes);
     }
 
     void Mixer::read(uint32_t address, uint8_t *data, uint32_t bytes) const
@@ -168,6 +169,11 @@ namespace bozo::audio
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_groups[group].voices[voice].volume[side].setting;
+    }
+    uint16_t Mixer::currentVolume(int group, int voice, int side) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return static_cast<uint16_t>(std::min<int32_t>(std::abs(m_groups[group].voices[voice].volume[side].level) >> 1, 0x7FFF));
     }
     uint16_t Mixer::pitch(int group, int voice) const
     {
@@ -219,6 +225,7 @@ namespace bozo::audio
             voice.loopSet = false;
             g.ended &= ~(1u << index);
             decode(voice);
+            reachIrq(voice.block, 16u);
             ++m_stats.keyOns;
         }
     }
@@ -487,6 +494,41 @@ namespace bozo::audio
         m_inputHalf = std::move(half);
     }
 
+    void Mixer::setIrqAddress(int group, uint32_t address)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_groups[group].irqAddress = address & (kSoundMemory - 1u);
+    }
+
+    void Mixer::setIrqEnabled(int group, bool enabled)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_groups[group].irqEnabled = enabled;
+    }
+
+    void Mixer::setIrqCallback(std::function<void(int group)> irq)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_irq = std::move(irq);
+    }
+
+    void Mixer::reachIrq(uint32_t address, uint32_t bytes)
+    {
+        address &= kSoundMemory - 1u;
+        for (int g = 0; g < 2; ++g)
+        {
+            Group &group = m_groups[g];
+            if (!group.irqEnabled)
+                continue;
+            const uint32_t offset = (group.irqAddress - address) & (kSoundMemory - 1u);
+            if (offset >= bytes)
+                continue;
+            group.irqEnabled = false;
+            if (m_irq)
+                m_irq(g);
+        }
+    }
+
     void Mixer::decode(Voice &voice)
     {
         const uint8_t *block = &m_memory[voice.block & (kSoundMemory - 16u)];
@@ -577,6 +619,7 @@ namespace bozo::audio
             else
                 voice.block = (voice.block + 16u) & (kSoundMemory - 1u);
             decode(voice);
+            reachIrq(voice.block, 16u);
         }
         return value;
     }

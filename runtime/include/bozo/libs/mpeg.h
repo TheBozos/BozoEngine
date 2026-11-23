@@ -59,6 +59,36 @@ namespace bozo::libs
         virtual void samples(const int16_t *frames, size_t count, int64_t pts) { (void)frames, (void)count, (void)pts; }
     };
 
+    // How libmpeg answers a game: by default as TMB's reference build does (its sceMpeg layout, results and pacing).
+    // A port whose game uses libmpeg the SDK's way (The Third Age: sceMpegAddBs from a Nodata callback, its own
+    // pacing) sets them; they survive sceMpegCreate.
+    struct MpegOptions
+    {
+        // The reference's layout: sceMpegCreate writes its sceMpeg and work area (with TMB's addresses) and takes a
+        // block and each callback's data from the game's heap, sceMpegReset clears TMB's static word, and the results
+        // are the reference's. Off: libmpeg writes nothing outside the work area the game gave sceMpegCreate (the
+        // Nodata callback's 32-byte data is its first bytes), and the results are the SDK's (sceMpegCreate and
+        // sceMpegDelete 1, sceMpegAddCallback the previous callback).
+        bool referenceLayout = true;
+        // sceMpegGetPicture holds each picture until its two fields are due; off, a game that paces itself gets it at
+        // once and sceMpegIsEnd answers from the stream alone.
+        bool paced = true;
+        // The Nodata callback as the SDK calls it: (mp, callback data, the data given to sceMpegAddCallback); a 0 it
+        // returns ends the input (the pictures left come out, then sceMpegIsEnd answers 1).
+        bool sdkNodata = false;
+        // How many coded pictures sceMpegDemuxPssRing reads ahead of the game. A game that wants a stream's audio
+        // before it takes its first picture needs the audio's place in the multiplex: Shinobido's first audio packet
+        // comes after 14 pictures and its player waits for 0x6000 bytes of it (about 18 pictures).
+        uint32_t picturesAhead = 8;
+        // sceMpegDemuxPssRing as the SDK runs it: each stream packet's callback runs before the demux goes on, and a 0
+        // the sound callback returns (Shinobido's: its ring has no room) stops the demux before that packet, which the
+        // next call gives again; only whole packets are taken. (A video callback's 0 is not waited for: the decoder
+        // takes the video from the demux, and the game's own copy, its IPU input, is never drained.) Off: a sector at
+        // a time, the callbacks queued as the call ends and their results unused (a refused sound packet is lost, and
+        // with an odd-sized one the sound after it is read a byte off).
+        bool sdkDemux = false;
+    };
+
     // One sceMpeg (TMB plays one movie at a time).
     struct MpegState
     {
@@ -92,6 +122,7 @@ namespace bozo::libs
         uint32_t starts = 0;        // picture starts and sequence ends whole in the stream so far
         uint32_t pictureStarts = 0; // picture starts alone
         bool sequenceEnd = false;
+        bool inputEnded = false; // the Nodata callback said there is no more input (MpegOptions::sdkNodata)
         bool headerOpen = false;
         std::vector<size_t> cuts; // where each coded picture's data (with its headers) begins
         size_t sent = 0;          // coded pictures given to the decoder
@@ -104,6 +135,14 @@ namespace bozo::libs
             uint32_t entry = 0;
         };
         std::vector<DueCallback> callbacksDue;
+        // MpegOptions::sdkDemux: the call's first stream byte, and the packet whose callback runs (where it begins,
+        // its stream, its payload and time stamp), given to the decoder or the sound sink once the callback took it.
+        uint64_t callAt = 0;
+        uint64_t heldAt = 0;
+        uint8_t heldId = 0;
+        std::vector<uint8_t> held;
+        int64_t heldPts = -1;
+        bool refused = false; // the callback refused its packet: the call ends
         // The thread waiting in sceMpegGetPicture for data (0: none).
         int32_t waiting = 0;
 

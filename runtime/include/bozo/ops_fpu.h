@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace bozo::ps2f
 {
@@ -128,9 +129,36 @@ namespace bozo::ps2f
 
     inline uint32_t sub(uint32_t a, uint32_t b, uint32_t &flags) { return add(a, b ^ kSign, flags); }
 
+    // The host's own float operation where it gives the same bits: operands and result all normal (exponent 1..254).
+    // There the exact result rounded to nearest even, which addNearest and mul compute, is IEEE's, which the host's SSE
+    // gives in its default rounding (round to nearest; no caller changes MXCSR around these: libs/vu0.cpp's toward-zero
+    // scope does its own arithmetic). Zeros, denormals, exponent 255 (PS2 numbers, not infinities) and results past
+    // either end (the flags, the clamps) go the exact way. BOZO_PS2F_EXACT_ONLY turns the shortcut off at compile time.
+    inline bool normal(uint32_t x) { return expOf(x) - 1u < 254u; }
+    inline uint32_t hostBits(float f)
+    {
+        uint32_t u;
+        std::memcpy(&u, &f, 4);
+        return u;
+    }
+    inline float hostFloat(uint32_t u)
+    {
+        float f;
+        std::memcpy(&f, &u, 4);
+        return f;
+    }
+
     // a + b on VU0: the exact sum rounded to nearest even.
     inline uint32_t addNearest(uint32_t a, uint32_t b, uint32_t &flags)
     {
+#ifndef BOZO_PS2F_EXACT_ONLY
+        if (normal(a) && normal(b))
+        {
+            const uint32_t r = hostBits(hostFloat(a) + hostFloat(b));
+            if (normal(r))
+                return r;
+        }
+#endif
         uint32_t z;
         if (addZeros(a, b, z))
             return z;
@@ -181,6 +209,14 @@ namespace bozo::ps2f
     // a * b: the exact product rounded to nearest even (Q10).
     inline uint32_t mul(uint32_t a, uint32_t b, uint32_t &flags)
     {
+#ifndef BOZO_PS2F_EXACT_ONLY
+        if (normal(a) && normal(b))
+        {
+            const uint32_t r = hostBits(hostFloat(a) * hostFloat(b));
+            if (normal(r))
+                return r;
+        }
+#endif
         const uint32_t sign = (a ^ b) & kSign;
         if (isZero(a) || isZero(b))
             return sign;

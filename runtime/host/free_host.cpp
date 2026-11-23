@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -35,6 +36,7 @@ namespace bozo::host
         if (registry)
         {
             vu0Programs_ = registry->vu0Programs();
+            vu0Code_ = registry->vu0CodeMemory();
             transfersAlwaysDone_ = registry->transfersAreAlwaysDone();
             d.setSyncVAtVblank(registry->syncVCallbackIsAtVblank());
         }
@@ -177,6 +179,12 @@ namespace bozo::host
         for(int id=1;id<16;++id) if(const auto *t=d_->kernel().thread(id))
             std::fprintf(stderr,"[native:fault] thread %d state=%u wait=%u object=%u entry=%x pc=%x\n",id,unsigned(t->state),t->waitReason,t->waitObject,t->entry,t->frames.empty()?0:t->frames.front()->ctx.pc);
         const uint32_t root=thread && !thread->frames.empty() ? thread->frames.front()->ctx.pc : 0;
+        // BOZO_FAULT_REGISTERS=1: the faulting context's 128-bit GPRs (the pc a fault reports is the last one the
+        // generated code set: a call's return point, a branch target), to find the access that faulted.
+        if (ctx && std::getenv("BOZO_FAULT_REGISTERS"))
+            for (int r = 0; r < 32; ++r)
+                std::fprintf(stderr, "[native:fault] r%-2d %016llx%016llx%s", r, (unsigned long long)ctx->r[r].ud[1],
+                             (unsigned long long)ctx->r[r].ud[0], r % 2 ? "\n" : "  ");
         endReason_ = std::format("FAULT: {} (frame {}, pc 0x{:x}, root 0x{:x} {}, clock {}, last frame {})", what, stats_.frames,
                                 ctx ? ctx->pc : 0,root,functionAt(root),d_?d_->now(ctx):0,lastFrameCycle_);
         throw ee::EndRun{};
@@ -289,6 +297,13 @@ namespace bozo::host
     {
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register read at 0x{:x}", address));
+        if (vu0Code_ && (address & 0x1FFFFFFFu) >= 0x11000000u && (address & 0x1FFFFFFFu) < 0x11004000u && size <= 16)
+        {
+            // VU0's code memory (port::Registry::vu0CodeMemory): its 4 KB, mirrored.
+            value[0] = value[1] = 0;
+            std::memcpy(value, vu0Code_ + (address & 0xFF0u) + (address & 0xFu & ~(size - 1u)), size);
+            return;
+        }
         ++stats_.ioAccesses;
         if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][0];
         watchdog(ctx);
@@ -310,6 +325,11 @@ namespace bozo::host
     {
         if (nativeGraphics() && libs::graphicsIo(address))
             fault(*d_, ctx, std::format("native graphics reached a retired register write at 0x{:x}", address));
+        if (vu0Code_ && (address & 0x1FFFFFFFu) >= 0x11000000u && (address & 0x1FFFFFFFu) < 0x11004000u && size <= 16)
+        {
+            std::memcpy(vu0Code_ + (address & 0xFF0u) + (address & 0xFu & ~(size - 1u)), value, size);
+            return;
+        }
         ++stats_.ioAccesses;
         if (opt_.profileIo) ++stats_.ioSites[{ctx->pc, address}][1];
         if (!libs::ioKnown(address, size, true))
@@ -342,6 +362,15 @@ namespace bozo::host
         }
         if (soundDue_.load(std::memory_order_relaxed))
             stallSound(ctx);
+        if (opt_.advanceLibrariesWhileStalled && opt_.sound && libs_.audioProvider)
+        {
+            const uint64_t at = ctx ? d_->now(ctx) : d_->now(), quarter = d_->kernel().field() / 4;
+            if (at - lastFrameCycle_ > d_->kernel().field() && at - lastStallAdvance_ >= quarter)
+            {
+                lastStallAdvance_ = at;
+                libs_.audioProvider(at);
+            }
+        }
         if (!opt_.stallFields)
             return;
         const uint64_t now = d_->now(ctx);
@@ -458,6 +487,11 @@ namespace bozo::host
 
     // The frame's sound: the engine brought up to the frame's end on the EE clock, its samples since the last frame to
     // onAudio, their digest for the record.
+    namespace
+    {
+        int64_t steadyNs();
+    }
+
     void FreeHost::frameSound(uint64_t &hash, uint32_t &count)
     {
         hash = 0;
@@ -472,7 +506,34 @@ namespace bozo::host
         mixer->takeMixed(hash, count);
         mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
-        const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        // Real time: a frame whose EE clock leapt (a wait the console spent in a device, a disc read, that the PC did
+        // not: The Third Age's streaming, up to five fields in one frame) brings the sound of the whole leap, but the
+        // host only lived the frame's own time. Given all, the output queue overflowed and dropped hundreds of
+        // milliseconds at a time (heard as cuts and crackle). The sound given out is held to the host's time instead:
+        // a budget of samples grows with it (48 kHz) and every output spends it (stallSound's too); a frame gives at
+        // most the budget plus a quarter field (the frames' own jitter), its newest samples, the leap's surplus skipped
+        // where it was made. The budget is kept within a few fields, so neither a stall nor a run of short frames
+        // stores up a burst.
+        if (opt_.realTime)
+        {
+            const int64_t now = steadyNs();
+            if (lastSoundNs_ != 0)
+            {
+                soundBudget_ += static_cast<double>(now - lastSoundNs_) * 48e-6;
+                soundBudget_ = std::clamp(soundBudget_, -double(kFieldFrames), 3.0 * kFieldFrames);
+                const double room = soundBudget_ + kFieldFrames / 4.0;
+                const size_t allowed = room > 0.0 ? static_cast<size_t>(room) : 0u;
+                if (n > allowed)
+                {
+                    std::memmove(audio_.data(), audio_.data() + 2u * (n - allowed), 2u * allowed * sizeof(int16_t));
+                    leapFrames_ += n - allowed;
+                    n = allowed;
+                }
+                soundBudget_ -= static_cast<double>(n);
+            }
+            lastSoundNs_ = now;
+        }
         if (onAudio && n)
             onAudio(stats_.frames, audio_.data(), n);
     }
@@ -498,6 +559,7 @@ namespace bozo::host
         mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
         const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
+        soundBudget_ -= static_cast<double>(n); // the host's time it fills (frameSound)
         if (n)
             onAudio(stats_.frames, audio_.data(), n);
     }

@@ -161,6 +161,8 @@ namespace bozo::render
             }
             if(m.frameDepth)
                 h=hash::xxh64(&m.frameDepth,sizeof(m.frameDepth),h);
+            if(m.depthFromTexture)
+                h=hash::xxh64(&m.depthFromTexture,sizeof(m.depthFromTexture),h);
             if (m.useQ || m.gsBlend || m.colourMask != 0xFu || m.alphaFunc != Material::AlphaFunc::Greater || m.depthGreater)
             {
                 const uint64_t gs = uint64_t(m.useQ) | uint64_t(m.gsBlend) << 1 | uint64_t(m.depthGreater) << 2 | uint64_t(m.alphaFunc) << 8 |
@@ -175,7 +177,8 @@ namespace bozo::render
             }
             if (m.stencilOp != Material::StencilOp::None || m.stencilNotZero || m.stencilClear)
             {
-                const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9;
+                const uint64_t stencil = uint64_t(m.stencilOp) | uint64_t(m.stencilNotZero) << 8 | uint64_t(m.stencilClear) << 9 |
+                                         uint64_t(m.stencilDepthFail) << 10;
                 h = hash::xxh64(&stencil, sizeof(stencil), h);
             }
             if (m.mipmap.levels != 0u)
@@ -187,6 +190,11 @@ namespace bozo::render
                 h = hash::xxh64(&mip, sizeof(mip), h);
             }
             h = hash::xxh64(batch.matrix, sizeof(batch.matrix), h);
+            if (m.lines)
+            {
+                const uint64_t tag = 0x4c494e4553000000ull;
+                h = hash::xxh64(&tag, sizeof(tag), h);
+            }
             if (m.levels.enabled)
             {
                 const uint64_t tag = 0x434f4c4f55524c56ull;
@@ -207,7 +215,8 @@ namespace bozo::render
                 h=hash::xxh64(p.weights.data(),sizeof(float)*(p.radius+1),h);
                 h=hash::xxh64(p.step.data(),sizeof(float)*2,h);
                 h=hash::xxh64(&p.depthLookup,sizeof(p.depthLookup),h);
-                if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);}
+                if(p.depthLookup){h=hash::xxh64(&p.depthScale,sizeof(float),h);h=hash::xxh64(p.depthWeights.data(),sizeof(float)*256,h);
+                    if(p.depthColours){const uint64_t colours=0x4445505448524742ull;h=hash::xxh64(&colours,sizeof(colours),h);}}
                 h=hash::xxh64(&p.alphaSource,sizeof(p.alphaSource),h);
                 h=hash::xxh64(&p.alphaScale,sizeof(float),h);
                 if(p.chainTaps){h=hash::xxh64(&p.chainTaps,sizeof(p.chainTaps),h);h=hash::xxh64(&p.chainColour,sizeof(float),h);
@@ -258,6 +267,8 @@ namespace bozo::render
     {
         if (count == 0u)
             return;
+        if (material.lines && (count % 2u != 0u || material.imageProcessing))
+            throw std::invalid_argument("invalid native line batch");
         if ((material.targetWidth==0)!=(material.targetHeight==0) ||
             (material.targetWidth && (!material.target || material.targetWidth>4096 || material.targetHeight>4096)))
             throw std::invalid_argument("invalid per-draw image dimensions");
@@ -270,6 +281,7 @@ namespace bozo::render
                 throw std::invalid_argument("invalid native image operation");
             for(unsigned i=0;i<=p.radius;++i)if(!std::isfinite(p.weights[i]) || p.weights[i]<0)
                 throw std::invalid_argument("invalid native image kernel");
+            if(p.depthColours && !p.depthLookup)throw std::invalid_argument("invalid native depth colours");
             if(p.depthLookup)for(float weight:p.depthWeights)if(!std::isfinite(weight) || weight<0 || weight>1)
                 throw std::invalid_argument("invalid native depth opacity");
             if(p.chainTaps){
@@ -335,6 +347,8 @@ namespace bozo::render
             throw std::invalid_argument("native colour levels require a frame draw");
         if(material.imageProcessing || material.targetWidth || material.targetHeight)
             throw std::invalid_argument("native image processing requires a frame draw");
+        if (material.lines)
+            throw std::invalid_argument("native line batches require a frame draw");
         if (count == 0u || m_overlayBuilding.vertices.size() > (1u << 20))
             return; // (never published: a port that does not publish keeps the latest million vertices' worth out)
         Batch batch;

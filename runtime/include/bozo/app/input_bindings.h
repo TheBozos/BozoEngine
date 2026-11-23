@@ -26,14 +26,18 @@ namespace bozo::app::input
 {
     constexpr int kPlayers = 4;
 
-    // The PS2 side: the 16 buttons, then the two sticks' four directions.
+    // The PS2 side: the 16 buttons, then the two sticks' four directions; then the window's own (windowActions, any
+    // player's binding counts): fast forward while held (FramePacer::speedPercent; ` and the touchpad click by default),
+    // the settings window (F2's; the gamepad's middle button by default), save and load a state (F5 / F7's; unbound).
     enum Action : int
     {
         Up, Down, Left, Right, Cross, Circle, Square, Triangle, L1, R1, L2, R2, L3, R3, Start, Select,
         LeftStickLeft, LeftStickRight, LeftStickUp, LeftStickDown,
         RightStickLeft, RightStickRight, RightStickUp, RightStickDown,
+        FastForward, SettingsWindow, SaveState, LoadState,
         ActionCount
     };
+    constexpr int kFirstWindowAction = FastForward;
 
     // The PC side.
     enum class Source : uint8_t
@@ -65,6 +69,8 @@ namespace bozo::app::input
         std::vector<Binding> actions[ActionCount];
         int gamepad = -1; // which gamepad (0-3, in the order they were plugged in) this player reads; -1: the player's
                           // among the connected ones (player n the nth)
+        int rumble = 100;         // the gamepad's vibration, in percent of what the game asks (0: none); input.ini's
+                                  // rumble (a number, or on / off), the Controls tab's slider
     };
 
     struct MouseSettings
@@ -88,6 +94,11 @@ namespace bozo::app::input
     bool save();
     std::string configPath();
 
+    // The Controls tab's rumble test: the player's gamepad shakes for half a second at the player's strength, whatever
+    // the game asks (DevicePad::update reads rumbleTestUntil, SDL_GetTicks milliseconds).
+    void testRumble(int player);
+    uint64_t rumbleTestUntil(int player);
+
     // The devices as the window's thread sampled them for one evaluation.
     struct Devices
     {
@@ -101,6 +112,8 @@ namespace bozo::app::input
     // A player's pad from its bindings: the buttons (pressed past half way), the sticks (0..255, 128 the centre), the
     // pressures (how far each pressure button is pressed, 0..255). `gamepad`: the player's gamepad (null: none).
     libs::PadInputState padState(int player, const Devices &devices, SDL_Gamepad *gamepad);
+    // The window's actions a player's bindings hold now (pressed past half way): bit (action - kFirstWindowAction).
+    uint32_t windowActions(int player, const Devices &devices, SDL_Gamepad *gamepad);
 
     // Names (input.ini, a Controls window).
     const char *actionName(int action);   // "cross", "left_stick_up", ...

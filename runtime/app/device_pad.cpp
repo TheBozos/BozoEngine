@@ -39,6 +39,7 @@ namespace bozo::app
         std::array<SDL_Gamepad *, kPlaces> gamepads{};
         std::array<SDL_JoystickID, kPlaces> ids{};
         bool mappingsLoaded = false;
+        uint32_t windowActions = 0; // the window's actions held at the last update (the window's thread)
         bool listChanged = true;
 
         // The mouse: motion since the last update, smoothed speed, the wheel's last notch.
@@ -58,7 +59,7 @@ namespace bozo::app
         bool rumbleOn = true;
         bool background = false;
         // The settings window's hold (DevicePad::setHeld): the keyboard / the mouse kept from the game.
-        bool heldKeys = false, heldMouse = false;
+        bool heldKeys = false, heldMouse = false, heldPads = false;
 
         // The gamepad of a player: the one input.ini names, else the player's among the connected ones (player n the
         // nth, as the fork gave port n the nth raylib gamepad).
@@ -184,11 +185,14 @@ namespace bozo::app
         }
     }
 
-    void DevicePad::setHeld(bool keyboard, bool mouse)
+    void DevicePad::setHeld(bool keyboard, bool mouse, bool gamepads)
     {
+        impl_->heldPads = gamepads;
         impl_->heldKeys = keyboard;
         impl_->heldMouse = mouse;
     }
+
+    uint32_t DevicePad::windowActions() const { return impl_->windowActions; }
 
     void DevicePad::update(bool focused)
     {
@@ -201,12 +205,15 @@ namespace bozo::app
 
         input::Config &config = input::config(); // input.ini, loaded at the first update
         input::MouseSettings mouse;
-        std::array<int, input::kPlayers> chosen{};
+        std::array<int, input::kPlayers> chosen{}, strength{};
         {
             std::lock_guard<std::mutex> lock(input::configMutex());
             mouse = config.mouse;
             for (int player = 0; player < input::kPlayers; ++player)
+            {
                 chosen[static_cast<size_t>(player)] = config.players[player].gamepad;
+                strength[static_cast<size_t>(player)] = std::clamp(config.players[player].rumble, 0, 100);
+            }
         }
 
         // Cursor capture while playing: the motion is then unbounded (no screen edge), and the cursor hidden.
@@ -243,26 +250,36 @@ namespace bozo::app
 
         std::array<libs::PadInputState, input::kPlayers> states{};
         std::array<SDL_Gamepad *, input::kPlayers> pads{};
+        uint32_t windowActions = 0;
         for (int player = 0; player < input::kPlayers; ++player)
         {
             SDL_Gamepad *g = m.gamepadOf(player, chosen[static_cast<size_t>(player)]);
             pads[static_cast<size_t>(player)] = g;
             // Players 2-4 only with a gamepad of their own, never the keyboard (as the fork).
             if (allowed && (player == 0 || g))
-                states[static_cast<size_t>(player)] = input::padState(player, devices, g);
+            {
+                states[static_cast<size_t>(player)] = input::padState(player, devices, m.heldPads ? nullptr : g);
+                windowActions |= input::windowActions(player, devices, g);
+            }
             states[static_cast<size_t>(player)].connected = player == 0 || g != nullptr;
         }
         {
             std::lock_guard<std::mutex> lock(m.mutex);
             m.states = states;
         }
+        m.windowActions = windowActions;
 
         // Rumble: what the game asks, sent when it changes and again before the last one runs out; nothing while the
         // window is in the background.
         for (int player = 0; player < input::kPlayers; ++player)
         {
             SDL_Gamepad *g = pads[static_cast<size_t>(player)];
-            uint32_t want = m.rumbleOn && allowed ? m.wanted[static_cast<size_t>(player)].load(std::memory_order_relaxed) : 0;
+            const int percent = strength[static_cast<size_t>(player)];
+            uint32_t want = m.rumbleOn && allowed && percent > 0 ? m.wanted[static_cast<size_t>(player)].load(std::memory_order_relaxed) : 0;
+            if (m.rumbleOn && percent > 0 && now < input::rumbleTestUntil(player))
+                want = 0x1FF; // the Controls tab's test: both motors
+            if (want)
+                want |= static_cast<uint32_t>(percent) << 16; // a strength change is sent at once too
             SDL_Gamepad *&was = m.rumbling[static_cast<size_t>(player)];
             if (was && was != g)
             {
@@ -275,8 +292,8 @@ namespace bozo::app
             const bool again = want && now - m.sentAt[static_cast<size_t>(player)] > 1000;
             if (want == m.sent[static_cast<size_t>(player)] && !again)
                 continue;
-            const uint16_t low = static_cast<uint16_t>((want & 0xFF) * 257u);
-            const uint16_t high = (want >> 8) ? 0xFFFF : 0;
+            const uint16_t low = static_cast<uint16_t>((want & 0xFF) * 257u * static_cast<uint32_t>(percent) / 100u);
+            const uint16_t high = (want & 0x100) ? static_cast<uint16_t>(0xFFFFu * static_cast<uint32_t>(percent) / 100u) : 0;
             SDL_RumbleGamepad(g, low, high, want ? 2000 : 0);
             m.sent[static_cast<size_t>(player)] = want;
             m.sentAt[static_cast<size_t>(player)] = now;

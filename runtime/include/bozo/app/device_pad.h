@@ -11,7 +11,8 @@
 // - SDL's controller database, plus gamecontrollerdb.txt (PS2X_GAMEPAD_DB, else beside the executable, else in the
 //   user folder) for controllers it lacks;
 // - rumble: the motors the game sets (scePadSetActDirect) on the player's gamepad, the large motor as its low
-//   frequency rumble, the small one as its high frequency (PS2X_RUMBLE=0: none);
+//   frequency rumble, the small one as its high frequency, scaled by the player's strength (input.ini rumble, 0-100,
+//   the Controls tab; PS2X_RUMBLE=0: none);
 // - pressure: each pressure button reports how far its binding is pressed (an analog trigger's travel, full for keys
 //   and digital buttons).
 // The host's devices reach the game only while the window has the focus (PS2X_INPUT_BACKGROUND=1: always).
@@ -34,9 +35,12 @@ namespace bozo::app
         // devices read through the bindings and the rumble applied.
         void handle(const SDL_Event &event);
         void update(bool focused);
-        // Window thread: while the settings window (F2) holds them, the keyboard and the mouse do not reach the game
-        // (the gamepads still do), and the cursor is not captured.
-        void setHeld(bool keyboard, bool mouse);
+        // Window thread: while the settings window (F2) holds them, the keyboard, the mouse or the gamepads do not reach
+        // the game (the gamepads then steer the settings window), and the cursor is not captured.
+        void setHeld(bool keyboard, bool mouse, bool gamepads = false);
+        // Window thread, after update: the window's actions the players' bindings hold (input::windowActions, every
+        // player's together; the gamepads' even while they are held from the game).
+        uint32_t windowActions() const;
         // Game thread.
         void read(uint32_t frame, int player, libs::PadInputState &out) override;
         void rumble(int player, bool small, uint8_t large) override;

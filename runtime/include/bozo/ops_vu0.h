@@ -12,6 +12,10 @@
 
 #include <cstring>
 
+#if !defined(BOZO_PS2F_EXACT_ONLY) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
+#include <emmintrin.h>
+#endif
+
 namespace bozo::vu0
 {
     using Vec = Vu0Vector;
@@ -94,6 +98,101 @@ namespace bozo::vu0
         ctx->vu0_status = st | ((st & 0xFu) << 6);
     }
 
+    // ---- Four fields at once (x86-64) ----
+    // The common cases of an FMAC instruction, all four fields through SSE together; the field-by-field path above gives
+    // the same bits and flags for them:
+    // - a product of two normal numbers that is normal, or with a zero operand (exponent 0: zero or denormal): the
+    //   signed zero, no flag (ps2f::mul);
+    // - a sum of two normal numbers that is normal, or with a zero operand: the other operand, or for two zeros -0 only
+    //   when both are -0 (ps2f::addZeros); a - b is a + (-b);
+    // the host's arithmetic being ps2f's own shortcut for normal numbers (ops_fpu.h: IEEE's rounding to nearest even).
+    // The results are then normal or +/-0, so the MAC flags are Z and S only. Any enabled field outside these cases
+    // (an exponent-255 operand, a result that leaves the normal range, a sum that cancels to 0) sends the instruction to
+    // the field-by-field path. Tried first by add, sub, mul, madd and msub: they were a quarter of TTA's game thread in
+    // a crowded battle (game functions 0x1d5118 / 0x1d52c8, matrix code). BOZO_PS2F_EXACT_ONLY turns it off with
+    // ps2f's shortcut; tests/runtime/vu0_simd_tests.cpp checks it against the field-by-field path.
+#if !defined(BOZO_PS2F_EXACT_ONLY) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
+#define BOZO_VU0_SIMD 1
+    namespace simd
+    {
+        enum class Op
+        {
+            Add,
+            Sub,
+            Mul,
+            Madd,
+            Msub
+        };
+        inline __m128i load(const Vec &v) { return _mm_loadu_si128(reinterpret_cast<const __m128i *>(v.u)); }
+        inline __m128i exponent(__m128i x) { return _mm_and_si128(_mm_srli_epi32(x, 23), _mm_set1_epi32(0xFF)); }
+        inline __m128i zero(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_setzero_si128()); } // or denormal
+        inline __m128i top(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(0xFF)); }
+        inline __m128i abnormal(__m128i x) { return _mm_or_si128(zero(x), top(x)); }
+        inline __m128i select(__m128i mask, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b)); }
+        inline __m128i signBits() { return _mm_set1_epi32(static_cast<int32_t>(0x80000000u)); }
+        // Lane i on when dest enables field i (x = dest bit 3 = lane 0).
+        inline __m128i lanes(uint32_t dest)
+        {
+            return _mm_set_epi32(-static_cast<int32_t>(dest & 1u), -static_cast<int32_t>((dest >> 1) & 1u),
+                                 -static_cast<int32_t>((dest >> 2) & 1u), -static_cast<int32_t>((dest >> 3) & 1u));
+        }
+        // s * t; `bad` collects the lanes outside the cases above.
+        inline __m128i mul(__m128i s, __m128i t, __m128i &bad)
+        {
+            const __m128i z = _mm_or_si128(zero(s), zero(t));
+            const __m128i p = _mm_castps_si128(_mm_mul_ps(_mm_castsi128_ps(s), _mm_castsi128_ps(t)));
+            bad = _mm_or_si128(bad, _mm_andnot_si128(z, _mm_or_si128(_mm_or_si128(top(s), top(t)), abnormal(p))));
+            return select(z, _mm_and_si128(_mm_xor_si128(s, t), signBits()), p);
+        }
+        // a + b, likewise.
+        inline __m128i add(__m128i a, __m128i b, __m128i &bad)
+        {
+            const __m128i za = zero(a), zb = zero(b);
+            const __m128i sum = _mm_castps_si128(_mm_add_ps(_mm_castsi128_ps(a), _mm_castsi128_ps(b)));
+            const __m128i either = _mm_or_si128(za, zb);
+            bad = _mm_or_si128(bad, _mm_andnot_si128(either, _mm_or_si128(_mm_or_si128(top(a), top(b)), abnormal(sum))));
+            const __m128i zeros = select(za, select(zb, _mm_and_si128(_mm_and_si128(a, b), signBits()), b), a);
+            const __m128i r = select(either, zeros, sum);
+            bad = _mm_or_si128(bad, top(r)); // the other operand of a zero, at exponent 255
+            return r;
+        }
+        // d (op) on the enabled fields with the flags, when every enabled field is a case above; false (nothing
+        // written) otherwise.
+        template <Op op>
+        inline bool fmac(R5900Context *ctx, Vec &d, const Vec &acc, const Vec &s, const Vec &t, uint32_t dest)
+        {
+            const __m128i S = load(s), T = load(t), on = lanes(dest);
+            __m128i bad = _mm_setzero_si128(), R;
+            if constexpr (op == Op::Add)
+                R = add(S, T, bad);
+            else if constexpr (op == Op::Sub)
+                R = add(S, _mm_xor_si128(T, signBits()), bad);
+            else if constexpr (op == Op::Mul)
+                R = mul(S, T, bad);
+            else
+            {
+                // The product rounded first, then the sum (Q6), as the field-by-field madd / msub.
+                const __m128i P = mul(S, T, bad);
+                R = add(load(acc), op == Op::Madd ? P : _mm_xor_si128(P, signBits()), bad);
+            }
+            if (_mm_movemask_epi8(_mm_and_si128(bad, on)) != 0)
+                return false;
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(d.u), select(on, R, load(d)));
+            // MAC: Z (bits 0-3, x = bit 3) and S (4-7) of the enabled fields; U and O are 0 here.
+            static constexpr uint8_t kReverse[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+            const __m128i r = _mm_and_si128(on, R);
+            const __m128i isZero = _mm_and_si128(on, _mm_cmpeq_epi32(_mm_andnot_si128(signBits(), r), _mm_setzero_si128()));
+            const uint32_t z = kReverse[_mm_movemask_ps(_mm_castsi128_ps(isZero))];
+            const uint32_t sg = kReverse[_mm_movemask_ps(_mm_castsi128_ps(r))];
+            ctx->vu0_mac = z | sg << 4;
+            uint32_t st = ctx->vu0_status & ~0xFu;
+            st |= (z ? 1u : 0u) | (sg ? 2u : 0u);
+            ctx->vu0_status = st | ((st & 0xFu) << 6);
+            return true;
+        }
+    }
+#endif
+
     // d = s op t on the enabled fields, with the flags. Sources are copies, so d may be s or t.
     template <typename F>
     inline void fmac(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest, F f)
@@ -115,15 +214,35 @@ namespace bozo::vu0
                 d.u[i] = f(s.u[i], t.u[i]);
     }
 
-    inline void add(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, addf); }
-    inline void sub(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, subf); }
-    inline void mul(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, mulf); }
+#ifdef BOZO_VU0_SIMD
+#define BOZO_VU0_FAST(op, acc)                                                                                         \
+    if (simd::fmac<simd::Op::op>(ctx, d, acc, s, t, dest))                                                             \
+        return;
+#else
+#define BOZO_VU0_FAST(op, acc)
+#endif
+    inline void add(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    {
+        BOZO_VU0_FAST(Add, s)
+        fmac(ctx, d, s, t, dest, addf);
+    }
+    inline void sub(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    {
+        BOZO_VU0_FAST(Sub, s)
+        fmac(ctx, d, s, t, dest, subf);
+    }
+    inline void mul(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    {
+        BOZO_VU0_FAST(Mul, s)
+        fmac(ctx, d, s, t, dest, mulf);
+    }
     // max / mini do not change the flags.
     inline void max(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::max); }
     inline void mini(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::min); }
     // madd: d = acc + s * t (the product rounded first, then the sum: Q6). msub: d = acc - s * t.
     inline void madd(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
     {
+        BOZO_VU0_FAST(Madd, acc)
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -138,6 +257,7 @@ namespace bozo::vu0
     }
     inline void msub(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
     {
+        BOZO_VU0_FAST(Msub, acc)
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -152,6 +272,8 @@ namespace bozo::vu0
     }
     // The outer product pair: opmula acc.xyz = (s.y*t.z, s.z*t.x, s.x*t.y); opmsub d.xyz = acc.xyz - (s.y*t.z, ...).
     // The instruction's dest is xyz by definition (w untouched).
+#undef BOZO_VU0_FAST
+
     inline void opmula(R5900Context *ctx, Vec &acc, Vec s, Vec t)
     {
         uint32_t r[4] = {}, fl[4] = {};
