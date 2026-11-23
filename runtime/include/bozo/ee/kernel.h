@@ -138,6 +138,7 @@ namespace bozo::ee
     constexpr uint32_t kPriorities = 128;
     constexpr uint32_t kFreshStatus = 0x10001u;      // COP0 Status of a new context (calllog: every first CTX)
     constexpr uint32_t kOne = 0x3F800000u;            // 1.0f: vf0.w and Q of a new context
+    constexpr uint32_t kRamTop = 0x2000000u;          // the end of the EE's 32 MB (SetupThread's stack -1)
     constexpr uint32_t kHandlerStackTop = 0x1FFFFF0u; // the stack handlers run on (one 16 KB area per thread)
     constexpr uint32_t kHandlerStackBytes = 0x4000u;
     constexpr uint32_t kHandlerCallAreaBytes = 0x80u; // eight 128-bit argument/home slots

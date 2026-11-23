@@ -760,6 +760,10 @@ namespace bozo::ee
     uint32_t Kernel::threadSetup(uint32_t stack, uint32_t stackSize, uint32_t gp)
     {
         emit(kOpThreadSetup, {stack, stackSize, gp});
+        // A stack of -1 (the SDK crt0's default `_stack`, Shinobido's) asks the kernel for the end of RAM: the stack is
+        // the stackSize bytes below 32 MB. Without it the stack pointer is -1 + size, an odd address in the program.
+        if (stack == 0xffffffffu && stackSize != 0u && stackSize < kRamTop)
+            stack = kRamTop - stackSize;
         if (Thread *self = thread(running_)) {
             // A size of 0 (Twisted Metal: Black's crt0) gives the stack's top only: the stack pointer starts there and
             // the stack grows below it, undeclared. The owned handler stacks need bounds, so it is taken as the
