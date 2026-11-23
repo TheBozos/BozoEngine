@@ -487,6 +487,22 @@ namespace bozo::libs
             const int32_t id=l.cd.nextFile++; l.cd.files.emplace(id,CdState::File{lbn,bytes,0}); g.ret(id);
         }
         void fsClose(Libraries &l, Guest &g) { g.ret(l.cd.files.erase(g.sarg(0)) ? 0 : -1); }
+        // sceGetstat(name, struct sce_stat *): a disc file's size, as a read-only regular file (iomanX's sce_stat:
+        // mode +0, attr +4, size +8, ctime/atime/mtime +12..+35, hisize +36, private +40..+63); -1 when it is not on
+        // the disc. The image is opened first, as sceOpen does. Shinobido checks its files with it before reading
+        // them (0x2464e0).
+        void fsGetstat(Libraries &l, Guest &g) {
+            uint32_t lbn=0, bytes=0;
+            uint8_t sector[kSectorBytes];
+            if (!discRead(l, 16, 1, sector) || !l.cd.disc.findFile(g.string(g.arg(0)),lbn,bytes)) { g.ret(-1); return; }
+            if (const uint32_t stat=g.arg(1)) {
+                for (uint32_t i=0; i<64; i+=4) g.write32(stat+i, 0);
+                g.write32(stat+0x00, 0x2000u | 0x0124u); // FIO_S_IFREG, read permission
+                g.write32(stat+0x08, bytes);
+                g.write32(stat+0x28, lbn);               // private[0]: the file's first sector, as cdvdman fills it
+            }
+            g.ret(0);
+        }
         void fsSeek(Libraries &l, Guest &g) {
             auto it=l.cd.files.find(g.sarg(0));
             if (it==l.cd.files.end() || g.arg(2)>2) { g.ret(-1); return; }
@@ -533,6 +549,7 @@ namespace bozo::libs
         out.push_back({"sceRead", kCd, fsRead});
         out.push_back({"sceWrite", kCd, fsWrite});
         out.push_back({"sceLseek", kCd, fsSeek});
+        out.push_back({"sceGetstat", kCd, fsGetstat});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
         out.push_back({"sceCdLayerSearchFile", kCd, layerSearchFile});
         out.push_back({"sceCdReadDvdDualInfo", kCd, readDvdDualInfo});
