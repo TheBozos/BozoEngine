@@ -478,7 +478,7 @@ A callback's handler gets the gp the game had when it registered it.
 
 - The ring's size is the fifth argument (`t0`: 0x50000 in TMB); `data` is the ring address of the stream byte the call
   starts at (stream offsets map to the ring modulo its size).
-- It takes the stream a sector (0x800 bytes) at a time while fewer than **8** starts are ahead of the game: the picture
+- It takes the stream a sector (0x800 bytes) at a time while fewer than **8** starts (`MpegOptions::picturesAhead`) are ahead of the game: the picture
   starts, the sequence end (`00 00 01 b7`) and the program end (`00 00 01 b9`) whole in the video packets demuxed so far,
   less the pictures delivered. Returns the bytes taken (boot #729735: 0x9800, nineteen sectors, the ninth packet's
   picture start making 8; #1009679: 0x2000; 0 when already 8 ahead). Nothing after the program end is read, but the
@@ -495,6 +495,16 @@ A callback's handler gets the gp the game had when it registered it.
   inside the call, result 0, completion: match1p #14450352), then the callbacks are queued in packet order.
 - The reference's stub of TMB's `videoCallback` returns 1 and copies nothing (#729748): the decoder takes the video
   from the demux. The PCM callback (0x1ec3e8) is a port override, still answered from the log.
+- **`MpegOptions::sdkDemux`** (off for TMB; Shinobido sets it): the demux as the SDK's libmpeg runs it. Each packet of a
+  registered stream stops the demux: its callback is queued (as above) and the calling thread waits for it (`kWaitMpeg`,
+  object 2); the callback's end wakes it and the demux goes on in the same call. The packet goes to the decoder or the
+  sound sink once its callback took it. A 0 from the sound callback (its ring has no room) ends the call before that
+  packet, which the next call gives again; a 0 from the video callback is not waited for (the decoder takes the video
+  from the demux; the game's own copy, its IPU input, is never drained without an IPU). The call reads the bytes it is
+  given as the packets need them and returns the bytes of the whole packets taken (any count, not whole sectors); a
+  part packet stays in the ring for the next call. Shinobido's PCM callback copies each packet (odd sizes, 4073 and 4059
+  bytes) into its own ring and refuses it when full: with the queued callbacks a refused packet was lost and the sound
+  after an odd-sized one read a byte off.
 
 ### 9.4 `sceMpegGetPicture(mp, rgb32, mbcount)`
 
@@ -1375,7 +1385,10 @@ handler (or callback) runs as an interrupt handler 2,000 IOP cycles after the IO
 sceSdVoiceTransStatus answers 1 (done). sceSdBlockTrans plays the driver's buffer as the input (256 left samples then
 256 right per 1 KB) and signals the channel's transfer end at each half; sceSdBlockTransStatus answers the buffer
 address + the byte played next, | 1 << 24 in the second half (989SND's 0x40, GetTransStatus: `iop-timing.md` section
-8). Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
+8). With `CompiledLibraries::useBlockTransStatusAhead` (Shinobido) it answers the input DMA's transfer address instead:
+the start of the 1 KB block after the one playing (the SPU2 holds the block it plays). A driver that keeps its ring
+full by that address (Shinobido's movie sound: free = address - 0x400 - written) needs it ahead: at the play position
+itself a ring just filled reads as empty and is overwritten before it is played. Parameters, switches, addresses and core attributes the mixer does not use are answered as set (0 before).
 sceSdInit leaves the mixes as the SDK's init writes them (Fighting for One Piece's LIBSD.IRX, 0x1638): VMIXL, VMIXEL,
 VMIXR and VMIXER 0xFFFFFF on both cores, MMIX 0xFF0 on core 0 and 0xFFC on core 1, so a voice a driver keys on without
 writing its own VMIX bits is heard.

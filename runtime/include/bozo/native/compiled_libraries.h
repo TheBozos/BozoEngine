@@ -55,6 +55,9 @@ namespace bozo::native::irx
         // bytes synchronously; sync queries owned work, and callbacks are native
         // notifications after the copy. No drive clock, registers or interrupts.
         void useNativeDiscFiles();
+        // libsd's sceSdBlockTransStatus one 1 KB block ahead of the sample playing, as the SPU2's input DMA reports it
+        // (audio::Libsd::setStatusBlockAhead). Opt in before execution; ports without it keep the byte played next.
+        void useBlockTransStatusAhead();
         void notifyFrameCompleted();
         // Submit a copied user message to a registered linked native command handler.
         // No system command, transport packet processor or interrupt is executed.

@@ -38,7 +38,8 @@ namespace bozo::libs
                 g.write(kScratchpadBase + 0x100u, param, 4);
                 if (ee::Dispatcher *d = l.dispatcher())
                 {
-                    if (param[1] == 3)
+                    // PAL: mode 3, or mode 0 (the console's own standard) on a PAL console (Libraries::palConsole).
+                    if (param[1] == 3 || (param[1] == 0 && l.palConsole))
                         d->kernel().fieldRate(50, 1); // PAL (not in TMB's runs: TMB is NTSC only)
                     else
                         d->kernel().fieldRate(60000, 1001);

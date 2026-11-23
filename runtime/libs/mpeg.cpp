@@ -16,7 +16,6 @@ namespace bozo::libs
 {
     namespace
     {
-        constexpr uint32_t kPicturesAhead = 8;   // the demux stops this many pictures ahead of the game
         constexpr uint32_t kFieldsPerPicture = 2; // TMB's movies: 29.97 pictures a second, two fields each
         constexpr uint32_t kCbNodata = 1;          // sceMpegAddCallback type
         constexpr uint32_t kStrVideo = 0, kStrPcm = 2; // sceMpegAddStrCallback types
@@ -181,25 +180,37 @@ namespace bozo::libs
                    (static_cast<int64_t>(b[2] >> 1) << 15) | (static_cast<int64_t>(b[3]) << 7) | (b[4] >> 1);
         }
 
-        // A stream packet whole in the demux: its callback, if the game registered one for its stream (its data, the
-        // callback queued as a handler on the calling thread, kind 4), and the decoder's or the sound sink's share of it.
-        void packet(Libraries &l, Guest &g, MpegState &s, uint64_t at, uint8_t id, size_t payload, size_t length, int64_t pts,
-                    int64_t dts)
+        // The decoder's or the sound sink's share of a stream packet.
+        void take(Libraries &l, MpegState &s, uint8_t id, const uint8_t *data, size_t length, int64_t pts)
         {
-            const uint8_t *data = s.pending.data() + (at - s.pendingAt) + payload;
-            int type = -1;
             if (id == 0xE0)
             {
-                type = kStrVideo;
                 s.es.insert(s.es.end(), data, data + length);
                 scan(s);
             }
             else if (id == 0xBD)
-            {
-                type = kStrPcm;
                 sound(l, s, data, length, pts);
+        }
+
+        // A stream packet whole in the demux: its callback, if the game registered one for its stream (its data, the
+        // callback queued as a handler on the calling thread, kind 4), and the decoder's or the sound sink's share of it
+        // (with MpegOptions::sdkDemux, held until the callback took the packet).
+        void packet(Libraries &l, Guest &g, MpegState &s, uint64_t at, uint8_t id, size_t payload, size_t length, int64_t pts,
+                    int64_t dts)
+        {
+            const uint8_t *data = s.pending.data() + (at - s.pendingAt) + payload;
+            const int type = id == 0xE0 ? static_cast<int>(kStrVideo) : id == 0xBD ? static_cast<int>(kStrPcm) : -1;
+            const bool callback = type >= 0 && s.strCallbacks[type].set;
+            if (callback && l.mpegOptions.sdkDemux)
+            {
+                s.heldAt = at;
+                s.heldId = id;
+                s.held.assign(data, data + length);
+                s.heldPts = pts;
             }
-            if (type < 0 || !s.strCallbacks[type].set)
+            else
+                take(l, s, id, data, length, pts);
+            if (!callback)
                 return;
             const MpegState::Callback &cb = s.strCallbacks[type];
             const uint64_t streamAt = at + payload;
@@ -277,6 +288,8 @@ namespace bozo::libs
                     packet(l, g, s, s.pendingAt + i, id, payload, total - payload, pts, dts);
                 }
                 i += total;
+                if (l.mpegOptions.sdkDemux && !s.callbacksDue.empty())
+                    break; // the callback runs before the demux goes on
             }
             s.pending.erase(s.pending.begin(), s.pending.begin() + static_cast<std::ptrdiff_t>(i));
             s.pendingAt += i;
@@ -407,10 +420,12 @@ namespace bozo::libs
         }
 
         // sceMpegDemuxPssRing(mp, data, bytes, ring, ringSize): with ring 0 (sceMpegDemuxPss) `data` is read straight
-        // and ringSize is not an argument. A sector at a time while fewer than kPicturesAhead
+        // and ringSize is not an argument. A sector at a time while fewer than MpegOptions::picturesAhead
         // pictures are ahead of the game (ahead(): the coded pictures begun, the sequence end and the program end, less
         // those delivered; nothing after the program end is read); each whole packet of a registered stream gets its
         // callback. Returns the bytes taken.
+        void demuxOn(Libraries &l, Guest &g, uint32_t bytes);
+
         void demux(Libraries &l, Guest &g)
         {
             MpegState &s = state(l);
@@ -426,8 +441,15 @@ namespace bozo::libs
                 s.ringBias = static_cast<uint32_t>(((data - s.ring) + s.ringSize - (s.consumed % s.ringSize)) % s.ringSize);
             else
                 s.linearBase = data - s.consumed;
+            if (l.mpegOptions.sdkDemux)
+            {
+                s.callAt = s.consumed;
+                s.refused = false;
+                demuxOn(l, g, bytes);
+                return;
+            }
             uint32_t taken = 0;
-            while (taken + 0x800 <= bytes && ahead(s) < s.delivered + kPicturesAhead)
+            while (taken + 0x800 <= bytes && ahead(s) < s.delivered + l.mpegOptions.picturesAhead)
             {
                 if (s.ring)
                 {
@@ -455,6 +477,47 @@ namespace bozo::libs
             }
             s.callbacksDue.clear();
             g.ret(static_cast<int32_t>(taken));
+        }
+
+        // The SDK's demux (MpegOptions::sdkDemux), from the call's start or as its thread resumes after a callback:
+        // the bytes given read as the packets need them (while fewer than picturesAhead pictures are ahead), each
+        // packet with a callback stopping the demux until its handler ends (the thread waits for it), a packet refused
+        // ending the call before it. The call returns the bytes of the whole packets taken; what follows them is read
+        // again by the next call.
+        void demuxOn(Libraries &l, Guest &g, uint32_t bytes)
+        {
+            MpegState &s = state(l);
+            while (!s.refused)
+            {
+                parse(l, g, s);
+                if (!s.callbacksDue.empty())
+                {
+                    const MpegState::DueCallback c = s.callbacksDue.front();
+                    s.callbacksDue.clear();
+                    const int32_t thread = l.dispatcher()->kernel().running();
+                    l.queueHandler(c.handler, Resume{kResumeMpegDemuxCallbackEnd, {static_cast<uint32_t>(thread), c.entry}});
+                    l.waitFor(ee::kWaitMpeg, 2, s.mp, 0, Resume{kResumeMpegDemuxNext, {bytes}});
+                    return;
+                }
+                const uint64_t read = s.consumed - s.callAt;
+                if (s.programEnd || read >= bytes || ahead(s) >= s.delivered + l.mpegOptions.picturesAhead)
+                    break;
+                const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(0x800, bytes - read));
+                for (uint32_t k = 0; k < chunk; ++k)
+                    s.pending.push_back(
+                        s.ring ? g.read8(s.ring + static_cast<uint32_t>((s.consumed + k + s.ringBias) % s.ringSize))
+                               : g.read8(static_cast<uint32_t>(s.linearBase + s.consumed + k)));
+                s.consumed += chunk;
+            }
+            // A part packet stays in the ring.
+            s.pending.clear();
+            s.consumed = s.pendingAt;
+            if (s.waiting && available(s, s.delivered))
+            {
+                l.dispatcher()->kernel().wake(s.waiting, 0, true, ee::kWaitMpeg);
+                s.waiting = 0;
+            }
+            g.ret(static_cast<int32_t>(s.pendingAt - s.callAt));
         }
 
         // sceMpegIsEnd(mp): 1 once the stream has ended, every picture was delivered and the last one's display time is
@@ -614,6 +677,30 @@ namespace bozo::libs
             break;
         case kResumeMpegDeliver:
             deliver(l, g, r.a[0], r.a[1]);
+            break;
+        case kResumeMpegDemuxCallbackEnd:
+        {
+            // A stream callback's end (MpegOptions::sdkDemux): a packet taken goes to the decoder or the sound sink; a
+            // sound packet refused (0) ends the demux call before it. The demuxing thread is woken either way.
+            MpegState &s = state(l);
+            l.gameHeap().release(r.a[1]);
+            // The video is the decoder's from the demux: the game's own copy (its IPU input, which nothing drains
+            // without an IPU) refusing it does not stop the stream.
+            if (g.context()->r[2].uw[0] != 0 || s.heldId == 0xE0)
+                take(l, s, s.heldId, s.held.data(), s.held.size(), s.heldPts);
+            else
+            {
+                s.pending.clear();
+                s.pendingAt = s.heldAt;
+                s.consumed = s.heldAt;
+                s.refused = true;
+            }
+            s.held.clear();
+            l.dispatcher()->kernel().wake(static_cast<int32_t>(r.a[0]), 0, true, ee::kWaitMpeg);
+            break;
+        }
+        case kResumeMpegDemuxNext:
+            demuxOn(l, g, r.a[0]);
             break;
         }
     }
