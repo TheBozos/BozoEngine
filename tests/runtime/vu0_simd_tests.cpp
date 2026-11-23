@@ -116,6 +116,35 @@ int main()
         fast += v::simd::fmac<v::simd::Op::Madd>(&c, x, acc, s, t, dest) ? 1u : 0u;
 #endif
     }
+    // Products at the bottom of the normals: (2 - 2^-23) * 2^(e-127) times 2^(127-e) or a little more, whose exact
+    // value is (1 - 2^-24) * 2^-126 or just above: the PS2 gives zero and the underflow flags below 2^-126, the host
+    // rounds it up to 2^-126. Swapped operands and either sign.
+    for (int n = 0; n < 200000; ++n)
+    {
+        Vec s, t;
+        const Vec acc = vec(rng), d0 = vec(rng);
+        for (int i = 0; i < 4; ++i)
+        {
+            const uint32_t e = 1u + rng() % 126u;
+            const uint32_t a = (rng() & 1u) << 31 | e << 23 | (0x7FFFFFu - rng() % 2u);
+            const uint32_t b = (rng() & 1u) << 31 | (127u - e) << 23 | (rng() % 2u ? 0u : rng() % 4u);
+            s.u[i] = rng() & 1u ? a : b;
+            t.u[i] = s.u[i] == a ? b : a;
+        }
+        const uint32_t dest = 1u + rng() % 15u;
+        auto run = [&](const char *what, auto fastOp, auto exactOp)
+        {
+            R5900Context a{}, b{};
+            Vec got = d0, want = d0;
+            fastOp(&a, got);
+            exactOp(&b, want);
+            compare(what, n, got, want, a, b);
+        };
+        run("mul at the bottom", [&](R5900Context *c, Vec &d) { v::mul(c, d, s, t, dest); },
+            [&](R5900Context *c, Vec &d) { exactFmac(c, d, s, t, dest, v::mulf); });
+        run("madd at the bottom", [&](R5900Context *c, Vec &d) { v::madd(c, d, acc, s, t, dest); },
+            [&](R5900Context *c, Vec &d) { exactMadd(c, d, acc, s, t, dest, false); });
+    }
 #ifdef BOZO_VU0_SIMD
     std::printf("vu0 simd: %llu of 2000000 madd cases on the fast path\n", static_cast<unsigned long long>(fast));
 #else
