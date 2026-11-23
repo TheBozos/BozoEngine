@@ -53,6 +53,11 @@ namespace bozo::port
         // the built-in table entirely; a later one for an entry replaces it. Runs inline: must not block or change pc/ra.
         void vu0Program(uint32_t entry, Function fn);
         const std::vector<BozoFunctionEntry> &vu0Programs() const { return vu0Programs_; }
+        // VU0's code memory as the EE sees it (0x11000000-0x11003FFF: its 4 KB, mirrored), for a port that holds the
+        // microcode its VU0 programs run from: EE loads and stores there reach these 4 KB instead of faulting as an
+        // unknown device. The memory must outlive the run.
+        void vu0CodeMemory(uint8_t *memory) { vu0Code_ = memory; }
+        uint8_t *vu0CodeMemory() const { return vu0Code_; }
         // A port with no transfer left in flight whatever the game's registers say: BC0F and BC0T answer "done" in free
         // mode, also after a FlushCache and with no channel in D_PCR, where the condition's TMB rule says "not done".
         void transfersAlwaysDone() { transfersAlwaysDone_ = true; }
@@ -66,6 +71,7 @@ namespace bozo::port
     private:
         std::vector<BozoFunctionEntry> functions_; // in registration order; a later one for an address replaces it
         std::vector<BozoFunctionEntry> vu0Programs_;
+        uint8_t *vu0Code_ = nullptr;
         InstructionHandler instructionHandler_ = nullptr;
         bool transfersAlwaysDone_ = false;
         bool syncVAtVblank_ = false;
