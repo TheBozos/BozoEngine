@@ -830,10 +830,18 @@ namespace bozo::native::irx
                 ret(a0);
                 return;
             }
-            if (n == 12)
+            if (n == 12 || n == 13) // memcpy, memmove (overlapping ranges kept as memmove does)
             {
                 std::memmove(memory.data() + physical(a0, a2), memory.data() + physical(a1, a2), a2);
                 ret(a0);
+                return;
+            }
+            if (n == 32) // strrchr: the last occurrence of the character (the terminator included), else 0
+            {
+                const auto text = string(a0, 0x100000);
+                const char ch = static_cast<char>(a1);
+                const size_t at = ch ? text.rfind(ch) : text.size();
+                ret(at == std::string::npos ? 0u : a0 + uint32_t(at));
                 return;
             }
             if (n == 14)
