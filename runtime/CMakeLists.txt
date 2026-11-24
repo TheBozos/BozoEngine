@@ -2,6 +2,7 @@
 # recompiled code calls, routed to a RuntimeServices implementation; the EE kernel and the dispatcher (bozo/ee/); the
 # per-frame reference record (bozo/reference.h); the native libraries (bozo/libs/).
 add_library(bozo_runtime_core STATIC
+  core/precise_sleep.cpp
   core/runtime_core.cpp
   core/state.cpp
   ee/kernel.cpp
