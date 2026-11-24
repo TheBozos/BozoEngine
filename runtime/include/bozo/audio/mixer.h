@@ -156,6 +156,7 @@ namespace bozo::audio
         void serialize(state::Archive &a, const uint8_t *inputBase, size_t inputBytes);
 
     private:
+        void walk(state::Archive &a, const uint8_t *inputBase, size_t inputBytes, bool irq); // serialize, in one layout
         struct Volume
         {
             uint16_t setting = 0;

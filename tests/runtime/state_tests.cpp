@@ -119,6 +119,36 @@ namespace
                   x.raw(big.data(), big.size());
               }),
               "reading past a section");
+
+        // An older layout (a field added since): the newer reader fails inside the section, the mark takes it back to
+        // read the old way, and what follows the section reads on.
+        {
+            state::Archive old;
+            uint32_t one = 1, two = 2, after = 3;
+            old.begin("s");
+            state::fields(old, one, two);
+            old.end();
+            old.begin("next");
+            state::fields(old, after);
+            old.end();
+            state::Archive x(old.data());
+            const state::Archive::Mark mark = x.mark();
+            uint32_t r1 = 0, rNew = 0, r2 = 0, rAfter = 0;
+            check(throws([&] {
+                      x.begin("s");
+                      state::fields(x, r1, rNew, r2);
+                      x.end();
+                  }),
+                  "a newer layout read from an older section fails");
+            x.rewind(mark);
+            x.begin("s");
+            state::fields(x, r1, r2);
+            x.end();
+            x.begin("next");
+            state::fields(x, rAfter);
+            x.end();
+            check(r1 == 1 && r2 == 2 && rAfter == 3 && x.atEnd(), "rewound to the mark, read in the older layout");
+        }
     }
 
     void files()

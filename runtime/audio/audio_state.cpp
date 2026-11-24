@@ -9,9 +9,47 @@ namespace bozo::audio
     using state::fields;
     using state::pod;
 
+    // A section read in the current layout, else (a state written before the field was added: the section's size check
+    // fails) again from the same place in the older one.
+    template <class Walk> void withOlderLayout(state::Archive &a, Walk walk, auto resetNewer)
+    {
+        if (!a.loading())
+            return walk(true);
+        const state::Archive::Mark mark = a.mark();
+        try
+        {
+            walk(true);
+        }
+        catch (const state::Error &)
+        {
+            a.rewind(mark);
+            resetNewer();
+            walk(false);
+        }
+    }
+
     void Mixer::serialize(state::Archive &a, const uint8_t *inputBase, size_t inputBytes)
     {
         std::scoped_lock lock(m_mutex, m_queueMutex, m_digestMutex);
+        // A state written before the SPU2 interrupt (3b79730) has no IRQ address or enable: the cores' stay off.
+        withOlderLayout(a, [&](bool irq) { walk(a, inputBase, inputBytes, irq); },
+                        [&]
+                        {
+                            for (Group &g : m_groups)
+                            {
+                                g.irqAddress = 0;
+                                g.irqEnabled = false;
+                            }
+                        });
+        if (a.loading())
+        {
+            // What was mixed for the host belongs to the old state.
+            m_queueRead = m_queueFill = 0;
+        }
+    }
+
+    void Mixer::walk(state::Archive &a, const uint8_t *inputBase, size_t inputBytes, bool irq)
+    {
         a.begin("mixer");
         pod(a, m_stats);
         fields(a, m_clocked, m_clockStarted, m_samplesMade, m_memory, m_digestHash, m_digestCount);
@@ -19,7 +57,9 @@ namespace bozo::audio
         {
             for (Voice &v : g.voices)
                 pod(a, v);
-            fields(a, g.ended, g.dry, g.wet, g.mix, g.irqAddress, g.irqEnabled);
+            fields(a, g.ended, g.dry, g.wet, g.mix);
+            if (irq)
+                fields(a, g.irqAddress, g.irqEnabled);
             for (Volume &v : g.master)
                 pod(a, v);
             for (Volume &v : g.effect)
@@ -42,14 +82,15 @@ namespace bozo::audio
             }
         }
         a.end();
-        if (a.loading())
-        {
-            // What was mixed for the host belongs to the old state.
-            m_queueRead = m_queueFill = 0;
-        }
     }
 
     void Libsd::serialize(state::Archive &a)
+    {
+        // A state written before the SPU2 interrupt (3b79730) has no interrupt handler.
+        withOlderLayout(a, [&](bool handler) { walk(a, handler); }, [&] { m_state.spu2Handler = Callback{}; });
+    }
+
+    void Libsd::walk(state::Archive &a, bool handler)
     {
         a.begin("libsd");
         State &s = m_state;
@@ -59,7 +100,8 @@ namespace bozo::audio
             pod(a, c);
         for (Callback &c : s.transHandler)
             pod(a, c);
-        pod(a, s.spu2Handler);
+        if (handler)
+            pod(a, s.spu2Handler);
         for (auto &e : s.effect)
             pod(a, e);
         a.end();
