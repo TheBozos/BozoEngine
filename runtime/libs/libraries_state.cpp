@@ -162,6 +162,13 @@ namespace bozo::libs
         fields(a, mc.formatted, mc.slotMask, mc.date, mc.known, mc.unformatted, mc.pending, mc.function, mc.result,
                mc.files, mc.nextDescriptor, mc.currentDirectory, mc.directoryCursor);
         a.end();
+        // Cards kept in a host folder (a played game's) are outside the console, as a real memory card is: loading a
+        // state reads them again from their folders and keeps them bound there. Taken from the state, the cards had no
+        // folder (it is not saved), so every save made after loading a state stayed in memory and was lost at exit.
+        // Without a host folder (tests, scripted runs) the state's cards are kept as saved.
+        if (a.loading() && mc.formatted && !mc.hostDirectory.empty())
+            for (size_t p = 0; p < mc.cards.size(); ++p)
+                mc.cards[p].format(mc.hostDirectory + "/mc" + std::to_string(p), mc.date);
 
         a.begin("cd");
         fields(a, cd.files, cd.nextFile, cd.initialized, cd.error, cd.readEnd, cd.readBytes, cd.callback, cd.callbackGp,
