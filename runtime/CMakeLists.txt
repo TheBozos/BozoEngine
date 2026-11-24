@@ -38,6 +38,7 @@ add_library(bozo_libs STATIC
   libs/io.cpp
   libs/mpeg.cpp
   libs/mpeg_ffmpeg.cpp
+  libs/ipu_stream.cpp
   libs/sif.cpp
   libs/snd.cpp
   libs/snd989.cpp)
@@ -164,7 +165,7 @@ else()
   endif()
 endif()
 if(BOZO_FFMPEG_FOUND)
-  set_source_files_properties(libs/mpeg_ffmpeg.cpp PROPERTIES COMPILE_DEFINITIONS BOZO_HAVE_FFMPEG)
+  set_source_files_properties(libs/mpeg_ffmpeg.cpp libs/ipu_stream.cpp PROPERTIES COMPILE_DEFINITIONS BOZO_HAVE_FFMPEG)
   message(STATUS "libmpeg: FFmpeg found (native movies)")
 else()
   if(BOZO_REQUIRE_FFMPEG)
