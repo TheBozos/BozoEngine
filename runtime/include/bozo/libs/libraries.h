@@ -287,8 +287,8 @@ namespace bozo::libs
         bool printOutput = true;
         // sceGsExecStoreImage answered as the reference's library stub (0, nothing written: no GS memory) instead of
         // refused: only the reference checker (the log host) sets it, to replay a reference run whose guest code read
-        // back (TMB's lens flares in match1p's attract demo). A port and the free host keep the refusal: their readback
-        // belongs to the caller (libraries.md section 5).
+        // back (TMB's lens flares on match1p's "No lives left" screen). A port and the free host keep the refusal: their
+        // readback belongs to the caller (libraries.md section 5).
         bool storeImageAsReference = false;
 
         // The heap, set up from SetupHeap's result on first use.
