@@ -272,6 +272,40 @@ namespace bozo::render
     {
         if (count == 0u)
             return;
+        const uint32_t first = builtVertices();
+        m_building.vertices.insert(m_building.vertices.end(), vertices, vertices + count);
+        try
+        {
+            drawRange(material, matrix, first, count, std::move(texture));
+        }
+        catch (...)
+        {
+            m_building.vertices.resize(first); // a batch refused: its vertices not kept
+            throw;
+        }
+    }
+
+    Vertex *Renderer::appendVertices(uint32_t count)
+    {
+        const size_t at = m_building.vertices.size();
+        m_building.vertices.resize(at + count);
+        return m_building.vertices.data() + at;
+    }
+
+    void Renderer::continueFrame(const Screen &screen)
+    {
+        std::vector<Vertex> kept = std::move(m_building.vertices);
+        startBuilding(screen);
+        m_building.vertices = std::move(kept);
+    }
+
+    void Renderer::drawRange(const Material &material, const float matrix[16], uint32_t first, uint32_t count,
+                             std::shared_ptr<const Texture> texture)
+    {
+        if (count == 0u)
+            return;
+        if (static_cast<size_t>(first) + count > m_building.vertices.size())
+            throw std::invalid_argument("native draw range past the frame's vertices");
         if (material.lines && (count % 2u != 0u || material.imageProcessing))
             throw std::invalid_argument("invalid native line batch");
         if ((material.targetWidth==0)!=(material.targetHeight==0) ||
@@ -311,7 +345,7 @@ namespace bozo::render
         if(material.imageProcessing)batch.material.imageProcessing=std::make_shared<const Material::ImageProcessing>(*material.imageProcessing);
         std::memcpy(batch.matrix, matrix, sizeof(batch.matrix));
         batch.texture = std::move(texture);
-        batch.first = static_cast<uint32_t>(m_building.vertices.size());
+        batch.first = first;
         batch.count = count;
         batch.key = m_key;
         batch.base = m_key != 0u ? m_keyBase : 0u;
@@ -323,7 +357,6 @@ namespace bozo::render
         }
         std::memcpy(batch.clip, m_clip, sizeof(batch.clip));
         batch.group = m_streamDraws ? m_group : 0u;
-        m_building.vertices.insert(m_building.vertices.end(), vertices, vertices + count);
         m_building.batches.push_back(batch);
     }
 
