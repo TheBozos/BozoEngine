@@ -101,6 +101,7 @@ namespace bozo::audio
         void serialize(state::Archive &a); // the settings and callbacks (audio_state.cpp)
 
     private:
+        void walk(state::Archive &a, bool handler); // serialize, in one layout
         void sync();
         uint32_t batchOne(uint32_t function, uint32_t entry, uint32_t value);
         void transferDone(uint32_t channel);

@@ -40,6 +40,18 @@ namespace bozo::state
         // fields took exactly the bytes written.
         void begin(const char *name);
         void end();
+        // A place to read again from: a reader whose section turned out to be in an older layout goes back to the mark
+        // and reads it the old way (the sections' size checks tell the layouts apart).
+        struct Mark
+        {
+            size_t pos = 0, depth = 0;
+        };
+        Mark mark() const { return {pos_, open_.size()}; }
+        void rewind(const Mark &m)
+        {
+            pos_ = m.pos;
+            open_.resize(m.depth);
+        }
         const std::vector<uint8_t> &data() const { return data_; }
         bool atEnd() const { return pos_ == data_.size(); }
 
