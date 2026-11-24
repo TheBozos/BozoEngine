@@ -792,16 +792,58 @@ namespace bozo::app
                 g.BindFramebuffer(render::gl::kFramebuffer, 0);
             }
             SDL_GL_SwapWindow(window);
+            // On the monitor's vsync at the game's rate (no frames between, not lockstep, a shown window): the present
+            // waited out (glFinish after the swap returns at the refresh it lands on), so the driver queues no frames
+            // ahead of the display (each one a refresh's delay to the player's input: up to three with vsync), and its
+            // time is the refresh's. Each counts for the frame pacer (FramePacer::displayPresents), with their period
+            // once steady: the game's frames then end on the refreshes. PS2X_NO_SWAP_FINISH=1: the swap alone.
+            {
+                static const bool noFinish = [] { const char *v = std::getenv("PS2X_NO_SWAP_FINISH"); return v && *v == '1'; }();
+                static Clock::time_point lastSwap{};
+                static double periodUs = 0.0;
+                static uint32_t steady = 0;
+                if (rate == 0 && options.vsync && !options.lockstep && !options.hidden && !noFinish)
+                {
+                    g.Finish();
+                    const Clock::time_point swapped = Clock::now();
+                    const double us = lastSwap == Clock::time_point{} ? 0.0
+                                      : std::chrono::duration<double, std::micro>(swapped - lastSwap).count();
+                    lastSwap = swapped;
+                    // Steady: thirty refreshes in a row within 1.5 ms of the period so far (a skipped refresh, a load's
+                    // wait, a stale picture's present start it again; the pacer goes back to its clock meanwhile).
+                    if (periodUs > 0.0 && std::fabs(us - periodUs) < 1500.0)
+                    {
+                        periodUs += (us - periodUs) * 0.05;
+                        ++steady;
+                    }
+                    else
+                    {
+                        periodUs = us > 4000.0 && us < 50000.0 ? us : 0.0;
+                        steady = 0;
+                    }
+                    FramePacer::displayPeriodUs().store(steady >= 30u ? static_cast<uint32_t>(periodUs + 0.5) : 0u,
+                                                        std::memory_order_relaxed);
+                    FramePacer::displayPresents().fetch_add(1u, std::memory_order_release);
+                }
+                else if (lastSwap != Clock::time_point{})
+                {
+                    lastSwap = {};
+                    periodUs = 0.0;
+                    steady = 0;
+                    FramePacer::displayPeriodUs().store(0u, std::memory_order_relaxed);
+                }
+            }
 
             if (options.stats && seconds(statsSince, now) >= 2.0)
             {
                 const double span = seconds(statsSince, now);
                 std::fprintf(stderr,
                              "[window] t=%.1f s, game frame %llu: %.2f game frames/s, %.1f presents/s, %llu new pictures; time between "
-                             "pictures %.2f ms avg, %.2f ms max, %llu over 20 ms\n",
+                             "pictures %.2f ms avg, %.2f ms max, %llu over 20 ms; display %.3f ms\n",
                              elapsed, static_cast<unsigned long long>(frames), (frames - statsFrames) / span, presents / span,
                              static_cast<unsigned long long>(fresh), intervals ? 1000.0 * intervalSum / intervals : 0.0,
-                             1000.0 * intervalMax, static_cast<unsigned long long>(over));
+                             1000.0 * intervalMax, static_cast<unsigned long long>(over),
+                             FramePacer::displayPeriodUs().load(std::memory_order_relaxed) / 1000.0);
                 statsSince = now;
                 statsFrames = frames;
                 presents = fresh = over = intervals = 0;

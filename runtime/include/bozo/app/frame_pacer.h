@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +65,24 @@ public:
         return speed;
     }
 
+    // The display's refresh, from the window (any thread): each present it made on the monitor's vsync (with the
+    // driver's queue drained, so each one is a refresh), and their steady period in microseconds (0: none, the presents
+    // not on vsync or not steady). While that period is within 1 % of the cap's, a paced frame ends on the display's
+    // next refresh instead of the pacer's own clock: on the pacer's clock the two 60 Hz drifted apart, and every so
+    // often a picture stayed two refreshes and the next was never shown (60 frames a second that do not feel smooth).
+    // A 59.94 Hz monitor runs the game 0.1 % slow; the sound's rate follows (bozo::app::AudioDevice). PS2X_NO_VSYNC_PACE=1
+    // keeps the pacer's clock.
+    static std::atomic<uint64_t> &displayPresents() noexcept
+    {
+        static std::atomic<uint64_t> presents{0};
+        return presents;
+    }
+    static std::atomic<uint32_t> &displayPeriodUs() noexcept
+    {
+        static std::atomic<uint32_t> period{0};
+        return period;
+    }
+
     // Waits until the cap allows the next frame to start, then returns the time since the previous frame end.
     double frameEnd()
     {
@@ -87,7 +106,26 @@ public:
             recordWork(std::chrono::duration<double>(now - m_lastReturn).count(), cap, now);
         if (m_frames.load(std::memory_order_relaxed) == 0u)
             m_previous = now - std::chrono::microseconds(1000000 / std::max<uint32_t>(cap, 60u));
-        if (cap != 0u && m_paced.load(std::memory_order_relaxed))
+        const uint32_t displayUs = displayPeriodUs().load(std::memory_order_relaxed);
+        const bool onDisplay = cap != 0u && !fast && m_paced.load(std::memory_order_relaxed) && displayUs != 0u &&
+                               std::fabs(static_cast<double>(displayUs) * cap - 1e6) < 1e4 && !vsyncPaceOff();
+        if (onDisplay)
+        {
+            // The display's next refresh after this frame's start: not before nine tenths of a period (a refresh the
+            // frame already passed, a present that came early), not after two (no refresh: a hidden window).
+            const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / cap));
+            const Clock::time_point earliest = m_previous + period * 9 / 10, latest = m_previous + period * 2;
+            for (;;)
+            {
+                now = Clock::now();
+                if (now >= latest ||
+                    (now >= earliest && displayPresents().load(std::memory_order_acquire) != m_displaySeen))
+                    break;
+                sleepUntil(now + std::chrono::microseconds(250));
+            }
+            m_displaySeen = displayPresents().load(std::memory_order_acquire);
+        }
+        else if (cap != 0u && m_paced.load(std::memory_order_relaxed))
         {
             const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / cap));
             due = m_previous + period;
@@ -117,6 +155,16 @@ public:
     }
 
 private:
+    static bool vsyncPaceOff()
+    {
+        static const bool off = []
+        {
+            const char *value = std::getenv("PS2X_NO_VSYNC_PACE");
+            return value && *value == '1';
+        }();
+        return off;
+    }
+
     static bool statsWanted()
     {
         static const bool wanted = []
@@ -162,6 +210,7 @@ private:
     std::atomic<double> m_lastStep{1.0 / 60.0};
     std::chrono::steady_clock::time_point m_previous{};
     std::chrono::steady_clock::time_point m_lastReturn{};
+    uint64_t m_displaySeen = 0;
     // PS2X_FRAME_STATS (the game's thread only)
     std::chrono::steady_clock::time_point m_statsSince{};
     double m_workSum = 0.0, m_workMax = 0.0;
