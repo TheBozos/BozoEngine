@@ -281,8 +281,15 @@ namespace bozo::libs
 
         // A native port must implement readback at the original high-level caller, using its
         // render target and rectangle. Do not parse a console packet or fabricate a black image.
-        void execStoreImage(Libraries &, Guest &g)
+        void execStoreImage(Libraries &l, Guest &g)
         {
+            // The reference checker only: the reference's stub (match1p #62543255's six traced calls inside particleDraw,
+            // each 0, no memory run).
+            if (l.storeImageAsReference && !port::nativeGraphics(&g.runtime()))
+            {
+                g.ret(0);
+                return;
+            }
             throw std::runtime_error(std::format("sceGsExecStoreImage requires a native renderer readback override "
                                                  "(called from 0x{:x})", g.context()->r[31].uw[0]));
         }
