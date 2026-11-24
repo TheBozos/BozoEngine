@@ -516,26 +516,30 @@ namespace bozo::host
         // where it was made. The budget is kept within a few fields, so neither a stall nor a run of short frames
         // stores up a burst.
         if (opt_.realTime)
-        {
-            const int64_t now = steadyNs();
-            if (lastSoundNs_ != 0)
-            {
-                soundBudget_ += static_cast<double>(now - lastSoundNs_) * 48e-6;
-                soundBudget_ = std::clamp(soundBudget_, -double(kFieldFrames), 3.0 * kFieldFrames);
-                const double room = soundBudget_ + kFieldFrames / 4.0;
-                const size_t allowed = room > 0.0 ? static_cast<size_t>(room) : 0u;
-                if (n > allowed)
-                {
-                    std::memmove(audio_.data(), audio_.data() + 2u * (n - allowed), 2u * allowed * sizeof(int16_t));
-                    leapFrames_ += n - allowed;
-                    n = allowed;
-                }
-                soundBudget_ -= static_cast<double>(n);
-            }
-            lastSoundNs_ = now;
-        }
+            n = holdToHostTime(n);
         if (onAudio && n)
             onAudio(stats_.frames, audio_.data(), n);
+    }
+
+    size_t FreeHost::holdToHostTime(size_t n)
+    {
+        const int64_t now = steadyNs();
+        if (lastSoundNs_ != 0)
+        {
+            soundBudget_ += static_cast<double>(now - lastSoundNs_) * 48e-6;
+            soundBudget_ = std::clamp(soundBudget_, -double(kFieldFrames), 3.0 * kFieldFrames);
+            const double room = soundBudget_ + kFieldFrames / 4.0;
+            const size_t allowed = room > 0.0 ? static_cast<size_t>(room) : 0u;
+            if (n > allowed)
+            {
+                std::memmove(audio_.data(), audio_.data() + 2u * (n - allowed), 2u * allowed * sizeof(int16_t));
+                leapFrames_ += n - allowed;
+                n = allowed;
+            }
+            soundBudget_ -= static_cast<double>(n);
+        }
+        lastSoundNs_ = now;
+        return n;
     }
 
     namespace
@@ -558,8 +562,10 @@ namespace bozo::host
         if (!mixer || !onAudio) return;
         mixer->setPortStream(&libs_.portStream);
         audio_.resize(2u * audio::Mixer::kQueueFrames);
-        const size_t n = mixer->take(audio_.data(), audio::Mixer::kQueueFrames);
-        soundBudget_ -= static_cast<double>(n); // the host's time it fills (frameSound)
+        // Held to the host's time as a frame's sound is: brought up to the EE clock, a stall during a load (its disc
+        // waits counted, the PC's not) gave the leap's sound in a few bursts, up to 8613 samples each, and the output
+        // queue dropped about 1.2 s of it (The Third Age's first movie after the title).
+        const size_t n = holdToHostTime(mixer->take(audio_.data(), audio::Mixer::kQueueFrames));
         if (n)
             onAudio(stats_.frames, audio_.data(), n);
     }

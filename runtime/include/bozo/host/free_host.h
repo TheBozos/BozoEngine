@@ -159,6 +159,9 @@ namespace bozo::host
         uint64_t lastStallAdvance_ = 0; // advanceLibrariesWhileStalled: the EE cycle of the last advance
         void endFrame(R5900Context *ctx);
         void frameSound(uint64_t &hash, uint32_t &count);
+        // Real time: the n samples in audio_ held to the host's time since the last output (the budget below), the
+        // newest kept; returns how many are given.
+        size_t holdToHostTime(size_t n);
         std::vector<int16_t> audio_;
         // A field's sound at the mixer's 48 kHz (60 fields a second), and the samples skipped after EE clock leaps in
         // real time (frameSound).
