@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "bozo/app/determinism.h"
+#include "bozo/app/precise_sleep.h"
 
 // Native frame pacing: a game that opts in runs its own loop on real time instead of on the PS2's vblanks. Its frame
 // end calls frameEnd(), which holds the frame to the cap (frames per second, 0 = unlimited: only the host's speed
@@ -92,7 +93,7 @@ public:
             due = m_previous + period;
             // Sleep most of the wait, then spin the last stretch: Windows sleeps overshoot by up to a millisecond.
             if (due - now > std::chrono::milliseconds(2))
-                std::this_thread::sleep_until(due - std::chrono::milliseconds(1));
+                sleepUntil(due - std::chrono::milliseconds(1));
             while ((now = Clock::now()) < due)
                 std::this_thread::yield();
         }

@@ -17,10 +17,12 @@
 #define BOZO_LIKELY(x) __builtin_expect(!!(x), 1)
 #define BOZO_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define BOZO_INLINE inline __attribute__((always_inline))
+#define BOZO_NOINLINE inline __attribute__((noinline))
 #else
 #define BOZO_LIKELY(x) (x)
 #define BOZO_UNLIKELY(x) (x)
 #define BOZO_INLINE inline
+#define BOZO_NOINLINE inline
 #endif
 
 namespace bozo

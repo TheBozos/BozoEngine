@@ -594,7 +594,7 @@ namespace bozo::app
                     if (t > nextPresent + period)
                         nextPresent = t;
                     if (nextPresent - t > std::chrono::milliseconds(2))
-                        std::this_thread::sleep_until(nextPresent - std::chrono::milliseconds(1));
+                        sleepUntil(nextPresent - std::chrono::milliseconds(1));
                     while (Clock::now() < nextPresent)
                         std::this_thread::yield();
                 }
