@@ -8,6 +8,7 @@
 
 #include "bozo/context.h"
 #include "bozo/ops_fpu.h"
+#include "bozo/ops_mem.h"
 #include "bozo/runtime_api.h"
 
 #include <cstring>
@@ -23,13 +24,13 @@ namespace bozo::vu0
     inline bool fieldOn(uint32_t dest, int i) { return (dest >> (3 - i)) & 1u; }
 
     // The second operand of an FMAC instruction: a vector, one field broadcast, Q or I.
-    inline Vec broadcast(uint32_t bits)
+    BOZO_INLINE Vec broadcast(uint32_t bits)
     {
         Vec v;
         v.u[0] = v.u[1] = v.u[2] = v.u[3] = bits;
         return v;
     }
-    inline Vec bc(const Vec &t, uint32_t field) { return broadcast(t.u[field]); }
+    BOZO_INLINE Vec bc(const Vec &t, uint32_t field) { return broadcast(t.u[field]); }
 
     // ---- Arithmetic of one field ----
     // VU0's adder rounds to nearest even (unlike the FPU's, ops_fpu.h); its multiplier is the FPU's.
@@ -123,24 +124,24 @@ namespace bozo::vu0
             Madd,
             Msub
         };
-        inline __m128i load(const Vec &v) { return _mm_loadu_si128(reinterpret_cast<const __m128i *>(v.u)); }
-        inline __m128i exponent(__m128i x) { return _mm_and_si128(_mm_srli_epi32(x, 23), _mm_set1_epi32(0xFF)); }
-        inline __m128i zero(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_setzero_si128()); } // or denormal
-        inline __m128i top(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(0xFF)); }
-        inline __m128i abnormal(__m128i x) { return _mm_or_si128(zero(x), top(x)); }
+        BOZO_INLINE __m128i load(const Vec &v) { return _mm_loadu_si128(reinterpret_cast<const __m128i *>(v.u)); }
+        BOZO_INLINE __m128i exponent(__m128i x) { return _mm_and_si128(_mm_srli_epi32(x, 23), _mm_set1_epi32(0xFF)); }
+        BOZO_INLINE __m128i zero(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_setzero_si128()); } // or denormal
+        BOZO_INLINE __m128i top(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(0xFF)); }
+        BOZO_INLINE __m128i abnormal(__m128i x) { return _mm_or_si128(zero(x), top(x)); }
         // Exponent 1, the smallest normals: a product just below 2^-126 rounds up to them on the host, where the PS2
         // flushes it to zero with the underflow flags (ps2f::mul's shortcut leaves them to the exact path too).
-        inline __m128i bottom(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(1)); }
-        inline __m128i select(__m128i mask, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b)); }
-        inline __m128i signBits() { return _mm_set1_epi32(static_cast<int32_t>(0x80000000u)); }
+        BOZO_INLINE __m128i bottom(__m128i x) { return _mm_cmpeq_epi32(exponent(x), _mm_set1_epi32(1)); }
+        BOZO_INLINE __m128i select(__m128i mask, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b)); }
+        BOZO_INLINE __m128i signBits() { return _mm_set1_epi32(static_cast<int32_t>(0x80000000u)); }
         // Lane i on when dest enables field i (x = dest bit 3 = lane 0).
-        inline __m128i lanes(uint32_t dest)
+        BOZO_INLINE __m128i lanes(uint32_t dest)
         {
             return _mm_set_epi32(-static_cast<int32_t>(dest & 1u), -static_cast<int32_t>((dest >> 1) & 1u),
                                  -static_cast<int32_t>((dest >> 2) & 1u), -static_cast<int32_t>((dest >> 3) & 1u));
         }
         // s * t; `bad` collects the lanes outside the cases above.
-        inline __m128i mul(__m128i s, __m128i t, __m128i &bad)
+        BOZO_INLINE __m128i mul(__m128i s, __m128i t, __m128i &bad)
         {
             const __m128i z = _mm_or_si128(zero(s), zero(t));
             const __m128i p = _mm_castps_si128(_mm_mul_ps(_mm_castsi128_ps(s), _mm_castsi128_ps(t)));
@@ -149,7 +150,7 @@ namespace bozo::vu0
             return select(z, _mm_and_si128(_mm_xor_si128(s, t), signBits()), p);
         }
         // a + b, likewise.
-        inline __m128i add(__m128i a, __m128i b, __m128i &bad)
+        BOZO_INLINE __m128i add(__m128i a, __m128i b, __m128i &bad)
         {
             const __m128i za = zero(a), zb = zero(b);
             const __m128i sum = _mm_castps_si128(_mm_add_ps(_mm_castsi128_ps(a), _mm_castsi128_ps(b)));
@@ -163,7 +164,7 @@ namespace bozo::vu0
         // d (op) on the enabled fields with the flags, when every enabled field is a case above; false (nothing
         // written) otherwise.
         template <Op op>
-        inline bool fmac(R5900Context *ctx, Vec &d, const Vec &acc, const Vec &s, const Vec &t, uint32_t dest)
+        BOZO_INLINE bool fmac(R5900Context *ctx, Vec &d, const Vec &acc, const Vec &s, const Vec &t, uint32_t dest)
         {
             const __m128i S = load(s), T = load(t), on = lanes(dest);
             __m128i bad = _mm_setzero_si128(), R;
@@ -225,28 +226,30 @@ namespace bozo::vu0
 #else
 #define BOZO_VU0_FAST(op, acc)
 #endif
-    inline void add(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    BOZO_NOINLINE void addExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, addf); }
+    BOZO_NOINLINE void subExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, subf); }
+    BOZO_NOINLINE void mulExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, mulf); }
+    BOZO_INLINE void add(R5900Context *ctx, Vec &d, const Vec &s, const Vec &t, uint32_t dest)
     {
         BOZO_VU0_FAST(Add, s)
-        fmac(ctx, d, s, t, dest, addf);
+        addExact(ctx, d, s, t, dest);
     }
-    inline void sub(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    BOZO_INLINE void sub(R5900Context *ctx, Vec &d, const Vec &s, const Vec &t, uint32_t dest)
     {
         BOZO_VU0_FAST(Sub, s)
-        fmac(ctx, d, s, t, dest, subf);
+        subExact(ctx, d, s, t, dest);
     }
-    inline void mul(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
+    BOZO_INLINE void mul(R5900Context *ctx, Vec &d, const Vec &s, const Vec &t, uint32_t dest)
     {
         BOZO_VU0_FAST(Mul, s)
-        fmac(ctx, d, s, t, dest, mulf);
+        mulExact(ctx, d, s, t, dest);
     }
     // max / mini do not change the flags.
     inline void max(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::max); }
     inline void mini(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::min); }
     // madd: d = acc + s * t (the product rounded first, then the sum: Q6). msub: d = acc - s * t.
-    inline void madd(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    BOZO_NOINLINE void maddExact(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
     {
-        BOZO_VU0_FAST(Madd, acc)
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -259,9 +262,13 @@ namespace bozo::vu0
                 d.u[i] = r[i];
         setFlags(ctx, dest, r, fl);
     }
-    inline void msub(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    BOZO_INLINE void madd(R5900Context *ctx, Vec &d, const Vec &acc, const Vec &s, const Vec &t, uint32_t dest)
     {
-        BOZO_VU0_FAST(Msub, acc)
+        BOZO_VU0_FAST(Madd, acc)
+        maddExact(ctx, d, acc, s, t, dest);
+    }
+    BOZO_NOINLINE void msubExact(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    {
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -273,6 +280,11 @@ namespace bozo::vu0
             if (fieldOn(dest, i))
                 d.u[i] = r[i];
         setFlags(ctx, dest, r, fl);
+    }
+    BOZO_INLINE void msub(R5900Context *ctx, Vec &d, const Vec &acc, const Vec &s, const Vec &t, uint32_t dest)
+    {
+        BOZO_VU0_FAST(Msub, acc)
+        msubExact(ctx, d, acc, s, t, dest);
     }
     // The outer product pair: opmula acc.xyz = (s.y*t.z, s.z*t.x, s.x*t.y); opmsub d.xyz = acc.xyz - (s.y*t.z, ...).
     // The instruction's dest is xyz by definition (w untouched).
