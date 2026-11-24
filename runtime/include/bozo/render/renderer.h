@@ -249,6 +249,16 @@ namespace bozo::render
         // The same with the texture handed over, decoded by the port from its game's own data.
         void draw(const Material &material, const float matrix[16], const Vertex *vertices, uint32_t count,
                   std::shared_ptr<const Texture> texture);
+        // Draws a port assembles in place (Shinobido's GS translator), without the copy draw() makes: appendVertices
+        // gives room for `count` more vertices at the end of the frame being built (the pointer good until the next
+        // append), builtVertices how many it holds; drawRange adds a batch over vertices already there (first, count:
+        // two batches may share a range, as a two-pass draw's do). continueFrame starts the frame as beginFrame does
+        // but keeps the vertices appended since the last frame ended (beginFrame empties them).
+        Vertex *appendVertices(uint32_t count);
+        uint32_t builtVertices() const { return static_cast<uint32_t>(m_building.vertices.size()); }
+        void drawRange(const Material &material, const float matrix[16], uint32_t first, uint32_t count,
+                       std::shared_ptr<const Texture> texture);
+        void continueFrame(const Screen &screen);
         // A port's 2D drawn natively: screen-space triangles (the GS's primitive coordinates over 16) over the frame, in
         // submission order, without depth; publishOverlay at the game frame's end shows them until the next publish.
         void drawOverlay(const Material &material, const Vertex *vertices, uint32_t count, std::shared_ptr<const Texture> texture);
