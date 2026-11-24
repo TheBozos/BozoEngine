@@ -225,28 +225,30 @@ namespace bozo::vu0
 #else
 #define BOZO_VU0_FAST(op, acc)
 #endif
+    inline void addExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, addf); }
+    inline void subExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, subf); }
+    inline void mulExact(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest) { fmac(ctx, d, s, t, dest, mulf); }
     inline void add(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
     {
         BOZO_VU0_FAST(Add, s)
-        fmac(ctx, d, s, t, dest, addf);
+        addExact(ctx, d, s, t, dest);
     }
     inline void sub(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
     {
         BOZO_VU0_FAST(Sub, s)
-        fmac(ctx, d, s, t, dest, subf);
+        subExact(ctx, d, s, t, dest);
     }
     inline void mul(R5900Context *ctx, Vec &d, Vec s, Vec t, uint32_t dest)
     {
         BOZO_VU0_FAST(Mul, s)
-        fmac(ctx, d, s, t, dest, mulf);
+        mulExact(ctx, d, s, t, dest);
     }
     // max / mini do not change the flags.
     inline void max(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::max); }
     inline void mini(Vec &d, Vec s, Vec t, uint32_t dest) { apply(d, s, t, dest, ps2f::min); }
     // madd: d = acc + s * t (the product rounded first, then the sum: Q6). msub: d = acc - s * t.
-    inline void madd(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    inline void maddExact(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
     {
-        BOZO_VU0_FAST(Madd, acc)
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -259,9 +261,13 @@ namespace bozo::vu0
                 d.u[i] = r[i];
         setFlags(ctx, dest, r, fl);
     }
-    inline void msub(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    inline void madd(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
     {
-        BOZO_VU0_FAST(Msub, acc)
+        BOZO_VU0_FAST(Madd, acc)
+        maddExact(ctx, d, acc, s, t, dest);
+    }
+    inline void msubExact(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    {
         uint32_t r[4] = {}, fl[4] = {};
         for (int i = 0; i < 4; ++i)
             if (fieldOn(dest, i))
@@ -273,6 +279,11 @@ namespace bozo::vu0
             if (fieldOn(dest, i))
                 d.u[i] = r[i];
         setFlags(ctx, dest, r, fl);
+    }
+    inline void msub(R5900Context *ctx, Vec &d, Vec acc, Vec s, Vec t, uint32_t dest)
+    {
+        BOZO_VU0_FAST(Msub, acc)
+        msubExact(ctx, d, acc, s, t, dest);
     }
     // The outer product pair: opmula acc.xyz = (s.y*t.z, s.z*t.x, s.x*t.y); opmsub d.xyz = acc.xyz - (s.y*t.z, ...).
     // The instruction's dest is xyz by definition (w untouched).
