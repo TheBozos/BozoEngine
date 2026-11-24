@@ -67,15 +67,17 @@ namespace bozo::state
         if (open_.empty())
             throw Error("save state: a section ended twice");
         const auto [name, at] = open_.back();
+        // Checked before the section is closed: a reader that tries an older layout and rewinds (Mark) finds the
+        // section still open (closed first, the rewind reopened it as a nameless one ending at 0).
+        if (loading_ && pos_ != at)
+            throw Error("save state: section " + name + " has " + std::to_string(at - pos_) +
+                        " bytes its reader did not take (a different build wrote it?)");
         open_.pop_back();
         if (!loading_)
         {
             const uint64_t size = data_.size() - at - sizeof(uint64_t);
             std::memcpy(data_.data() + at, &size, sizeof size);
         }
-        else if (pos_ != at)
-            throw Error("save state: section " + name + " has " + std::to_string(at - pos_) +
-                        " bytes its reader did not take (a different build wrote it?)");
     }
 
     void writeFile(const std::string &path, const std::string &game, const Archive &a)

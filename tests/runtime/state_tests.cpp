@@ -148,6 +148,26 @@ namespace
             state::fields(x, rAfter);
             x.end();
             check(r1 == 1 && r2 == 2 && rAfter == 3 && x.atEnd(), "rewound to the mark, read in the older layout");
+            // A mark inside a section: a trial read that takes too few bytes fails at the section's end (the libraries'
+            // sif section tries its older layout so); the section stays open for the rewind and the read goes on.
+            {
+                state::Archive inner(old.data());
+                uint32_t a1 = 0, a2 = 0, aAfter = 0;
+                inner.begin("s");
+                const state::Archive::Mark at = inner.mark();
+                check(throws([&] {
+                          state::fields(inner, a1);
+                          inner.end();
+                      }),
+                      "a shorter trial read fails at the section's end");
+                inner.rewind(at);
+                state::fields(inner, a1, a2);
+                inner.end();
+                inner.begin("next");
+                state::fields(inner, aAfter);
+                inner.end();
+                check(a1 == 1 && a2 == 2 && aAfter == 3 && inner.atEnd(), "rewound inside the section, read on");
+            }
             state::Archive y(old.data());
             check(y.nextIs("s") && !y.nextIs("next") && !y.nextIs("ss"), "nextIs names the coming section");
             y.begin("s");
