@@ -152,6 +152,14 @@ namespace
             check(y.nextIs("s") && !y.nextIs("next") && !y.nextIs("ss"), "nextIs names the coming section");
             y.begin("s");
             check(!y.nextIs("next"), "nextIs: fields come first");
+            uint32_t z1 = 0, z2 = 0;
+            check(y.sectionLeft() == 8, "sectionLeft: the section's fields");
+            state::fields(y, z1);
+            check(y.sectionLeft() == 4, "sectionLeft: a field is left");
+            state::fields(y, z2);
+            check(y.sectionLeft() == 0 && z2 == 2, "sectionLeft: the section's fields are all read");
+            y.end();
+            check(y.sectionLeft() == 0, "sectionLeft: no section open");
         }
     }
 

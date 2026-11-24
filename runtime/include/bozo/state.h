@@ -49,6 +49,12 @@ namespace bozo::state
         Mark mark() const { return {pos_, open_.size()}; }
         // Reading: whether the next thing is the section `name` (an older layout that has no fields before it).
         bool nextIs(const char *name) const;
+        // Reading: the bytes the open section has left (an older layout, shorter by the fields added since); 0 when
+        // writing or with no section open.
+        size_t sectionLeft() const
+        {
+            return loading_ && !open_.empty() && pos_ < open_.back().second ? open_.back().second - pos_ : 0;
+        }
         void rewind(const Mark &m)
         {
             pos_ = m.pos;
