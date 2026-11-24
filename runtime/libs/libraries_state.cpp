@@ -103,7 +103,13 @@ namespace bozo::libs
             throw state::Error("save state: " + why);
         a.begin("libraries");
         heap.serialize(a);
-        fields(a, rand.state, framesEnded, dmaEnvironment, gsVideo);
+        fields(a, rand.state, framesEnded, dmaEnvironment);
+        // A state written before ResetGraph's video parameters were kept here (5b830b6) goes on with its waits: they
+        // stay unknown (zero), and the GS library reads them from the scratchpad as it did then.
+        if (a.loading() && a.nextIs("waits"))
+            gsVideo = {};
+        else
+            fields(a, gsVideo);
         a.begin("waits");
         uint64_t n = state::count(a, continuations_.size());
         if (!a.loading())

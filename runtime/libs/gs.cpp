@@ -61,13 +61,20 @@ namespace bozo::libs
         // sceGsResetPath(): nothing to reset (no DMA, VIF or GIF); no result.
         void resetPath(Libraries &, Guest &) {}
 
+        // ResetGraph's video parameters as the library kept them; in a save state written before it kept them (its fourth
+        // byte, always 3 once set, is 0), from scratchpad 0x100 as the library read them then.
+        const uint8_t *videoMode(const Libraries &l, Guest &g)
+        {
+            return l.gsVideo[3] == 3 ? l.gsVideo.data() : g.in(kScratchpadBase + 0x100u, 3);
+        }
+
         // sceGsSetDefDispEnv(disp, psm, w, h, dx, dy): PMODE, SMODE2, DISPFB, DISPLAY, BGCOLOR (64 bits each).
         void setDefDispEnv(Libraries &l, Guest &g)
         {
             const uint32_t disp = g.arg(0);
             const int32_t psm = s16(g.arg(1)), w = s16(g.arg(2)), h = s16(g.arg(3)), dx = s16(g.arg(4)), dy = s16(g.arg(5));
             // Only the SDK's scalar video parameters ResetGraph kept, never a packet.
-            const uint8_t *mode = l.gsVideo.data();
+            const uint8_t *mode = videoMode(l, g);
             const uint64_t smode2 = mode[0] == 0 ? 2 : (mode[2] ? 3 : 1);
             const uint64_t dispfb = (static_cast<uint64_t>(psm & 0xf) << 15) | (static_cast<uint64_t>(((w + 63) >> 6) & 0x3f) << 9);
             write64(g, disp, 0x66);
@@ -100,12 +107,12 @@ namespace bozo::libs
 
         // The Z buffer's base after the frame buffers (sceGszbufaddr): in 2048-word pages, two frame buffers unless
         // interlaced frame mode NTSC... as the game's libgraph decides it (its GParam's first 48 bits equal to 1).
-        int32_t zbufAddress(const Libraries &l, int32_t psm, int32_t w, int32_t h)
+        int32_t zbufAddress(const Libraries &l, Guest &g, int32_t psm, int32_t w, int32_t h)
         {
             const int32_t pw = ((w + 63) >= 0 ? w + 63 : w + 126) >> 6;
             const int32_t ph = (psm & 2) ? (((h + 63) >= 0 ? h + 63 : h + 126) >> 6) : (((h + 31) >= 0 ? h + 31 : h + 62) >> 5);
             const int32_t pages = pw * ph;
-            const uint8_t *mode = l.gsVideo.data();
+            const uint8_t *mode = videoMode(l, g);
             const bool single = mode[0] == 1 && mode[1] == 0 && mode[2] == 0;
             return single ? static_cast<int16_t>(pages) : static_cast<int16_t>(static_cast<uint32_t>(pages) << 1);
         }
@@ -118,7 +125,7 @@ namespace bozo::libs
             const uint64_t fbw = second ? static_cast<uint64_t>((w >> 6) & 0x3f) : static_cast<uint64_t>(((w + 63) >> 6) & 0x3f);
             write64(g, p + 0, (static_cast<uint64_t>(psm & 0xf) << 24) | (fbw << 16));
             write64(g, p + 8, second ? kFrame2 : kFrame1);
-            uint64_t zbuf = sx(zbufAddress(l, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
+            uint64_t zbuf = sx(zbufAddress(l, g, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
             if (ztest == 0)
                 zbuf |= 1ull << 32; // ZMSK
             write64(g, p + 16, zbuf);

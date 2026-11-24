@@ -47,6 +47,8 @@ namespace bozo::state
             size_t pos = 0, depth = 0;
         };
         Mark mark() const { return {pos_, open_.size()}; }
+        // Reading: whether the next thing is the section `name` (an older layout that has no fields before it).
+        bool nextIs(const char *name) const;
         void rewind(const Mark &m)
         {
             pos_ = m.pos;

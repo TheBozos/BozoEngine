@@ -148,6 +148,10 @@ namespace
             state::fields(x, rAfter);
             x.end();
             check(r1 == 1 && r2 == 2 && rAfter == 3 && x.atEnd(), "rewound to the mark, read in the older layout");
+            state::Archive y(old.data());
+            check(y.nextIs("s") && !y.nextIs("next") && !y.nextIs("ss"), "nextIs names the coming section");
+            y.begin("s");
+            check(!y.nextIs("next"), "nextIs: fields come first");
         }
     }
 
