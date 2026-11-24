@@ -6,6 +6,8 @@
 #include "bozo/ee/dispatcher.h"
 #include "bozo/port.h"
 
+#include <cstring>
+#include <format>
 #include <stdexcept>
 
 namespace bozo::libs
@@ -36,6 +38,7 @@ namespace bozo::libs
                 const uint8_t param[4] = {static_cast<uint8_t>(g.arg(1)), static_cast<uint8_t>(g.arg(2)),
                                           static_cast<uint8_t>(g.arg(3)), 3};
                 g.write(kScratchpadBase + 0x100u, param, 4);
+                std::memcpy(l.gsVideo.data(), param, 4);
                 if (ee::Dispatcher *d = l.dispatcher())
                 {
                     // PAL: mode 3, or mode 0 (the console's own standard) on a PAL console (Libraries::palConsole).
@@ -58,13 +61,20 @@ namespace bozo::libs
         // sceGsResetPath(): nothing to reset (no DMA, VIF or GIF); no result.
         void resetPath(Libraries &, Guest &) {}
 
+        // ResetGraph's video parameters as the library kept them; in a save state written before it kept them (its fourth
+        // byte, always 3 once set, is 0), from scratchpad 0x100 as the library read them then.
+        const uint8_t *videoMode(const Libraries &l, Guest &g)
+        {
+            return l.gsVideo[3] == 3 ? l.gsVideo.data() : g.in(kScratchpadBase + 0x100u, 3);
+        }
+
         // sceGsSetDefDispEnv(disp, psm, w, h, dx, dy): PMODE, SMODE2, DISPFB, DISPLAY, BGCOLOR (64 bits each).
-        void setDefDispEnv(Libraries &, Guest &g)
+        void setDefDispEnv(Libraries &l, Guest &g)
         {
             const uint32_t disp = g.arg(0);
             const int32_t psm = s16(g.arg(1)), w = s16(g.arg(2)), h = s16(g.arg(3)), dx = s16(g.arg(4)), dy = s16(g.arg(5));
-            // Read only the SDK's scalar video parameters written by ResetGraph, never a packet.
-            const auto *mode = g.in(kScratchpadBase + 0x100u, 3);
+            // Only the SDK's scalar video parameters ResetGraph kept, never a packet.
+            const uint8_t *mode = videoMode(l, g);
             const uint64_t smode2 = mode[0] == 0 ? 2 : (mode[2] ? 3 : 1);
             const uint64_t dispfb = (static_cast<uint64_t>(psm & 0xf) << 15) | (static_cast<uint64_t>(((w + 63) >> 6) & 0x3f) << 9);
             write64(g, disp, 0x66);
@@ -97,25 +107,25 @@ namespace bozo::libs
 
         // The Z buffer's base after the frame buffers (sceGszbufaddr): in 2048-word pages, two frame buffers unless
         // interlaced frame mode NTSC... as the game's libgraph decides it (its GParam's first 48 bits equal to 1).
-        int32_t zbufAddress(Guest &g, int32_t psm, int32_t w, int32_t h)
+        int32_t zbufAddress(const Libraries &l, Guest &g, int32_t psm, int32_t w, int32_t h)
         {
             const int32_t pw = ((w + 63) >= 0 ? w + 63 : w + 126) >> 6;
             const int32_t ph = (psm & 2) ? (((h + 63) >= 0 ? h + 63 : h + 126) >> 6) : (((h + 31) >= 0 ? h + 31 : h + 62) >> 5);
             const int32_t pages = pw * ph;
-            const auto *mode = g.in(kScratchpadBase + 0x100u, 3);
+            const uint8_t *mode = videoMode(l, g);
             const bool single = mode[0] == 1 && mode[1] == 0 && mode[2] == 0;
             return single ? static_cast<int16_t>(pages) : static_cast<int16_t>(static_cast<uint32_t>(pages) << 1);
         }
 
         // sceGsSetDefDrawEnv / sceGsSetDefDrawEnv2(draw, psm, w, h, ztest, zpsm): eight A+D pairs for context 1 or 2.
-        void drawEnv(Libraries &, Guest &g, bool second)
+        void drawEnv(Libraries &l, Guest &g, bool second)
         {
             const uint32_t p = g.arg(0);
             const int32_t psm = s16(g.arg(1)), w = s16(g.arg(2)), h = s16(g.arg(3)), ztest = s16(g.arg(4)), zpsm = s16(g.arg(5));
             const uint64_t fbw = second ? static_cast<uint64_t>((w >> 6) & 0x3f) : static_cast<uint64_t>(((w + 63) >> 6) & 0x3f);
             write64(g, p + 0, (static_cast<uint64_t>(psm & 0xf) << 24) | (fbw << 16));
             write64(g, p + 8, second ? kFrame2 : kFrame1);
-            uint64_t zbuf = sx(zbufAddress(g, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
+            uint64_t zbuf = sx(zbufAddress(l, g, psm, w, h)) | (static_cast<uint64_t>(zpsm & 0xf) << 24);
             if (ztest == 0)
                 zbuf |= 1ull << 32; // ZMSK
             write64(g, p + 16, zbuf);
@@ -271,9 +281,17 @@ namespace bozo::libs
 
         // A native port must implement readback at the original high-level caller, using its
         // render target and rectangle. Do not parse a console packet or fabricate a black image.
-        void execStoreImage(Libraries &, Guest &)
+        void execStoreImage(Libraries &l, Guest &g)
         {
-            throw std::runtime_error("sceGsExecStoreImage requires a native renderer readback override");
+            // The reference checker only: the reference's stub (match1p #62543255's six traced calls inside particleDraw,
+            // each 0, no memory run).
+            if (l.storeImageAsReference && !port::nativeGraphics(&g.runtime()))
+            {
+                g.ret(0);
+                return;
+            }
+            throw std::runtime_error(std::format("sceGsExecStoreImage requires a native renderer readback override "
+                                                 "(called from 0x{:x})", g.context()->r[31].uw[0]));
         }
 
         // sceGsSyncV(mode): the game waits for the next vblank, and the game frame ends there. The reference returns

@@ -61,6 +61,14 @@ namespace
         check(rejected, "readback requires a native implementation without reading a packet");
         for (unsigned i = 0; i < 256; ++i)
             check(m.rt->memory.ram()[0x101000 + i] == 0x5a, "unsupported readback leaves destination intact");
+        // The reference checker's answer (the log host): the reference's stub, 0 and nothing written or read.
+        m.libs.storeImageAsReference = true;
+        m.ctx.r[2].ud[0] = 123;
+        m.call("sceGsExecStoreImage", {0x12000000, 0x101000});
+        check(m.ctx.r[2].sw[0] == 0, "reference checker's readback result");
+        for (unsigned i = 0; i < 256; ++i)
+            check(m.rt->memory.ram()[0x101000 + i] == 0x5a, "reference checker's readback writes nothing");
+        m.libs.storeImageAsReference = false;
 
         // SDK output builders remain usable; no separate engine GS state stores their results.
         m.call("sceGsResetGraph", {0, 1, 2, 0});

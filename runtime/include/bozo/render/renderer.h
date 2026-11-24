@@ -188,6 +188,11 @@ namespace bozo::render
         } alphaFunc = AlphaFunc::Greater;
         // TEST.ZTST GREATER (else GEQUAL), with depthTest.
         bool depthGreater = false;
+        // Depth offset toward the camera for the depth test (glPolygonOffset): the slope part scales with how steep the
+        // triangle is in depth, the units part is in the depth buffer's steps. 0, 0: none (as the GS). For marks laid
+        // on a surface at its own depth (a decal), against a depth that anti-aliasing took at a sample point off the
+        // pixel's centre: up to about half a pixel's depth slope away from the mark's centre depth.
+        float depthOffsetSlope = 0.0f, depthOffsetUnits = 0.0f;
         // The target's stencil (a port's shadow volumes): a fragment passing the depth test counts up or down, wrapping, in the
         // stencil; stencilNotZero draws only where the count is not 0; stencilClear empties it first (the frame starts empty).
         enum class StencilOp : uint8_t

@@ -49,7 +49,7 @@ namespace bozo::render::gl
     constexpr GLenum kStencilTest = 0x0B90, kKeep = 0x1E00, kIncrWrap = 0x8507, kDecrWrap = 0x8508;
     constexpr GLbitfield kStencilBufferBit = 0x00000400;
     constexpr GLenum kCullFace = 0x0B44, kDepthTest = 0x0B71, kBlend = 0x0BE2, kScissorTest = 0x0C11;
-    constexpr GLenum kLequal = 0x0203;
+    constexpr GLenum kLequal = 0x0203, kPolygonOffsetFill = 0x8037;
     constexpr GLbitfield kDepthBufferBit = 0x0100, kColorBufferBit = 0x4000;
     constexpr GLenum kTexture2D = 0x0DE1, kTexture0 = 0x84C0;
     constexpr GLenum kTextureMagFilter = 0x2800, kTextureMinFilter = 0x2801, kTextureWrapS = 0x2802, kTextureWrapT = 0x2803;
@@ -87,6 +87,7 @@ namespace bozo::render::gl
     X(void, StencilFunc, (GLenum func, GLint ref, GLuint mask))                                            \
     X(void, StencilOp, (GLenum fail, GLenum zfail, GLenum zpass))                                                                              \
     X(void, DepthFunc, (GLenum func))                                                                                  \
+    X(void, PolygonOffset, (GLfloat factor, GLfloat units))                                                                    \
     X(void, DepthMask, (GLboolean flag))                                                                               \
     X(void, ColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                                           \
     X(void, Scissor, (GLint x, GLint y, GLsizei width, GLsizei height))                                                \

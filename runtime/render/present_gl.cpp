@@ -2018,6 +2018,14 @@ void main()
             }
             else
                 g.Disable(gl::kDepthTest);
+            if (m.depthOffsetSlope != 0.0f || m.depthOffsetUnits != 0.0f)
+            {
+                // Toward the camera: the depth here is 1 - z (nearer is smaller), so the offset is negative.
+                g.Enable(gl::kPolygonOffsetFill);
+                g.PolygonOffset(-m.depthOffsetSlope, -m.depthOffsetUnits);
+            }
+            else
+                g.Disable(gl::kPolygonOffsetFill);
             if (m.stencilClear)
                 g.Clear(gl::kStencilBufferBit);
             if (m.stencilOp != Material::StencilOp::None)

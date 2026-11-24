@@ -258,6 +258,10 @@ namespace bozo::libs
         // Opaque libdma SDK configuration returned by GetEnv. Native services do not
         // turn it into DMA controller registers or execute a hardware environment.
         std::array<uint8_t, 20> dmaEnvironment{};
+        // sceGsResetGraph's display parameters {interlace, video mode, field mode, 3}, as libgraph keeps them: the
+        // SetDef functions read them here. The reference also leaves them at scratchpad 0x100, which the game's own
+        // code reuses afterwards (TMB from its fourth frame), so they are not read back from there.
+        std::array<uint8_t, 4> gsVideo{};
         MpegState mpeg;
         MpegOptions mpegOptions;
         // The console's own video standard: what sceGsResetGraph's video mode 0 ("the console's") means. A port sets
@@ -281,6 +285,11 @@ namespace bozo::libs
         uint32_t framesEnded = 0;
         // printf's output (the game's debug text) goes to the host's stdout unless off.
         bool printOutput = true;
+        // sceGsExecStoreImage answered as the reference's library stub (0, nothing written: no GS memory) instead of
+        // refused: only the reference checker (the log host) sets it, to replay a reference run whose guest code read
+        // back (TMB's lens flares on match1p's "No lives left" screen). A port and the free host keep the refusal: their
+        // readback belongs to the caller (libraries.md section 5).
+        bool storeImageAsReference = false;
 
         // The heap, set up from SetupHeap's result on first use.
         Heap &gameHeap();

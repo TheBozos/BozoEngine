@@ -599,6 +599,52 @@ int main()
         }
         renderer.setTextureUpscale(TextureUpscale{});
     }
+    {
+        // A decal (a port's shadow marks) laid on a steep surface through a target that shares the frame's depth, then
+        // laid back over the frame. Without anti-aliasing the marks land at the surface's own depth (LEQUAL passes).
+        // With anti-aliasing the shared depth is resolved from one sample point off each pixel's centre, which on a
+        // steep surface can be nearer than the mark's centre depth: Material::depthOffset* moves the marks toward the
+        // camera by that much, and they land again.
+        auto slope = [&](Material m, uint32_t colour) {
+            Vertex v[6];
+            const float xy[6][2] = {{0, 0}, {16, 0}, {0, 16}, {16, 0}, {16, 16}, {0, 16}};
+            for (int i = 0; i < 6; ++i)
+            {
+                v[i].x = xy[i][0];
+                v[i].y = xy[i][1];
+                v[i].z = screen.depthMax * (0.2f + 0.6f * xy[i][1] / 16.0f); // steep: 0.6 of the range over 16 rows
+                v[i].u = v[i].v = 0;
+                v[i].rgba = colour;
+            }
+            renderer.draw(m, identity, v, 6);
+        };
+        auto decal = [&](int samples, float offset, const char *name) {
+            renderer.setAntiAliasing(samples);
+            renderer.setTargetSharesDepth(2, true);
+            renderer.beginFrame(screen);
+            auto ground = plain;
+            ground.depthTest = ground.depthWrite = true;
+            slope(ground, 0x80202020);
+            auto mark = plain;
+            mark.target = 2;
+            mark.depthTest = true;
+            mark.depthWrite = false;
+            mark.depthOffsetSlope = mark.depthOffsetUnits = offset;
+            slope(mark, 0x80808080);
+            auto lay = copy;
+            lay.source = 2;
+            quad(lay, 0x80808080);
+            present();
+            for (int y : {6, 16, 26})
+                pixel(name, y, {255, 255, 255});
+            renderer.setTargetSharesDepth(2, false);
+            renderer.setAntiAliasing(0);
+        };
+        decal(0, 0.0f, "decal at the surface's depth, no anti-aliasing");
+        decal(0, 1.0f, "decal moved toward the camera, no anti-aliasing");
+        decal(4, 1.0f, "decal moved toward the camera, 4x anti-aliasing");
+        decal(8, 1.0f, "decal moved toward the camera, 8x anti-aliasing");
+    }
     renderer.releaseGpu();
     SDL_GL_DestroyContext(context);
     SDL_DestroyWindow(window);

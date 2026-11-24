@@ -163,6 +163,11 @@ namespace bozo::render
                 h=hash::xxh64(&m.frameDepth,sizeof(m.frameDepth),h);
             if(m.depthFromTexture)
                 h=hash::xxh64(&m.depthFromTexture,sizeof(m.depthFromTexture),h);
+            if (m.depthOffsetSlope != 0.0f || m.depthOffsetUnits != 0.0f)
+            {
+                const float offset[2] = {m.depthOffsetSlope, m.depthOffsetUnits};
+                h = hash::xxh64(offset, sizeof(offset), h);
+            }
             if (m.useQ || m.gsBlend || m.colourMask != 0xFu || m.alphaFunc != Material::AlphaFunc::Greater || m.depthGreater)
             {
                 const uint64_t gs = uint64_t(m.useQ) | uint64_t(m.gsBlend) << 1 | uint64_t(m.depthGreater) << 2 | uint64_t(m.alphaFunc) << 8 |

@@ -185,7 +185,11 @@ There is no GS register bank or transfer history. The SetDef functions only writ
 recompiled callers that still use those bytes; native rendering never consumes those packets. When a port explicitly
 enables `Registry::nativeGraphics`, image load/store SetDef calls instead return 0 without reading arguments beyond
 the port mode, dereferencing the output or serializing any packet. Native uploads belong to the asset boundary;
-readback belongs to the port's high-level caller, and unsupported ExecStoreImage still fails explicitly. Other SDK
+readback belongs to the port's high-level caller, and unsupported ExecStoreImage still fails explicitly. The reference
+checker alone (the log host: `Libraries::storeImageAsReference`, without native graphics) answers it as the reference's
+stub did, 0 with nothing written: match1p's "No lives left" screen after the match reads back from TMB's lens flares
+(#62543255, frame 13736, six calls inside `particleDraw`, no memory run), and the pinned check stopped there from
+5030dbb on. Other SDK
 templates remain available because callers may inspect their scalar fields. Scalar video
 parameters come from the SDK's scratchpad parameters, without a second engine copy. The native renderer gets draws,
 materials, textures and presentation settings directly from the port. The historical call-log totals below describe
