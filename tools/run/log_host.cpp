@@ -126,6 +126,7 @@ namespace bozo::run
         d.kernel().setObserver(this);
         libs_.attach(d);
         libs_.printOutput = !opt_.quiet;
+        libs_.storeImageAsReference = true; // the reference's readback stub (Libraries::storeImageAsReference)
         libs_.sndNative = (opt_.native & libs::kSnd) != 0;
         names_ = log_.names();
         uint32_t kernel = 0;
