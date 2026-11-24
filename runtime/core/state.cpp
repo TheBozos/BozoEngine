@@ -3,6 +3,7 @@
 #include "bozo/state.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace bozo::state
 {
@@ -47,6 +48,18 @@ namespace bozo::state
                 throw Error("save state: section " + n + " runs past the file");
             open_.emplace_back(name, pos_ + size);
         }
+    }
+
+    bool Archive::nextIs(const char *name) const
+    {
+        if (!loading_)
+            return false;
+        const size_t n = std::strlen(name);
+        uint64_t length = 0;
+        if (data_.size() - pos_ < sizeof length + n)
+            return false;
+        std::memcpy(&length, data_.data() + pos_, sizeof length); // a section begins with its name: count, then bytes
+        return length == n && std::memcmp(data_.data() + pos_ + sizeof length, name, n) == 0;
     }
 
     void Archive::end()
