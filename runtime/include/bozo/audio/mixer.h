@@ -119,6 +119,11 @@ namespace bozo::audio
         void setIrqCallback(std::function<void(int group)> irq);
         // A port's stream, added to each output sample after the voices (null: none). It outlives its use here.
         void setPortStream(PortStream *stream);
+        // The cores' sound data input read from sound memory while no block transfer (AutoDMA) feeds it, as the SPU2
+        // reads it: core c's left samples at bytes 0x4000 + 0x800 c, its right ones 0x400 further, 512 each, at the
+        // output position (the ring the output write-back and its IRQ follow). A driver that writes its own mix there
+        // by ordinary transfers is then heard (Amplitude's softFX: the song previews). Off by default.
+        void setMemoryInput(bool on);
 
         // Free-running: the audio device asks for frames stereo 16-bit samples and they are mixed then.
         // Clocked (setClocked(true)): render() only takes the samples advanceTo made from a queue (silence when it
@@ -240,6 +245,7 @@ namespace bozo::audio
         // The output write-back's position in its 512-sample rings. Not in save states: after a load the next IRQ comes
         // at most one ring (about 11 ms) early or late.
         uint32_t m_outputPosition = 0;
+        bool m_memoryInput = false; // setMemoryInput
         std::function<void(int group, int half)> m_inputHalf;
         std::function<void(int group)> m_irq;
         void reachIrq(uint32_t address, uint32_t bytes); // under m_mutex
