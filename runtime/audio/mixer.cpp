@@ -464,6 +464,11 @@ namespace bozo::audio
         std::lock_guard<std::mutex> lock(m_mutex);
         return inputOffsetOf(m_groups[group].input.position);
     }
+    void Mixer::setMemoryInput(bool on)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_memoryInput = on;
+    }
     void Mixer::setPortStream(PortStream *stream)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -786,6 +791,16 @@ namespace bozo::audio
                         ++m_stats.halves;
                         if (m_inputHalf)
                             m_inputHalf(g, which);
+                    }
+                }
+                else if (m_memoryInput)
+                {
+                    const uint32_t at = 0x4000u + static_cast<uint32_t>(g) * 0x800u + m_outputPosition * 2u;
+                    for (int side = 0; side < 2; ++side)
+                    {
+                        const uint8_t *p = &m_memory[at + static_cast<uint32_t>(side) * 0x400u];
+                        input[side] = mul15(static_cast<int16_t>(static_cast<uint16_t>(p[0] | (p[1] << 8u))),
+                                            group.input.volume[side]);
                     }
                 }
                 for (int index = 0; index < kVoices; ++index)
