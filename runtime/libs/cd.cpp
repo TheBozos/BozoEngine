@@ -440,6 +440,8 @@ namespace bozo::libs
                 l.waitVblank(token, -1, Resume{kResumeCdStreamRead, {n}});
                 return;
             }
+            if (mode == 0 && cd.wholeStreamReads && available < n)
+                available = 0;
             deliver(l, g, mode == 1 ? n : static_cast<uint32_t>(available), to, errorAt);
         }
     }
@@ -487,6 +489,18 @@ namespace bozo::libs
             const int32_t id=l.cd.nextFile++; l.cd.files.emplace(id,CdState::File{lbn,bytes,0}); g.ret(id);
         }
         void fsClose(Libraries &l, Guest &g) { g.ret(l.cd.files.erase(g.sarg(0)) ? 0 : -1); }
+        // sceIoctl(fd, request, arg): request 1 is the status a file opened with O_NOWAIT (0x8001) is polled with: 1
+        // while an operation runs. The native sceOpen / sceRead have finished as they return: *arg = 0, done (Amplitude
+        // polls it after each, 0x1af6a0 and 0x28f528). Any other request: -1.
+        void fsIoctl(Libraries &, Guest &g) {
+            const uint32_t request = g.arg(1), arg = g.arg(2);
+            if (request == 1u && arg) {
+                g.write32(arg, 0);
+                g.ret(0);
+                return;
+            }
+            g.ret(-1);
+        }
         // sceGetstat(name, struct sce_stat *): a disc file's size, as a read-only regular file (iomanX's sce_stat:
         // mode +0, attr +4, size +8, ctime/atime/mtime +12..+35, hisize +36, private +40..+63); -1 when it is not on
         // the disc. The image is opened first, as sceOpen does. Shinobido checks its files with it before reading
@@ -550,6 +564,7 @@ namespace bozo::libs
         out.push_back({"sceWrite", kCd, fsWrite});
         out.push_back({"sceLseek", kCd, fsSeek});
         out.push_back({"sceGetstat", kCd, fsGetstat});
+        out.push_back({"sceIoctl", kCd, fsIoctl});
         out.push_back({"sceCdSearchFile", kCd, searchFile});
         out.push_back({"sceCdLayerSearchFile", kCd, layerSearchFile});
         out.push_back({"sceCdReadDvdDualInfo", kCd, readDvdDualInfo});
