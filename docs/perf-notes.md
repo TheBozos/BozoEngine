@@ -7,6 +7,12 @@ for perf/frame and `build/bozo_base` for the unchanged engine at 37ba878, from t
 
 ## Tools (`D:\BozoScratch\perf\tools`)
 
+Built in since (2026-11-25): `bozo/app/profiler.h`, a sampling profiler of the registered threads (the window's "game"
+and "window", a port's own workers), in the settings window's Profiler tab (F2: start, stop, the functions of each
+thread, a report into the user folder's `profiles/`) and `PS2X_PROFILE=<from>:<to>[:<file>]` (game frames) for scripted
+runs. Self time only (no stacks); recompiled functions keep their PS2 address in their names, a library's samples are
+named by its export (`ntdll.dll!ZwWaitForSingleObject`: a thread waiting). The tools below go further (stacks, callers).
+
 - `sampler.exe <pid> <s> <out> [interval_us] [stack depth] [raw]`: a sampling profiler for Windows. It suspends each
   thread that ran, reads RIP (and a dbghelp stack walk when given a depth), and writes per-thread stacks; `raw` adds
   every sample with its time.
