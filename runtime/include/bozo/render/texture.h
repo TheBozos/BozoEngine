@@ -16,7 +16,7 @@ namespace bozo::render
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        std::vector<uint32_t> rgba; // R in the low byte; alpha scaled from the GS's 0x80 = opaque to 255
+        std::vector<uint32_t> rgba; // R in the low byte; alpha as the GS has it (0x80 is opaque: the renderer scales it)
         uint64_t key = 0;
         uint64_t version = 0; // new for every decode: a renderer re-sends the image to its GPU when it changes
         std::vector<std::pair<uint32_t, uint32_t>> pages; // (page, generation) the texture was decoded from

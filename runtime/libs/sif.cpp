@@ -326,6 +326,11 @@ namespace bozo::libs
         out.push_back({"sceSifInitRpc", kSif, initRpc});
         out.push_back({"sceSifExitRpc", kSif, nothing});
         out.push_back({"sceSifExitCmd", kSif, nothing});
+        // The SIF command layer's set-up, and the DMA chain armed before a sceSifSetDma: nothing to set up or arm (the
+        // native sceSifSetDma's data reaches the IOP at once). Amplitude's sound set-up calls sceSifInitCmd itself.
+        out.push_back({"sceSifInitCmd", kSif, nothing});
+        out.push_back({"sceSifSetDChain", kSif, nothing});
+        out.push_back({"isceSifSetDChain", kSif, nothing});
         out.push_back({"sceSifLoadFileReset", kSif, nothing});
         out.push_back({"sceSifWriteBackDCache", kSif, nothing});
         out.push_back({"sceSifResetIop", kSif, rebootIop});

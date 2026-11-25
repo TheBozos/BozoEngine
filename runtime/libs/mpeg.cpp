@@ -709,6 +709,9 @@ namespace bozo::libs
     {
         if (!haveVideoDecoder())
             return;
+        // sceIpuInit: the IPU's reset (IPU_CTRL's RST, then a wait on its busy bit). There is no IPU: what a game then
+        // asks of it is answered where it asks (libmpeg's functions here; a port's own IPU use, Amplitude's menus).
+        out.push_back({"sceIpuInit", kMpeg, [](Libraries &, Guest &g) { g.ret(0); }});
         out.push_back({"sceMpegInit", kMpeg, init});
         out.push_back({"sceMpegCreate", kMpeg, create});
         out.push_back({"sceMpegDelete", kMpeg, destroy});

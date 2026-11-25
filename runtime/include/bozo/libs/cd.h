@@ -77,6 +77,11 @@ namespace bozo::libs
         bool paused = false;
         // A blocked sceCdStRead, finished as its thread resumes.
         uint32_t pendingSectors = 0, pendingBuffer = 0, pendingError = 0;
+        // A port's choice: a sceCdStRead that does not wait (mode 0) brings all the sectors asked for or none, as a
+        // console's drive fills the stream's ring a bank at a time (the ring here fills a sector at a time). Amplitude's
+        // movie player resumes its demux at `buffer + 0x4000 - bytes left`, taking a short read for a whole one: it
+        // skipped a sector, with a sound packet in it.
+        bool wholeStreamReads = false;
 
         // Brings the drive's reading up to `cycle`.
         void advance(uint64_t cycle)
