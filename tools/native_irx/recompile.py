@@ -201,8 +201,12 @@ def explore(module, start, limit):
                 if insn.kind in ('jal', 'jalr'):
                     if insn.kind == 'jal':
                         fn.calls.add(insn.target)
-                    fn.resume.add(addr + 8)
-                    fn.labels.add(addr + 8)
+                    # The call returns into this function only when its return address is inside it: a call that
+                    # ends the function (its return address is the next function's start) returns there, through
+                    # that function's own entry, as the code falling off this one's end does.
+                    if addr + 8 < limit:
+                        fn.resume.add(addr + 8)
+                        fn.labels.add(addr + 8)
                     addr += 8
                     continue
                 if insn.rs != 31:
