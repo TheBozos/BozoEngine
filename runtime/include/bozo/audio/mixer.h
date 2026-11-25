@@ -222,6 +222,7 @@ namespace bozo::audio
         int32_t sample(Group &group, int index, Voice &voice);
         void stepReverb(Reverb &reverb, const int32_t send[2], int32_t out[2]);
         void mix(int16_t *out, size_t frames); // under m_mutex
+        void reachOutputIrq();                  // under m_mutex: the output write-back reaching an IRQ address
         void noteMixed(const int16_t *frames, size_t count);
 
         mutable std::mutex m_mutex;
@@ -236,6 +237,9 @@ namespace bozo::audio
         std::vector<int16_t> m_scratch;
         std::vector<uint8_t> m_memory = std::vector<uint8_t>(kSoundMemory, 0u);
         Group m_groups[kGroups];
+        // The output write-back's position in its 512-sample rings. Not in save states: after a load the next IRQ comes
+        // at most one ring (about 11 ms) early or late.
+        uint32_t m_outputPosition = 0;
         std::function<void(int group, int half)> m_inputHalf;
         std::function<void(int group)> m_irq;
         void reachIrq(uint32_t address, uint32_t bytes); // under m_mutex
