@@ -120,6 +120,7 @@ namespace bozo::audio
         for (Group &group : m_groups)
             group = Group{};
         m_groups[1].mix = 0xFFCu;
+        m_outputPosition = 0;
     }
 
     void Mixer::write(uint32_t address, const uint8_t *data, uint32_t bytes)
@@ -875,6 +876,28 @@ namespace bozo::audio
             out[frame * 2u] = static_cast<int16_t>(clamp16(mixed[0]));
             out[frame * 2u + 1u] = static_cast<int16_t>(clamp16(mixed[1]));
             m_stats.peak = std::max({m_stats.peak, std::abs(clamp16(mixed[0])), std::abs(clamp16(mixed[1]))});
+            reachOutputIrq();
         }
+    }
+
+    // The SPU2 writes each output sample back to its memory, at the same position (0-511) of 512-sample rings: the voice
+    // 1 / 3 outputs and the dry and wet mixes of both cores, halfwords 0x0400-0x1FFF. An IRQ address in those areas is
+    // reached when the position comes to it: a sample-clocked timer (Harmonix's softFX refills its stream buffers on it,
+    // its IRQ address alternating between two halves of a ring). Nothing is written there natively; the IRQ is.
+    void Mixer::reachOutputIrq()
+    {
+        for (int g = 0; g < kGroups; ++g)
+        {
+            Group &group = m_groups[g];
+            if (!group.irqEnabled)
+                continue;
+            const uint32_t halfword = (group.irqAddress >> 1u) & 0xFFFFFu;
+            if (halfword < 0x400u || halfword >= 0x2000u || (halfword & 0x1FFu) != m_outputPosition)
+                continue;
+            group.irqEnabled = false;
+            if (m_irq)
+                m_irq(g);
+        }
+        m_outputPosition = (m_outputPosition + 1u) & 0x1FFu;
     }
 }
