@@ -174,6 +174,8 @@ namespace bozo::app
         // A save state's picture is taken at the next present after its save was asked (F5 or the Save states tab).
         std::atomic<int> g_pictureSlot{-1};
 
+        std::atomic<float> g_pictureCrop{0.0f}; // setPictureCrop
+
         // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
         // number added when two fall in the same second.
         std::string screenshotPath()
@@ -220,6 +222,9 @@ namespace bozo::app
             return v && *v ? std::string(v) : std::string();
         }
     }
+
+    void setPictureCrop(float aspect) { g_pictureCrop.store(aspect > 0.0f ? aspect : 0.0f, std::memory_order_relaxed); }
+    float pictureCrop() { return g_pictureCrop.load(std::memory_order_relaxed); }
 
     int runWindow(const WindowOptions &options, const Game &game, DevicePad *pad)
     {
@@ -667,11 +672,46 @@ namespace bozo::app
             // in a 640x448 window its 4:3 picture covers columns 21-618 (x 21.33, width 597.33), not 22-618 as a rounded
             // one did (milestone M5's pixel comparison).
             float rw = static_cast<float>(pw), rh = static_cast<float>(ph);
-            if (rw > rh * options.aspect)
-                rw = rh * options.aspect;
+            const float crop = g_pictureCrop.load(std::memory_order_relaxed);
+            if (crop > 0.0f)
+            {
+                // The shape shown fitted into the window; the picture filling it in one direction, cut in the other,
+                // the cut parts outside (black bars where the window is not that shape: a scissored clear after).
+                float vw = rw, vh = rh;
+                if (vw > vh * crop)
+                    vw = vh * crop;
+                else
+                    vh = vw / crop;
+                if (crop > options.aspect)
+                    rw = vw, rh = vw / options.aspect;
+                else
+                    rh = vh, rw = vh * options.aspect;
+                renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
+                const int x0 = static_cast<int>(std::lround((static_cast<float>(pw) - vw) * 0.5f));
+                const int y0 = static_cast<int>(std::lround((static_cast<float>(ph) - vh) * 0.5f));
+                const int x1 = static_cast<int>(std::lround((static_cast<float>(pw) + vw) * 0.5f));
+                const int y1 = static_cast<int>(std::lround((static_cast<float>(ph) + vh) * 0.5f));
+                g.BindFramebuffer(render::gl::kFramebuffer, offscreen ? offFbo : 0);
+                g.Viewport(0, 0, pw, ph);
+                g.Enable(render::gl::kScissorTest);
+                g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                const int bars[4][4] = {{0, 0, pw, y0}, {0, y1, pw, ph - y1}, {0, 0, x0, ph}, {x1, 0, pw - x1, ph}};
+                for (const auto &b : bars)
+                    if (b[2] > 0 && b[3] > 0)
+                    {
+                        g.Scissor(b[0], b[1], b[2], b[3]);
+                        g.Clear(render::gl::kColorBufferBit);
+                    }
+                g.Disable(render::gl::kScissorTest);
+            }
             else
-                rh = rw / options.aspect;
-            renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
+            {
+                if (rw > rh * options.aspect)
+                    rw = rh * options.aspect;
+                else
+                    rh = rw / options.aspect;
+                renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
+            }
             ++presents;
             ++ratesPresents;
             if (options.lockstep && options.onPresented) // (interpolating: reported too, so a holding host never stalls)

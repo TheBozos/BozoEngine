@@ -80,6 +80,13 @@ namespace bozo::app
     // A short line shown over the game for a few seconds (any thread): a save state's result.
     void notify(const std::string &text);
 
+    // The picture cropped to another shape (any thread, live; 0 off, the default): `aspect` (16:9 for a widescreen
+    // zoom) is the shape shown, fitted into the window; the picture (WindowOptions::aspect, 4:3) fills its width and is
+    // cut at the top and bottom (or fills its height and is cut at the sides for a narrower shape). For a game whose
+    // views are fixed pictures that cannot show more: its HUD is the port's to keep inside the shape shown.
+    void setPictureCrop(float aspect);
+    float pictureCrop();
+
     // Opens the window, runs the game on its own thread (a 256 MB stack: recompiled code nests deeply), presents until
     // the window closes or the game ends, then ends the game and closes. Returns the game's exit code (3 when the
     // window or its context could not be made).
