@@ -78,6 +78,13 @@ target_compile_options(bozo_host PRIVATE -Wall -Wextra)
 # under that rounding mode, never folded or fused (libs/vu0.cpp).
 set_source_files_properties(libs/vu0.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math;-ffp-contract=off")
 
+# The sampling profiler (bozo/app/profiler.h): no SDL3, so a headless program and the tests link it too.
+add_library(bozo_profiler STATIC app/profiler.cpp)
+target_include_directories(bozo_profiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(bozo_profiler PRIVATE -Wall -Wextra)
+find_package(Threads REQUIRED)
+target_link_libraries(bozo_profiler PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+
 # The real-time platform layer (bozo/app/: window.h, device_pad.h, input_bindings.h, app.h, png.h) on SDL3, static,
 # pinned to release 3.4.20 (zlib licence). Downloaded at configure unless FETCHCONTENT_SOURCE_DIR_SDL3 names a source
 # tree of that release.
@@ -129,10 +136,11 @@ if(BOZO_APP)
     app/audio_device.cpp
     app/video_settings.cpp
     app/panel.cpp
+    app/profiler_tab.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(bozo_app PRIVATE ${imgui_SOURCE_DIR}/backends)
-  target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs bozo_ui SDL3::SDL3-static)
+  target_link_libraries(bozo_app PUBLIC bozo_render bozo_libs bozo_ui bozo_profiler SDL3::SDL3-static)
   target_compile_options(bozo_app PRIVATE -Wall -Wextra)
   set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
                               ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp PROPERTIES COMPILE_OPTIONS "-w")

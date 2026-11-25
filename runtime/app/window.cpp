@@ -11,6 +11,7 @@
 #include "bozo/app/input_bindings.h"
 #include "bozo/app/panel.h"
 #include "bozo/app/png.h"
+#include "bozo/app/profiler.h"
 #include "bozo/app/video_settings.h"
 #include "bozo/render/gl.h"
 #include "bozo/render/renderer.h"
@@ -36,6 +37,10 @@
 
 namespace bozo::app
 {
+    // The settings window's Profiler tab (profiler_tab.cpp) and its reports' folder.
+    void registerProfilerTab();
+    std::string profilesFolder();
+
     namespace
     {
         struct GameThread
@@ -48,7 +53,9 @@ namespace bozo::app
         int SDLCALL gameThreadMain(void *data)
         {
             auto *t = static_cast<GameThread *>(data);
+            profiler::registerThread("game"); // (the Profiler tab's and PS2X_PROFILE's)
             t->result = t->game->run();
+            profiler::unregisterThread();
             t->done.store(true, std::memory_order_release);
             return t->result;
         }
@@ -278,6 +285,8 @@ namespace bozo::app
         };
         if (game.saveState && game.loadState)
             registerStateTab(saveState, game.loadState);
+        registerProfilerTab();
+        profiler::registerThread("window"); // (this thread: the draw lists, the present)
 
         GameThread thread;
         thread.game = &game;
@@ -669,6 +678,7 @@ namespace bozo::app
                 options.onPresented(seen);
 
             const uint64_t frames = game.framesEnded();
+            profiler::frames(frames, profilesFolder()); // PS2X_PROFILE=<from>:<to>[:<file>]
             const double elapsed = seconds(start, now);
             const unsigned long long ms = static_cast<unsigned long long>(elapsed * 1000.0);
             // The game's picture alone (before the panel).
@@ -864,6 +874,8 @@ namespace bozo::app
         game.stop();
         int result = 0;
         SDL_WaitThread(gameThread, &result);
+        profiler::stop();
+        profiler::unregisterThread();
         panel.shutdown();
         video::detach();
         renderer.releaseGpu();

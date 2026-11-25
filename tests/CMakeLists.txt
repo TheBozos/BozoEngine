@@ -36,6 +36,14 @@ if(BOZO_TEST_ELF)
   add_test(NAME elf_decodes COMMAND bozo-recomp ${BOZO_TEST_ELF} --census)
 endif()
 
+# The sampling profiler (bozo/app/profiler.h): a spinning thread's function named first.
+add_executable(bozo-profiler-tests app/profiler_tests.cpp)
+target_link_libraries(bozo-profiler-tests PRIVATE bozo_profiler)
+if(MINGW)
+  target_link_options(bozo-profiler-tests PRIVATE -static)
+endif()
+add_test(NAME profiler COMMAND bozo-profiler-tests)
+
 # The runtime core (runtime/): guest memory views, the function table and overrides, COP0 Status.
 add_executable(bozo-runtime-tests runtime/runtime_tests.cpp)
 target_link_libraries(bozo-runtime-tests PRIVATE bozo_runtime_core)
