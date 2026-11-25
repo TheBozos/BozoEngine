@@ -275,6 +275,10 @@ namespace bozo::libs
         // Optional native audio implementation. Advances to EE time and returns its sample queue.
         // Unset: the built-in 989SND source. Its lifetime belongs to the port.
         std::function<audio::Mixer *(uint64_t)> audioProvider;
+        // Optional: told when the game starts a DMA channel by its CHCR (channel 0..9 and its registers, STR set),
+        // before the I/O library completes it. A port reads the transfer's source there (JC2: the GS image transfers
+        // in its VIF1 and GIF chains, to know which RAM went to which texture page); it must not change them.
+        std::function<void(uint32_t channel, const IoState::Channel &)> dmaStarted;
         MovieSoundSink *movieSound = nullptr; // the movie's sound (null: dropped)
         audio::PortStream portStream;
         IoAccess ioAccess;

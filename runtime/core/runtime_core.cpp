@@ -69,7 +69,15 @@ namespace bozo
         if (start >= end || !resident || identity.empty() || identity.size() > uint64_t(end) - start ||
             (count && !functions) || (resumeCount && !resume))
             throw std::invalid_argument("invalid native module registration");
-        modules_.push_back({start, end, resident, std::move(identity), functions, count, resume, resumeCount});
+        uint32_t inner = end;
+        for (Module &other : modules_)
+        {
+            if (other.start > start && other.start < end)
+                inner = std::min(inner, other.start);
+            if (start > other.start && start < other.end)
+                other.inner = std::min(other.inner, start);
+        }
+        modules_.push_back({start, end, inner, resident, std::move(identity), functions, count, resume, resumeCount});
         modulesLow_ = std::min(modulesLow_, start);
         modulesHigh_ = std::max(modulesHigh_, end);
         lastModule_ = nullptr; // the vector may have moved
@@ -79,7 +87,7 @@ namespace bozo
     {
         if (address < modulesLow_ || address >= modulesHigh_)
             return nullptr;
-        if (const Module *last = lastModule_; last && address >= last->start && address < last->end &&
+        if (const Module *last = lastModule_; last && address >= last->start && address < last->inner &&
             std::memcmp(last->resident, last->identity.data(), last->identity.size()) == 0)
         {
             reserved = true;
@@ -93,9 +101,11 @@ namespace bozo
             reserved = true;
             if (std::memcmp(module.resident, module.identity.data(), module.identity.size()) != 0)
                 continue;
-            if (active)
+            // Two resident modules over the address: the higher one was loaded over the other's tail.
+            if (active && active->start == module.start)
                 throw std::runtime_error("ambiguous native module identity");
-            active = &module;
+            if (!active || module.start > active->start)
+                active = &module;
         }
         if (active)
             lastModule_ = active;

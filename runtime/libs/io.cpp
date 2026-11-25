@@ -214,6 +214,8 @@ namespace bozo::libs
                     c.running = false; // STR cleared: the channel stops (TMB stops channel 4 at a movie's end)
                 else if (!c.running)
                 {
+                    if (l.dmaStarted)
+                        l.dmaStarted(static_cast<uint32_t>(ch), c);
                     if (ch == 0)
                         l.vu0.kick(v, c.tadr); // VIF0: the microcode image VU0 now holds
                     if (static_cast<uint32_t>(ch) == kFromScratchpadChannel || static_cast<uint32_t>(ch) == kToScratchpadChannel)

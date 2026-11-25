@@ -363,6 +363,35 @@ void nativeCardFlushPersistence() {
     std::filesystem::remove(root/"mc0"/"save");
     std::filesystem::remove(root/"mc0");std::filesystem::remove(root/"mc1");std::filesystem::remove(root);
 }
+// A card kept in a host folder is not part of a save state: loading a state takes it back from the folder, and the
+// game's writes after it reach the folder (a state's card in memory had no folder and lost them).
+void nativeCardStateKeepsHostFolder() {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("bozo-mc-state-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::vector<uint8_t> saved;
+    {
+        Machine m; // the state's machine: a card in memory with a file of its own
+        m.call("sceMcGetInfo",{0,0,0,0,0});m.result();
+        m.string(0x110000,"state-only");m.call("sceMcOpen",{0,0,0x110000,0x203});const auto fd=m.result();
+        m.call("sceMcClose",{uint32_t(fd)});m.result();
+        bozo::state::Archive w;m.libs.serialize(w);saved=w.data();
+    }
+    {
+        std::filesystem::create_directories(root/"mc0");
+        std::ofstream(root/"mc0"/"kept",std::ios::binary)<<"kept";
+    }
+    {
+        Machine m;m.libs.mc.hostDirectory=root.string();
+        bozo::state::Archive r(saved);m.libs.serialize(r);
+        eq("folder's file after a state",m.libs.mc.card(0).find("kept")!=nullptr,1);
+        eq("state's own card dropped",m.libs.mc.card(0).find("state-only")==nullptr,1);
+        m.string(0x110000,"after");m.call("sceMcOpen",{0,0,0x110000,0x203});const auto fd=m.result();
+        m.string(0x111000,"x");m.call("sceMcWrite",{uint32_t(fd),0x111000,1});m.result();
+        m.call("sceMcClose",{uint32_t(fd)});m.result();
+        eq("write after a state on the host",std::filesystem::exists(root/"mc0"/"after"),1);
+    }
+    std::error_code ec;std::filesystem::remove_all(root,ec);
+}
 void liveScriptInput() {
     const auto path=std::filesystem::temp_directory_path()/
         ("bozo-live-pad-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -991,6 +1020,7 @@ int main()
     sifAndSnd();
     memoryCard();
     nativeCardFlushPersistence();
+    nativeCardStateKeepsHostFolder();
     heapAndRand();
     cdStream();
     std::printf("%s\n", g_failures ? "FAILED" : "all passed");

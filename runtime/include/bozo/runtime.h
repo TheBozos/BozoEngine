@@ -82,7 +82,9 @@ namespace bozo
         void clearOverrides() { overrides_.clear(); }
         size_t overrideCount() const { return overrides_.size(); }
         // Statically compiled images sharing a guest address range. A module is callable only while the
-        // resident identity bytes match. The resident storage and generated tables outlive this table.
+        // resident identity bytes match. The resident storage and generated tables outlive this table. Modules may
+        // overlap (a game loads one into another's span, over its tail): where two match, the one starting higher wins,
+        // its header being inside the other's span means it was loaded over that part.
         // This selects native code; it never loads or interprets guest instructions.
         void addModule(uint32_t start, uint32_t end, const uint8_t *resident,
                        std::vector<uint8_t> identity, const BozoFunctionEntry *functions, size_t count,
@@ -104,6 +106,7 @@ namespace bozo
         struct Module
         {
             uint32_t start, end;
+            uint32_t inner; // the lowest other module's start inside (start, end), else end: the fast path's limit
             const uint8_t *resident;
             std::vector<uint8_t> identity;
             const BozoFunctionEntry *functions;

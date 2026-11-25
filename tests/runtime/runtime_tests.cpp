@@ -102,6 +102,19 @@ int main()
     eq("module does not mask resident code", rt->functions.generated(0x100000) == fnA, true);
     rt->functions.clearModules();
 
+    // A module loaded into another's span (JC2: a battle effect at 0x96B000 over the tail of the Arena's script at
+    // 0x96A800): where both are resident, the higher one owns its part, also right after the lower one was looked up.
+    const BozoFunctionEntry lowFns[] = {{0x300000u, fnA}, {0x300140u, fnA}};
+    const BozoFunctionEntry highFns[] = {{0x300140u, fnB}};
+    uint8_t lowResident[] = {5, 6}, highResident[] = {7, 8};
+    rt->functions.addModule(0x300000, 0x300200, lowResident, {5, 6}, lowFns, 2, nullptr, 0);
+    rt->functions.addModule(0x300100, 0x300180, highResident, {7, 8}, highFns, 1, nullptr, 0);
+    eq("lower module's own part", rt->functions.generated(0x300000) == fnA, true);
+    eq("higher module over the lower's tail", rt->functions.generated(0x300140) == fnB, true);
+    highResident[0] = 0;
+    eq("the lower module again once the higher is gone", rt->functions.generated(0x300140) == fnA, true);
+    rt->functions.clearModules();
+
     // ei / di toggle Status.EIE; mfc0 12 reads Status.
     bozo_set_interrupts(rt->memory.ram(), &ctx, rt.get(), true);
     eq("ei", bozo_cop0_read(&ctx, rt.get(), 12), 0x10000);
