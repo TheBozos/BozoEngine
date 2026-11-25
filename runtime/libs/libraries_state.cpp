@@ -153,7 +153,15 @@ namespace bozo::libs
         for (auto &port : pad.ports)
             for (auto &slot : port)
                 pod(a, slot);
-        fields(a, pad.initialized, pad.reads, pad.socketReads, pad.multitap, pad.multitapAttached, pad.pad2Sockets, pad.pad2Next);
+        fields(a, pad.initialized, pad.reads, pad.socketReads, pad.multitap, pad.multitapAttached);
+        // A state written before libpad2's sockets were saved (67c5867) ends here: no socket is open.
+        if (a.loading() && a.sectionLeft() == 0)
+        {
+            pad.pad2Sockets.clear();
+            pad.pad2Next = 0;
+        }
+        else
+            fields(a, pad.pad2Sockets, pad.pad2Next);
         a.end();
 
         a.begin("mc");
@@ -191,16 +199,46 @@ namespace bozo::libs
                m.pending, m.pendingAt, m.ring, m.ringSize, m.ringBias, m.linearBase, m.programEnd, m.aborted, m.es,
                m.scanned, m.starts, m.pictureStarts, m.sequenceEnd, m.headerOpen, m.cuts, m.sent, m.flushed,
                m.callbacksDue, m.waiting, m.delivered, m.base, m.lastShown, m.firstPictureNs, m.soundHeader,
-               m.soundCarry, m.inputEnded);
+               m.soundCarry);
+        // A state written before the SDK's Nodata end (MpegOptions::sdkNodata) has the sound left: the input goes on.
+        if (a.loading() && a.sectionLeft() == sizeof m.sound)
+            m.inputEnded = false;
+        else
+            fields(a, m.inputEnded);
         pod(a, m.sound);
         a.end();
 
         a.begin("sif");
-        fields(a, sif.rpcId, sif.bindAttempts, sif.bound, sif.sreg, sif.dmaId, sif.modules, sif.iopSreg);
-        sif.heap.serialize(a);
-        a.end();
+        fields(a, sif.rpcId, sif.bindAttempts, sif.bound, sif.sreg, sif.dmaId, sif.modules);
+        {
+            // A state written before the IOP side's software registers has the heap next: read it as such when the
+            // registers then leave bytes over (the section's end checks the layout), with the registers cleared.
+            const state::Archive::Mark mark = a.mark();
+            bool older = false;
+            if (a.loading())
+                try
+                {
+                    sif.heap.serialize(a);
+                    a.end();
+                    older = true;
+                }
+                catch (const state::Error &)
+                {
+                    a.rewind(mark);
+                }
+            if (older)
+                std::fill(std::begin(sif.iopSreg), std::end(sif.iopSreg), 0u);
+            else
+            {
+                fields(a, sif.iopSreg);
+                sif.heap.serialize(a);
+                a.end();
+            }
+        }
 
-        snd.serialize(a, *this);
+        // A state written before the 989SND driver was saved goes on with the timers: the driver stays as it is.
+        if (!(a.loading() && a.nextIs("timers")))
+            snd.serialize(a, *this);
 
         a.begin("timers");
         TimerState &t = timers;
