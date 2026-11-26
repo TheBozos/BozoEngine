@@ -6,9 +6,22 @@
 
 #include <cstdint>
 
+// SSE2 where an x86 instruction does the same lane by lane (BOZO_MMI_SCALAR=1 at build: the loops alone, the reference).
+#if !defined(BOZO_MMI_SCALAR) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
+#define BOZO_MMI_SSE2 1
+#include <emmintrin.h>
+#else
+#define BOZO_MMI_SSE2 0
+#endif
+
 namespace bozo::mmi
 {
     using V = Gpr128;
+#if BOZO_MMI_SSE2
+    inline __m128i toSse(const V &v) { return _mm_loadu_si128(reinterpret_cast<const __m128i *>(&v)); }
+    inline V fromSse(__m128i x) { V d; _mm_storeu_si128(reinterpret_cast<__m128i *>(&d), x); return d; }
+    inline __m128i blendSse(__m128i mask, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b)); }
+#endif
 
     template <typename T>
     inline T satAdd(int64_t v, int64_t lo, int64_t hi)
@@ -17,24 +30,80 @@ namespace bozo::mmi
     }
 
     // ---- Add / subtract ----
+#if BOZO_MMI_SSE2
+    inline V paddw(V s, V t) { return fromSse(_mm_add_epi32(toSse(s), toSse(t))); }
+#else
     inline V paddw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = s.uw[i] + t.uw[i]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubw(V s, V t) { return fromSse(_mm_sub_epi32(toSse(s), toSse(t))); }
+#else
     inline V psubw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = s.uw[i] - t.uw[i]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V paddh(V s, V t) { return fromSse(_mm_add_epi16(toSse(s), toSse(t))); }
+#else
     inline V paddh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = static_cast<uint16_t>(s.uh[i] + t.uh[i]); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubh(V s, V t) { return fromSse(_mm_sub_epi16(toSse(s), toSse(t))); }
+#else
     inline V psubh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = static_cast<uint16_t>(s.uh[i] - t.uh[i]); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V paddb(V s, V t) { return fromSse(_mm_add_epi8(toSse(s), toSse(t))); }
+#else
     inline V paddb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = static_cast<uint8_t>(s.ub[i] + t.ub[i]); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubb(V s, V t) { return fromSse(_mm_sub_epi8(toSse(s), toSse(t))); }
+#else
     inline V psubb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = static_cast<uint8_t>(s.ub[i] - t.ub[i]); return d; }
+#endif
     inline V paddsw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = satAdd<int32_t>(int64_t(s.sw[i]) + t.sw[i], INT32_MIN, INT32_MAX); return d; }
     inline V psubsw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = satAdd<int32_t>(int64_t(s.sw[i]) - t.sw[i], INT32_MIN, INT32_MAX); return d; }
+#if BOZO_MMI_SSE2
+    inline V paddsh(V s, V t) { return fromSse(_mm_adds_epi16(toSse(s), toSse(t))); }
+#else
     inline V paddsh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = satAdd<int16_t>(int64_t(s.sh[i]) + t.sh[i], INT16_MIN, INT16_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubsh(V s, V t) { return fromSse(_mm_subs_epi16(toSse(s), toSse(t))); }
+#else
     inline V psubsh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = satAdd<int16_t>(int64_t(s.sh[i]) - t.sh[i], INT16_MIN, INT16_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V paddsb(V s, V t) { return fromSse(_mm_adds_epi8(toSse(s), toSse(t))); }
+#else
     inline V paddsb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.sb[i] = satAdd<int8_t>(int64_t(s.sb[i]) + t.sb[i], INT8_MIN, INT8_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubsb(V s, V t) { return fromSse(_mm_subs_epi8(toSse(s), toSse(t))); }
+#else
     inline V psubsb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.sb[i] = satAdd<int8_t>(int64_t(s.sb[i]) - t.sb[i], INT8_MIN, INT8_MAX); return d; }
+#endif
     inline V padduw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = satAdd<uint32_t>(int64_t(s.uw[i]) + t.uw[i], 0, UINT32_MAX); return d; }
     inline V psubuw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = satAdd<uint32_t>(int64_t(s.uw[i]) - t.uw[i], 0, UINT32_MAX); return d; }
+#if BOZO_MMI_SSE2
+    inline V padduh(V s, V t) { return fromSse(_mm_adds_epu16(toSse(s), toSse(t))); }
+#else
     inline V padduh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = satAdd<uint16_t>(int64_t(s.uh[i]) + t.uh[i], 0, UINT16_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubuh(V s, V t) { return fromSse(_mm_subs_epu16(toSse(s), toSse(t))); }
+#else
     inline V psubuh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = satAdd<uint16_t>(int64_t(s.uh[i]) - t.uh[i], 0, UINT16_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V paddub(V s, V t) { return fromSse(_mm_adds_epu8(toSse(s), toSse(t))); }
+#else
     inline V paddub(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = satAdd<uint8_t>(int64_t(s.ub[i]) + t.ub[i], 0, UINT8_MAX); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psubub(V s, V t) { return fromSse(_mm_subs_epu8(toSse(s), toSse(t))); }
+#else
     inline V psubub(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = satAdd<uint8_t>(int64_t(s.ub[i]) - t.ub[i], 0, UINT8_MAX); return d; }
+#endif
     // padsbh: the lower four halfwords subtract, the upper four add.
     inline V padsbh(V s, V t)
     {
@@ -45,33 +114,113 @@ namespace bozo::mmi
     }
 
     // ---- Compare, min, max, abs ----
+#if BOZO_MMI_SSE2
+    inline V pcgtw(V s, V t) { return fromSse(_mm_cmpgt_epi32(toSse(s), toSse(t))); }
+#else
     inline V pcgtw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = s.sw[i] > t.sw[i] ? ~0u : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pcgth(V s, V t) { return fromSse(_mm_cmpgt_epi16(toSse(s), toSse(t))); }
+#else
     inline V pcgth(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = s.sh[i] > t.sh[i] ? 0xFFFFu : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pcgtb(V s, V t) { return fromSse(_mm_cmpgt_epi8(toSse(s), toSse(t))); }
+#else
     inline V pcgtb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = s.sb[i] > t.sb[i] ? 0xFFu : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pceqw(V s, V t) { return fromSse(_mm_cmpeq_epi32(toSse(s), toSse(t))); }
+#else
     inline V pceqw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = s.uw[i] == t.uw[i] ? ~0u : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pceqh(V s, V t) { return fromSse(_mm_cmpeq_epi16(toSse(s), toSse(t))); }
+#else
     inline V pceqh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = s.uh[i] == t.uh[i] ? 0xFFFFu : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pceqb(V s, V t) { return fromSse(_mm_cmpeq_epi8(toSse(s), toSse(t))); }
+#else
     inline V pceqb(V s, V t) { V d; for (int i = 0; i < 16; ++i) d.ub[i] = s.ub[i] == t.ub[i] ? 0xFFu : 0u; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pmaxw(V s, V t) { return fromSse(blendSse(_mm_cmpgt_epi32(toSse(s), toSse(t)), toSse(s), toSse(t))); }
+#else
     inline V pmaxw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = s.sw[i] > t.sw[i] ? s.sw[i] : t.sw[i]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pminw(V s, V t) { return fromSse(blendSse(_mm_cmpgt_epi32(toSse(t), toSse(s)), toSse(s), toSse(t))); }
+#else
     inline V pminw(V s, V t) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = s.sw[i] < t.sw[i] ? s.sw[i] : t.sw[i]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pmaxh(V s, V t) { return fromSse(_mm_max_epi16(toSse(s), toSse(t))); }
+#else
     inline V pmaxh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = s.sh[i] > t.sh[i] ? s.sh[i] : t.sh[i]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pminh(V s, V t) { return fromSse(_mm_min_epi16(toSse(s), toSse(t))); }
+#else
     inline V pminh(V s, V t) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = s.sh[i] < t.sh[i] ? s.sh[i] : t.sh[i]; return d; }
+#endif
     // pabsw / pabsh: the most negative value saturates to the most positive (open question Q8).
     inline V pabsw(V t) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = t.sw[i] == INT32_MIN ? INT32_MAX : (t.sw[i] < 0 ? -t.sw[i] : t.sw[i]); return d; }
     inline V pabsh(V t) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = t.sh[i] == INT16_MIN ? INT16_MAX : static_cast<int16_t>(t.sh[i] < 0 ? -t.sh[i] : t.sh[i]); return d; }
 
     // ---- Logic ----
+#if BOZO_MMI_SSE2
+    inline V pand(V s, V t) { return fromSse(_mm_and_si128(toSse(s), toSse(t))); }
+#else
     inline V pand(V s, V t) { V d; d.ud[0] = s.ud[0] & t.ud[0]; d.ud[1] = s.ud[1] & t.ud[1]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V por(V s, V t) { return fromSse(_mm_or_si128(toSse(s), toSse(t))); }
+#else
     inline V por(V s, V t) { V d; d.ud[0] = s.ud[0] | t.ud[0]; d.ud[1] = s.ud[1] | t.ud[1]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pxor(V s, V t) { return fromSse(_mm_xor_si128(toSse(s), toSse(t))); }
+#else
     inline V pxor(V s, V t) { V d; d.ud[0] = s.ud[0] ^ t.ud[0]; d.ud[1] = s.ud[1] ^ t.ud[1]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pnor(V s, V t) { return fromSse(_mm_xor_si128(_mm_or_si128(toSse(s), toSse(t)), _mm_set1_epi32(-1))); }
+#else
     inline V pnor(V s, V t) { V d; d.ud[0] = ~(s.ud[0] | t.ud[0]); d.ud[1] = ~(s.ud[1] | t.ud[1]); return d; }
+#endif
 
     // ---- Shifts (amount from the instruction's sa field, or from a register for the "v" forms) ----
+#if BOZO_MMI_SSE2
+    inline V psllh(V t, unsigned sa) { return fromSse(_mm_sll_epi16(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 15)))); }
+#else
     inline V psllh(V t, unsigned sa) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = static_cast<uint16_t>(t.uh[i] << (sa & 15)); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psrlh(V t, unsigned sa) { return fromSse(_mm_srl_epi16(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 15)))); }
+#else
     inline V psrlh(V t, unsigned sa) { V d; for (int i = 0; i < 8; ++i) d.uh[i] = static_cast<uint16_t>(t.uh[i] >> (sa & 15)); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psrah(V t, unsigned sa) { return fromSse(_mm_sra_epi16(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 15)))); }
+#else
     inline V psrah(V t, unsigned sa) { V d; for (int i = 0; i < 8; ++i) d.sh[i] = static_cast<int16_t>(t.sh[i] >> (sa & 15)); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psllw(V t, unsigned sa) { return fromSse(_mm_sll_epi32(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 31)))); }
+#else
     inline V psllw(V t, unsigned sa) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = t.uw[i] << (sa & 31); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psrlw(V t, unsigned sa) { return fromSse(_mm_srl_epi32(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 31)))); }
+#else
     inline V psrlw(V t, unsigned sa) { V d; for (int i = 0; i < 4; ++i) d.uw[i] = t.uw[i] >> (sa & 31); return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V psraw(V t, unsigned sa) { return fromSse(_mm_sra_epi32(toSse(t), _mm_cvtsi32_si128(static_cast<int>(sa & 31)))); }
+#else
     inline V psraw(V t, unsigned sa) { V d; for (int i = 0; i < 4; ++i) d.sw[i] = t.sw[i] >> (sa & 31); return d; }
+#endif
     // psllvw / psrlvw / psravw: words 0 and 2, shift amounts from rs's words 0 and 2; results sign-extended to 64 bits.
     inline V psllvw(V t, V s)
     {
@@ -94,12 +243,36 @@ namespace bozo::mmi
 
     // ---- Pack / extend / interleave ----
     // pextlw: interleave the low words: d = {t.w0, s.w0, t.w1, s.w1}.
+#if BOZO_MMI_SSE2
+    inline V pextlw(V s, V t) { return fromSse(_mm_unpacklo_epi32(toSse(t), toSse(s))); }
+#else
     inline V pextlw(V s, V t) { V d; d.uw[0] = t.uw[0]; d.uw[1] = s.uw[0]; d.uw[2] = t.uw[1]; d.uw[3] = s.uw[1]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pextuw(V s, V t) { return fromSse(_mm_unpackhi_epi32(toSse(t), toSse(s))); }
+#else
     inline V pextuw(V s, V t) { V d; d.uw[0] = t.uw[2]; d.uw[1] = s.uw[2]; d.uw[2] = t.uw[3]; d.uw[3] = s.uw[3]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pextlh(V s, V t) { return fromSse(_mm_unpacklo_epi16(toSse(t), toSse(s))); }
+#else
     inline V pextlh(V s, V t) { V d; for (int i = 0; i < 4; ++i) { d.uh[2 * i] = t.uh[i]; d.uh[2 * i + 1] = s.uh[i]; } return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pextuh(V s, V t) { return fromSse(_mm_unpackhi_epi16(toSse(t), toSse(s))); }
+#else
     inline V pextuh(V s, V t) { V d; for (int i = 0; i < 4; ++i) { d.uh[2 * i] = t.uh[4 + i]; d.uh[2 * i + 1] = s.uh[4 + i]; } return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pextlb(V s, V t) { return fromSse(_mm_unpacklo_epi8(toSse(t), toSse(s))); }
+#else
     inline V pextlb(V s, V t) { V d; for (int i = 0; i < 8; ++i) { d.ub[2 * i] = t.ub[i]; d.ub[2 * i + 1] = s.ub[i]; } return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pextub(V s, V t) { return fromSse(_mm_unpackhi_epi8(toSse(t), toSse(s))); }
+#else
     inline V pextub(V s, V t) { V d; for (int i = 0; i < 8; ++i) { d.ub[2 * i] = t.ub[8 + i]; d.ub[2 * i + 1] = s.ub[8 + i]; } return d; }
+#endif
     // ppacw: the even words of t then of s: d = {t.w0, t.w2, s.w0, s.w2}.
     inline V ppacw(V s, V t) { V d; d.uw[0] = t.uw[0]; d.uw[1] = t.uw[2]; d.uw[2] = s.uw[0]; d.uw[3] = s.uw[2]; return d; }
     inline V ppach(V s, V t) { V d; for (int i = 0; i < 4; ++i) { d.uh[i] = t.uh[2 * i]; d.uh[4 + i] = s.uh[2 * i]; } return d; }
@@ -140,8 +313,16 @@ namespace bozo::mmi
         hi1 = odd.ud[1];
         return even;
     }
+#if BOZO_MMI_SSE2
+    inline V pcpyld(V s, V t) { return fromSse(_mm_unpacklo_epi64(toSse(t), toSse(s))); }
+#else
     inline V pcpyld(V s, V t) { V d; d.ud[0] = t.ud[0]; d.ud[1] = s.ud[0]; return d; }
+#endif
+#if BOZO_MMI_SSE2
+    inline V pcpyud(V s, V t) { return fromSse(_mm_unpackhi_epi64(toSse(s), toSse(t))); }
+#else
     inline V pcpyud(V s, V t) { V d; d.ud[0] = s.ud[1]; d.ud[1] = t.ud[1]; return d; }
+#endif
 
     // PMFHL: HI and LO (HI1:HI, LO1:LO as 128 bits) packed into rd by the format in sa: 0 LW, 1 UW, 2 SLW, 3 LH, 4 SH.
     inline V pmfhl(uint32_t fmt, V h, V l)
