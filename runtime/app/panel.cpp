@@ -609,6 +609,13 @@ namespace bozo::app
         envNote("PS2X_ANTI_ALIASING");
         ImGui::TextDisabled("The 3D's jagged edges smoothed, several samples a pixel (applies at once).");
 
+        if (video::widescreenOffered())
+        {
+            ImGui::Checkbox("Widescreen (16:9)", &edited.widescreen);
+            envNote("PS2X_WIDESCREEN");
+            ImGui::TextDisabled("More of the scene at the sides where the game can show it; the HUD stays in the middle.");
+        }
+
         ImGui::Checkbox("Pause in the background", &edited.pauseInBackground);
         envNote("PS2X_PAUSE_IN_BACKGROUND");
         ImGui::TextDisabled("The game holds while another window has the focus or this one is minimised.");

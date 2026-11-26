@@ -176,6 +176,7 @@ namespace bozo::app
         std::atomic<int> g_pictureSlot{-1};
 
         std::atomic<float> g_pictureCrop{0.0f}; // setPictureCrop
+        std::atomic<float> g_pictureAspect{0.0f}; // setPictureAspect
 
         // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
         // number added when two fall in the same second.
@@ -226,6 +227,8 @@ namespace bozo::app
 
     void setPictureCrop(float aspect) { g_pictureCrop.store(aspect > 0.0f ? aspect : 0.0f, std::memory_order_relaxed); }
     float pictureCrop() { return g_pictureCrop.load(std::memory_order_relaxed); }
+    void setPictureAspect(float aspect) { g_pictureAspect.store(aspect > 0.0f ? aspect : 0.0f, std::memory_order_relaxed); }
+    float pictureAspect() { return g_pictureAspect.load(std::memory_order_relaxed); }
     void captureStatePicture(int slot)
     {
         if (slot >= 0 && slot < kStateSlots)
@@ -679,6 +682,8 @@ namespace bozo::app
             // one did (milestone M5's pixel comparison).
             float rw = static_cast<float>(pw), rh = static_cast<float>(ph);
             const float crop = g_pictureCrop.load(std::memory_order_relaxed);
+            const float wide = g_pictureAspect.load(std::memory_order_relaxed);
+            const float aspect = wide > 0.0f ? wide : options.aspect; // the picture's shape now
             if (crop > 0.0f)
             {
                 // The shape shown fitted into the window; the picture filling it in one direction, cut in the other,
@@ -688,10 +693,10 @@ namespace bozo::app
                     vw = vh * crop;
                 else
                     vh = vw / crop;
-                if (crop > options.aspect)
-                    rw = vw, rh = vw / options.aspect;
+                if (crop > aspect)
+                    rw = vw, rh = vw / aspect;
                 else
-                    rh = vh, rw = vh * options.aspect;
+                    rh = vh, rw = vh * aspect;
                 renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
                 const int x0 = static_cast<int>(std::lround((static_cast<float>(pw) - vw) * 0.5f));
                 const int y0 = static_cast<int>(std::lround((static_cast<float>(ph) - vh) * 0.5f));
@@ -712,10 +717,10 @@ namespace bozo::app
             }
             else
             {
-                if (rw > rh * options.aspect)
-                    rw = rh * options.aspect;
+                if (rw > rh * aspect)
+                    rw = rh * aspect;
                 else
-                    rh = rw / options.aspect;
+                    rh = rw / aspect;
                 renderer.present((static_cast<float>(pw) - rw) * 0.5f, (static_cast<float>(ph) - rh) * 0.5f, rw, rh);
             }
             ++presents;
