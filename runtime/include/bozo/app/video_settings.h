@@ -62,6 +62,10 @@ namespace bozo::app::video
         // Fast forward (FramePacer::speedPercent while a FastForward binding is held, ` by default): the game's speed in
         // percent, 200 to 1000, or 0 as fast as the PC goes (live). 300 by default.
         int fastForward = 300;
+        // Widescreen: the port shows a 16:9 picture where its game can show more at the sides (its own views widened;
+        // bozo::app::setPictureAspect while it does). Off by default; offered in the Video tab once the port calls
+        // offerWidescreen. A port without it ignores it.
+        bool widescreen = false;
     };
 
     // The texture replacements' folder a texture_pack setting names ("" when off or when there is none).
@@ -82,6 +86,10 @@ namespace bozo::app::video
     bool parseFastForward(const std::string &text, int &percent);
     std::string fastForwardName(int percent);
     std::string frameRateName(int rate);
+
+    // A port that implements Settings::widescreen says so (any thread, before the window opens): the Video tab offers it.
+    void offerWidescreen(bool offered);
+    bool widescreenOffered();
 
     // Before the window opens: the file then the environment over the defaults (the port's window size). The port may
     // then change edited() (its command line) before the window opens.

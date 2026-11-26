@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -159,6 +160,8 @@ namespace bozo::app::video
                     settings.texturePack = value;
                 else if (name == "pause_in_background")
                     parseSwitch(value, settings.pauseInBackground);
+                else if (name == "widescreen")
+                    parseSwitch(value, settings.widescreen);
                 else if (name == "fast_forward")
                     parseFastForward(value, settings.fastForward);
             }
@@ -363,6 +366,8 @@ namespace bozo::app::video
             parseAntiAliasing(aa, settings.antiAliasing);
         if (const char *pause = std::getenv("PS2X_PAUSE_IN_BACKGROUND"); pause && *pause)
             parseSwitch(pause, settings.pauseInBackground);
+        if (const char *wide = std::getenv("PS2X_WIDESCREEN"); wide && *wide)
+            parseSwitch(wide, settings.widescreen);
         if (const char *fast = std::getenv("PS2X_FAST_FORWARD"); fast && *fast)
             parseFastForward(fast, settings.fastForward);
         sanitize(settings);
@@ -493,6 +498,13 @@ namespace bozo::app::video
 
     void requestApply() { g_applyPending = true; }
 
+    namespace
+    {
+        std::atomic<bool> g_widescreenOffered{false};
+    }
+    void offerWidescreen(bool offered) { g_widescreenOffered.store(offered, std::memory_order_relaxed); }
+    bool widescreenOffered() { return g_widescreenOffered.load(std::memory_order_relaxed); }
+
     std::string texturePackFolder(const std::string &setting)
     {
         if (setting == "off" || setting == "0")
@@ -554,6 +566,7 @@ namespace bozo::app::video
                 "# a pixel, MSAA; PS2X_ANTI_ALIASING). pause_in_background: on (the game held while another window has the focus or\n"
                 "# this one is minimised) or off (it runs on; PS2X_PAUSE_IN_BACKGROUND). fast_forward: the game's speed while\n"
                 "# fast forward is held (input.ini fast_forward; ` by default): 2x .. 10x or unlimited (as fast as the PC goes; PS2X_FAST_FORWARD).\n"
+                "# widescreen: on (a 16:9 picture where the game can show more at the sides; PS2X_WIDESCREEN) or off.\n"
                 "\n[video]\n"
              << "size = " << s.width << "x" << s.height << "\n"
              << "mode = " << modeName(s.mode) << "\n"
@@ -565,7 +578,8 @@ namespace bozo::app::video
              << "texture_smoothing = " << textureSmoothingName(s.textureSmoothing) << "\n"
              << "anti_aliasing = " << antiAliasingName(s.antiAliasing) << "\n"
              << "pause_in_background = " << (s.pauseInBackground ? "on" : "off") << "\n"
-             << "fast_forward = " << fastForwardName(s.fastForward) << "\n";
+             << "fast_forward = " << fastForwardName(s.fastForward) << "\n"
+             << "widescreen = " << (s.widescreen ? "on" : "off") << "\n";
         if (!s.texturePack.empty())
             file << "texture_pack = " << s.texturePack << "\n";
         return static_cast<bool>(file);
