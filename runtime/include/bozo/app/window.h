@@ -79,6 +79,10 @@ namespace bozo::app
     std::string stateSlotSummary(int slot);
     // A short line shown over the game for a few seconds (any thread): a save state's result.
     void notify(const std::string &text);
+    // Any thread (a game's own menu, on the game's thread): the running window's F5 / F7 on `slot` (a save takes its
+    // picture at the next present, as F5). False when no window runs or the game has no save states.
+    bool saveStateSlot(int slot);
+    bool loadStateSlot(int slot);
 
     // Opens the window, runs the game on its own thread (a 256 MB stack: recompiled code nests deeply), presents until
     // the window closes or the game ends, then ends the game and closes. Returns the game's exit code (3 when the

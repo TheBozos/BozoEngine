@@ -71,6 +71,9 @@ host.stateSections()->add({"myport",
 game.saveState = [&](int slot) { host.requestSave(bozo::app::stateSlotPath(slot)); };
 game.loadState = [&](int slot) { host.requestLoad(bozo::app::stateSlotPath(slot)); };
 host.onStateMessage = [](bool, const std::string &m) { bozo::app::notify(m); };
+// A game's own menu (any thread, the game's too): the running window's F5 / F7 on a slot, the save's picture included.
+bozo::app::saveStateSlot(bozo::app::stateSlot());
+bozo::app::loadStateSlot(bozo::app::stateSlot());
 ```
 
 A port's section walks its fields with `bozo::state::fields` (scalars, enums, strings, `std::vector`, `deque`,

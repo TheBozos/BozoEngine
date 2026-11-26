@@ -166,6 +166,9 @@ namespace bozo::app
 
         // A save state's picture is taken at the next present after its save was asked (F5 or the Save states tab).
         std::atomic<int> g_pictureSlot{-1};
+        // The running window's save and load (F5 / F7's), for saveStateSlot / loadStateSlot (a game's own menu).
+        std::mutex g_stateMutex;
+        std::function<void(int)> g_stateSave, g_stateLoad; // under g_stateMutex
 
         // F12's file: <user folder>/screenshots/screenshot_<date>_<time>.png (PS2X_SCREENSHOT_DIR another folder), a
         // number added when two fall in the same second.
@@ -212,6 +215,25 @@ namespace bozo::app
             const char *v = std::getenv(name);
             return v && *v ? std::string(v) : std::string();
         }
+
+        bool stateRequest(const std::function<void(int)> &request, int slot)
+        {
+            if (!request || slot < 0 || slot >= kStateSlots)
+                return false;
+            request(slot);
+            return true;
+        }
+    }
+
+    bool saveStateSlot(int slot)
+    {
+        std::lock_guard lock(g_stateMutex);
+        return stateRequest(g_stateSave, slot);
+    }
+    bool loadStateSlot(int slot)
+    {
+        std::lock_guard lock(g_stateMutex);
+        return stateRequest(g_stateLoad, slot);
     }
 
     int runWindow(const WindowOptions &options, const Game &game, DevicePad *pad)
@@ -278,6 +300,22 @@ namespace bozo::app
         };
         if (game.saveState && game.loadState)
             registerStateTab(saveState, game.loadState);
+        struct StateRequests
+        {
+            StateRequests(std::function<void(int)> save, std::function<void(int)> load)
+            {
+                std::lock_guard lock(g_stateMutex);
+                g_stateSave = std::move(save);
+                g_stateLoad = std::move(load);
+            }
+            ~StateRequests()
+            {
+                std::lock_guard lock(g_stateMutex);
+                g_stateSave = nullptr;
+                g_stateLoad = nullptr;
+            }
+        } stateRequests(game.saveState && game.loadState ? std::function<void(int)>(saveState) : nullptr,
+                        game.saveState && game.loadState ? game.loadState : nullptr);
 
         GameThread thread;
         thread.game = &game;
