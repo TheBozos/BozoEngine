@@ -426,6 +426,30 @@ namespace bozo::libs
         // callback. Returns the bytes taken.
         void demuxOn(Libraries &l, Guest &g, uint32_t bytes);
 
+        // Stream bytes [from, from + n) appended to the pending bytes: read from the ring (in one or two runs, where it
+        // wraps) or from the call's data, a run at a time (a byte at a time took most of a movie's time: the SDK demux
+        // reads again what follows the last whole packet at each call).
+        void appendStream(Guest &g, MpegState &s, uint64_t from, uint32_t n)
+        {
+            if (s.ring)
+            {
+                uint32_t at = static_cast<uint32_t>((from + s.ringBias) % s.ringSize);
+                while (n)
+                {
+                    const uint32_t run = std::min(n, s.ringSize - at);
+                    const uint8_t *p = g.in(s.ring + at, run);
+                    s.pending.insert(s.pending.end(), p, p + run);
+                    n -= run;
+                    at = 0;
+                }
+            }
+            else if (n)
+            {
+                const uint8_t *p = g.in(static_cast<uint32_t>(s.linearBase + from), n);
+                s.pending.insert(s.pending.end(), p, p + n);
+            }
+        }
+
         void demux(Libraries &l, Guest &g)
         {
             MpegState &s = state(l);
@@ -451,15 +475,7 @@ namespace bozo::libs
             uint32_t taken = 0;
             while (taken + 0x800 <= bytes && ahead(s) < s.delivered + l.mpegOptions.picturesAhead)
             {
-                if (s.ring)
-                {
-                    const uint32_t offset = static_cast<uint32_t>((s.consumed + s.ringBias) % s.ringSize);
-                    for (uint32_t k = 0; k < 0x800; ++k)
-                        s.pending.push_back(g.read8(s.ring + (offset + k) % s.ringSize));
-                }
-                else
-                    for (uint32_t k = 0; k < 0x800; ++k)
-                        s.pending.push_back(g.read8(data + taken + k));
+                appendStream(g, s, s.consumed, 0x800);
                 s.consumed += 0x800;
                 taken += 0x800;
                 parse(l, g, s);
@@ -503,10 +519,7 @@ namespace bozo::libs
                 if (s.programEnd || read >= bytes || ahead(s) >= s.delivered + l.mpegOptions.picturesAhead)
                     break;
                 const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(0x800, bytes - read));
-                for (uint32_t k = 0; k < chunk; ++k)
-                    s.pending.push_back(
-                        s.ring ? g.read8(s.ring + static_cast<uint32_t>((s.consumed + k + s.ringBias) % s.ringSize))
-                               : g.read8(static_cast<uint32_t>(s.linearBase + s.consumed + k)));
+                appendStream(g, s, s.consumed, chunk);
                 s.consumed += chunk;
             }
             // A part packet stays in the ring.
