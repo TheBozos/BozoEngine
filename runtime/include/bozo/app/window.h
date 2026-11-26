@@ -74,6 +74,9 @@ namespace bozo::app
     std::string stateSlotPath(int slot);
     // Its picture (slotN.png beside it): the game's picture when it was saved, the Save states tab's thumbnail.
     std::string stateSlotPicturePath(int slot);
+    // Any thread: the window's next frame becomes `slot`'s picture (a save made from a game's own menu, which calls the
+    // port's save itself rather than Game::saveState through F5).
+    void captureStatePicture(int slot);
     constexpr int kStateSlots = 10;
     // "Slot 3: saved 2026-11-18 14:02" or "Slot 3: empty".
     std::string stateSlotSummary(int slot);

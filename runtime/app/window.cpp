@@ -171,7 +171,8 @@ namespace bozo::app
             std::thread m_thread;
         };
 
-        // A save state's picture is taken at the next present after its save was asked (F5 or the Save states tab).
+        // A save state's picture is taken at the next present after its save was asked (F5, the Save states tab or
+        // captureStatePicture).
         std::atomic<int> g_pictureSlot{-1};
 
         std::atomic<float> g_pictureCrop{0.0f}; // setPictureCrop
@@ -225,6 +226,11 @@ namespace bozo::app
 
     void setPictureCrop(float aspect) { g_pictureCrop.store(aspect > 0.0f ? aspect : 0.0f, std::memory_order_relaxed); }
     float pictureCrop() { return g_pictureCrop.load(std::memory_order_relaxed); }
+    void captureStatePicture(int slot)
+    {
+        if (slot >= 0 && slot < kStateSlots)
+            g_pictureSlot.store(slot, std::memory_order_relaxed);
+    }
 
     int runWindow(const WindowOptions &options, const Game &game, DevicePad *pad)
     {
