@@ -86,6 +86,10 @@ namespace bozo::app
     // views are fixed pictures that cannot show more: its HUD is the port's to keep inside the shape shown.
     void setPictureCrop(float aspect);
     float pictureCrop();
+    // The picture's shape changed while the window runs (any thread, live; 0: WindowOptions::aspect again): a port
+    // whose game draws a wider view itself (a widescreen option widening its camera) shows it at that shape, letterboxed.
+    void setPictureAspect(float aspect);
+    float pictureAspect();
 
     // Opens the window, runs the game on its own thread (a 256 MB stack: recompiled code nests deeply), presents until
     // the window closes or the game ends, then ends the game and closes. Returns the game's exit code (3 when the
