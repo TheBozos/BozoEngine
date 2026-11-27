@@ -215,6 +215,11 @@ namespace bozo::libs
         else
             fields(a, m.inputEnded);
         pod(a, m.sound);
+        // A state written before the stream callbacks' entries moved to the work area ends here: none of those waits.
+        if (a.loading() && a.sectionLeft() == 0)
+            m.entriesInUse = 0;
+        else
+            fields(a, m.entriesInUse);
         a.end();
 
         a.begin("sif");

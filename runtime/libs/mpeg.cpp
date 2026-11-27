@@ -176,6 +176,39 @@ namespace bozo::libs
 
         // ---- The demux ----
 
+        // The stream callbacks' entries (MpegState::entriesInUse): the first of the work area's last kEntries x 32 bytes,
+        // or none (0) when the reference's layout is wanted or the work area is too small to give them.
+        uint32_t entryPool(const Libraries &l, const MpegState &s)
+        {
+            constexpr uint32_t bytes = MpegState::kEntries * 0x20u;
+            if (l.mpegOptions.referenceLayout || !s.work || s.size < 4u * bytes)
+                return 0;
+            return (s.work + s.size - bytes) & ~0xFu;
+        }
+
+        // A callback entry: a free one of the work area's, else (the reference's layout, or all of them waiting) 32 bytes
+        // of the game's heap.
+        uint32_t takeEntry(Libraries &l, MpegState &s)
+        {
+            if (const uint32_t pool = entryPool(l, s))
+                for (uint32_t k = 0; k < MpegState::kEntries; ++k)
+                    if (!(s.entriesInUse & (1ull << k)))
+                    {
+                        s.entriesInUse |= 1ull << k;
+                        return pool + 0x20u * k;
+                    }
+            return l.gameHeap().allocate(0x20);
+        }
+
+        void releaseEntry(Libraries &l, MpegState &s, uint32_t entry)
+        {
+            const uint32_t pool = entryPool(l, s);
+            if (pool && entry >= pool && entry < pool + MpegState::kEntries * 0x20u)
+                s.entriesInUse &= ~(1ull << ((entry - pool) / 0x20u));
+            else
+                l.gameHeap().release(entry);
+        }
+
         int64_t timestamp(const uint8_t *b)
         {
             return (static_cast<int64_t>((b[0] >> 1) & 7) << 30) | (static_cast<int64_t>(b[1]) << 22) |
@@ -218,9 +251,9 @@ namespace bozo::libs
             const uint64_t streamAt = at + payload;
             const uint32_t pointer = s.ring ? s.ring + static_cast<uint32_t>((streamAt + s.ringBias) % s.ringSize)
                                             : static_cast<uint32_t>(s.linearBase + streamAt);
-            // The callback's data: 32 bytes from the game's heap, given back as its handler ends (the reference's; its
-            // addresses show where the game's own blocks are).
-            const uint32_t entry = l.gameHeap().allocate(0x20);
+            // The callback's data: 32 bytes given back as its handler ends; from the game's heap with the reference's
+            // layout (its addresses show where the game's own blocks are), else from the work area (takeEntry).
+            const uint32_t entry = takeEntry(l, s);
             uint8_t e[32] = {};
             const uint32_t words[4] = {static_cast<uint32_t>(type), 0, pointer, static_cast<uint32_t>(length)};
             std::memcpy(e, words, 16);
@@ -676,7 +709,7 @@ namespace bozo::libs
         switch (r.kind)
         {
         case kResumeMpegRelease:
-            l.gameHeap().release(r.a[0]);
+            releaseEntry(l, state(l), r.a[0]);
             break;
         case kResumeMpegNodataEnd:
         {
@@ -704,7 +737,7 @@ namespace bozo::libs
             // A stream callback's end (MpegOptions::sdkDemux): a packet taken goes to the decoder or the sound sink; a
             // sound packet refused (0) ends the demux call before it. The demuxing thread is woken either way.
             MpegState &s = state(l);
-            l.gameHeap().release(r.a[1]);
+            releaseEntry(l, s, r.a[1]);
             // The video is the decoder's from the demux: the game's own copy (its IPU input, which nothing drains
             // without an IPU) refusing it does not stop the stream.
             if (g.context()->r[2].uw[0] != 0 || s.heldId == 0xE0)
