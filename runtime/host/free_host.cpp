@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -547,8 +548,41 @@ namespace bozo::host
             const size_t allowed = room > 0.0 ? static_cast<size_t>(room) : 0u;
             if (n > allowed)
             {
-                std::memmove(audio_.data(), audio_.data() + 2u * (n - allowed), 2u * allowed * sizeof(int16_t));
-                leapFrames_ += n - allowed;
+                const size_t surplus = n - allowed;
+                if (allowed > 1u && surplus * 20u <= n)
+                {
+                    // Drift and jitter (the window's frames a hair off the sound card's clock: up to 5 % too much): the
+                    // frame's sound resampled into what is allowed, its first and last samples kept, a pitch change too
+                    // small to hear. Cut instead, a few samples a frame left a click each, every few frames: Amplitude's
+                    // tutorial narration crackled (a steady 800 samples a frame, 1 to 16 of them dropped).
+                    squeezed_.resize(2u * allowed);
+                    const double step = static_cast<double>(n - 1u) / static_cast<double>(allowed - 1u);
+                    for (size_t i = 0; i < allowed; ++i)
+                    {
+                        const double x = static_cast<double>(i) * step;
+                        const size_t k = std::min(static_cast<size_t>(x), n - 1u), k1 = std::min(k + 1u, n - 1u);
+                        const double f = x - static_cast<double>(k);
+                        for (size_t c = 0; c < 2u; ++c)
+                            squeezed_[2u * i + c] = static_cast<int16_t>(std::lround(audio_[2u * k + c] * (1.0 - f) + audio_[2u * k1 + c] * f));
+                    }
+                    std::memcpy(audio_.data(), squeezed_.data(), 2u * allowed * sizeof(int16_t));
+                }
+                else
+                {
+                    // A leap: its surplus skipped where it was made (the newest samples kept), the join cross-faded over
+                    // up to 64 samples from what would have followed the last sound given out.
+                    const size_t skip = surplus, fade = std::min<size_t>({64u, allowed, skip});
+                    for (size_t i = 0; i < fade; ++i)
+                    {
+                        const double t = static_cast<double>(i + 1u) / static_cast<double>(fade + 1u);
+                        for (size_t c = 0; c < 2u; ++c)
+                            audio_[2u * i + c] = static_cast<int16_t>(
+                                std::lround(audio_[2u * i + c] * (1.0 - t) + audio_[2u * (skip + i) + c] * t));
+                    }
+                    std::memmove(audio_.data() + 2u * fade, audio_.data() + 2u * (skip + fade),
+                                 2u * (allowed - fade) * sizeof(int16_t));
+                }
+                leapFrames_ += surplus;
                 n = allowed;
             }
             soundBudget_ -= static_cast<double>(n);

@@ -167,6 +167,7 @@ namespace bozo::host
         // newest kept; returns how many are given.
         size_t holdToHostTime(size_t n);
         std::vector<int16_t> audio_;
+        std::vector<int16_t> squeezed_; // holdToHostTime's resampled frame
         // A field's sound at the mixer's 48 kHz (60 fields a second), and the samples skipped after EE clock leaps in
         // real time (frameSound).
         static constexpr size_t kFieldFrames = 800;
