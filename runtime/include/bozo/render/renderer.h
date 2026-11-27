@@ -266,9 +266,10 @@ namespace bozo::render
         // The overlay's GS coordinates mapped to the window by this screen instead of the frame being built's.
         void publishOverlay(const Screen &screen);
         // A picture under the overlay (a movie frame), at (x, y, width, height) in the screen's GS coordinates; held:
-        // until clearBackdrop or the next one.
+        // until clearBackdrop or the next one. (u, v): the part of the texture that is the picture, from its corner (1, 1:
+        // all of it); a texture rounded up to powers of two (a 640 x 448 picture in a 1024 x 512 one) shows only that.
         void setBackdrop(std::shared_ptr<const Texture> picture, const Screen &screen, float x, float y, float width,
-                         float height, bool held = false);
+                         float height, bool held = false, float u = 1.0f, float v = 1.0f);
         void clearBackdrop();
         void endFrame();
         // Depth a game reads back (TMB's lens flares): asked for with wantDepth, given at a GS screen point as GS Z from

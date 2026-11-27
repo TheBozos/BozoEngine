@@ -415,7 +415,7 @@ namespace bozo::render
     }
 
     void Renderer::setBackdrop(std::shared_ptr<const Texture> picture, const Screen &screen, float x, float y, float width,
-                               float height, bool held)
+                               float height, bool held, float u, float v)
     {
         auto frame = std::make_shared<Frame>();
         frame->screen = screen;
@@ -435,8 +435,8 @@ namespace bozo::render
         {
             corners[i].x = xs[i & 1];
             corners[i].y = ys[i >> 1];
-            corners[i].u = static_cast<float>(i & 1);
-            corners[i].v = static_cast<float>(i >> 1);
+            corners[i].u = static_cast<float>(i & 1) * u;
+            corners[i].v = static_cast<float>(i >> 1) * v;
             corners[i].rgba = 0x80808080u;
             corners[i].fog = 1.0f;
         }
