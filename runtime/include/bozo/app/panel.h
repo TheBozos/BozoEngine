@@ -13,6 +13,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include <cstdint>
 
@@ -27,6 +28,10 @@ namespace bozo::app
     int stateSlot();
     void setStateSlot(int slot);
     void registerStateTab(std::function<void(int)> save, std::function<void(int)> load);
+
+    // The settings window opened on `tab` (empty: the tab it was on), from any thread: taken at the panel's next draw.
+    // For a port whose game's own menus lead to it (Amplitude's PC SETTINGS entry in its Options and pause menus).
+    void requestSettings(const std::string &tab);
 
     class Panel
     {

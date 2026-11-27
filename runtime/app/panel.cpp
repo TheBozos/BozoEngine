@@ -211,11 +211,36 @@ namespace bozo::app
     }
     bool Panel::holdsMouse() const { return impl_->ready && impl_->settings; }
 
+    namespace
+    {
+        // requestSettings: the tab asked for, taken at the panel's next draw.
+        std::mutex g_requestMutex;
+        bool g_requested = false;
+        std::string g_requestedTab;
+    }
+
+    void requestSettings(const std::string &tab)
+    {
+        std::lock_guard<std::mutex> lock(g_requestMutex);
+        g_requested = true;
+        g_requestedTab = tab;
+    }
+
     void Panel::draw()
     {
         Impl &m = *impl_;
         if (!m.ready)
             return;
+        {
+            std::lock_guard<std::mutex> lock(g_requestMutex);
+            if (g_requested)
+            {
+                g_requested = false;
+                m.settings = true;
+                m.focusSettings = true;
+                m.openTab = g_requestedTab;
+            }
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
