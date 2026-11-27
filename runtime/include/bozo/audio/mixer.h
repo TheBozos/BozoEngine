@@ -110,6 +110,10 @@ namespace bozo::audio
         uint32_t inputOffset(int group) const; // the byte the input plays next
         // Clocked: the IOP cycle at which the next input half ends (its half callback), 0 when no input plays.
         uint64_t nextInputHalfCycle() const;
+        // Clocked: the IOP cycle at which the output write-back next reaches an enabled core's IRQ address (its irq
+        // call made), 0 when no IRQ address is in the output areas. A sample-clocked timer's handler (Harmonix's softFX
+        // refills its stream buffers on it) then runs before the mix goes on, as on the console.
+        uint64_t nextOutputIrqCycle() const;
         void setInputHalfCallback(std::function<void(int group, int half)> half);
         // The SPU2's interrupt: a core's IRQ address (SD_A_IRQA) and its enable (SD_CORE_IRQ_ENABLE). Reached by a voice
         // reading the 16-byte block that holds it (a block decoded, a key on) or a transfer writing over it, an enabled

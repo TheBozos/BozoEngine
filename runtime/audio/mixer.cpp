@@ -494,6 +494,25 @@ namespace bozo::audio
         }
         return next;
     }
+    uint64_t Mixer::nextOutputIrqCycle() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_clocked || !m_clockStarted)
+            return 0u;
+        uint64_t next = 0u;
+        for (const Group &group : m_groups)
+        {
+            const uint32_t halfword = (group.irqAddress >> 1u) & 0xFFFFFu;
+            if (!group.irqEnabled || halfword < 0x400u || halfword >= 0x2000u)
+                continue;
+            // Reached once the sample at that position is made (reachOutputIrq, after each sample).
+            const uint32_t left = ((halfword & 0x1FFu) - m_outputPosition) & 0x1FFu;
+            const uint64_t at = (m_samplesMade + left + 1u) * kIopCyclesPerSample;
+            if (next == 0u || at < next)
+                next = at;
+        }
+        return next;
+    }
     void Mixer::setInputHalfCallback(std::function<void(int group, int half)> half)
     {
         std::lock_guard<std::mutex> lock(m_mutex);

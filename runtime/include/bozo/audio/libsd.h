@@ -98,6 +98,12 @@ namespace bozo::audio
 
         // The transfer-end delay (IOP cycles) after a transfer or an input half.
         static constexpr uint32_t kTransferDelay = 2000u;
+        // The SPU2 interrupt's handler runs this long (IOP cycles: 32 samples, 0.67 ms) after the IRQ address is
+        // reached: the IOP's response and its driver's work before what it does lands. Harmonix's softFX points the IRQ
+        // 8 samples before the end of the input half it then refills: run at once (the IOP's work takes no time here),
+        // its transfer landed 2 samples before that half had played, its tail the next half's samples, a click at
+        // every half; on the console its software mix of the half takes far longer than those 8 samples.
+        static constexpr uint32_t kIrqResponse = 32u * 768u;
         void serialize(state::Archive &a); // the settings and callbacks (audio_state.cpp)
 
     private:

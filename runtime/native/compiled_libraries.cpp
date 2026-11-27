@@ -667,6 +667,13 @@ namespace bozo::native::irx
                     next = std::max(half, cycle);
                     due = true;
                 }
+                // And at the output write-back's IRQ address: its handler's work (a stream buffer refilled) is done
+                // before the mix reads on, not after a whole frame's mix.
+                if (const uint64_t irq = mixer.nextOutputIrqCycle(); irq != 0 && irq < next)
+                {
+                    next = std::max(irq, cycle);
+                    due = true;
+                }
                 cycle = next;
                 mixer.advanceTo(cycle);
                 if (!due)
