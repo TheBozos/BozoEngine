@@ -297,8 +297,26 @@ namespace bozo::libs
         // sceGsSyncV(mode): the game waits for the next vblank, and the game frame ends there. The reference returns
         // 1 when the frames ended by then (this one included) are odd, 0 when even: settled on all of boot's 8 and
         // match1p's 2,290 calls. The wait and the frame end are the runtime's frame boundary.
+        // With Libraries::syncVWaitsForVblank, the wait is the console's: the EE clock goes on to the next vblank's
+        // start, and the result is that field's parity (the vblanks started by then, odd or even).
         void syncV(Libraries &l, Guest &g)
         {
+            if (l.syncVWaitsForVblank && l.dispatcher())
+            {
+                const ee::Kernel &k = l.dispatcher()->kernel();
+                const uint64_t now = l.now(g) + g.cycles, field = k.field();
+                uint64_t next = k.nextVblankStart();
+                uint32_t vblanks = 1; // the vblank waited for, and those passed but not yet taken
+                while (field && next <= now)
+                {
+                    next += field;
+                    ++vblanks;
+                }
+                if (next > now)
+                    g.cycles += next - now;
+                g.ret(static_cast<int32_t>((k.vblankCount() + vblanks) & 1u));
+                return;
+            }
             g.ret(static_cast<int32_t>((l.framesEnded + 1u) & 1u));
         }
     }

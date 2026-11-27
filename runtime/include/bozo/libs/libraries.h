@@ -267,6 +267,12 @@ namespace bozo::libs
         // The console's own video standard: what sceGsResetGraph's video mode 0 ("the console's") means. A port sets
         // PAL for a PAL disc (its SYSTEM.CNF says VMODE = PAL); Shinobido asks for mode 0 and runs at 50 Hz.
         bool palConsole = false;
+        // sceGsSyncV waits for the next vblank as the console's does, and returns that field's parity. Off (the
+        // reference's): it ends the game frame at once, the frame then held to the host's frame period, and returns
+        // the parity of the frames ended. For a game that paces itself on the EE's timers and then waits for the vblank
+        // (Amplitude's movie player: 500 hblanks, then sceGsSyncV, two fields a picture), where a frame end held to the
+        // period after one the port ended just before costs a whole field.
+        bool syncVWaitsForVblank = false;
         SifState sif;
         TimerState timers;
         SndDriver snd;
