@@ -19,6 +19,8 @@ namespace bozo::libs
         constexpr uint32_t kFieldsPerPicture = 2; // TMB's movies: 29.97 pictures a second, two fields each
         constexpr uint32_t kCbNodata = 1;          // sceMpegAddCallback type
         constexpr uint32_t kStrVideo = 0, kStrPcm = 2; // sceMpegAddStrCallback types
+        // A demux call after a refused sound packet: 0.2 ms of the EE (the console's player spends at least that a turn).
+        constexpr uint64_t kRefusedDemuxCycles = 294912000u / 5000u;
 
         MpegState &state(Libraries &l) { return l.mpeg; }
 
@@ -467,6 +469,12 @@ namespace bozo::libs
                 s.linearBase = data - s.consumed;
             if (l.mpegOptions.sdkDemux)
             {
+                // A demux call after one a sound packet's callback refused (the game's sound ring full) costs EE time:
+                // on the console the player's turn between them (the demux, the IPU's decoding) takes some, here none,
+                // and a player spinning until its sound thread makes room called the callback about 9,000 times a
+                // field (Shinobido's movies ran at 60% speed, the host's time spent in the handlers).
+                if (s.refused)
+                    g.cycles = l.callCycles(kRefusedDemuxCycles);
                 s.callAt = s.consumed;
                 s.refused = false;
                 demuxOn(l, g, bytes);
