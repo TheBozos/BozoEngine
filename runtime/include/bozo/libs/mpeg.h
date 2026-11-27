@@ -135,6 +135,11 @@ namespace bozo::libs
             uint32_t entry = 0;
         };
         std::vector<DueCallback> callbacksDue;
+        // The stream callbacks' 32-byte entries without the reference's layout: kEntries of them at the end of the work
+        // area the game gave sceMpegCreate (libmpeg's own memory, which the game never reads), bit k set while entry k
+        // waits for its handler's end. Nothing is taken from the game's heap, where a game's own allocator works.
+        static constexpr uint32_t kEntries = 64;
+        uint64_t entriesInUse = 0;
         // MpegOptions::sdkDemux: the call's first stream byte, and the packet whose callback runs (where it begins,
         // its stream, its payload and time stamp), given to the decoder or the sound sink once the callback took it.
         uint64_t callAt = 0;
