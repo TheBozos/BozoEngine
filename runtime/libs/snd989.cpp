@@ -2853,9 +2853,19 @@ namespace bozo::libs::snd989
         for (auto it = I.banks.begin(); it != I.banks.end(); ++it)
             if ((*it)->address == address)
             {
+                Impl::Bank *b = it->get();
+                // The bank's sounds still playing stop first, at once (as StopAllSounds stops each): the driver's
+                // unload does, and a match's music, played from its bank, otherwise went on over the menus after the
+                // match was quit (TMB: the level's banks unloaded on leaving, no StopAllSounds sent).
+                for (Impl::Handler *h = I.hHead; h;)
+                {
+                    Impl::Handler *next = h->next;
+                    if (h->bank == b)
+                        I.stopHandler(h, true);
+                    h = next;
+                }
                 if ((*it)->spu)
                     I.spuFree((*it)->spu, (*it)->spuBytes);
-                Impl::Bank *b = it->get();
                 std::erase_if(I.blocks, [&](const Impl::Block &k) { return k.owner == b; });
                 I.retired.push_back(std::move(*it));
                 I.banks.erase(it);
