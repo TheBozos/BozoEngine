@@ -36,6 +36,15 @@ namespace bozo::host
         if (registry)
         {
             vu0Programs_ = registry->vu0Programs();
+            vu0ByPair_.clear();
+            for (const BozoFunctionEntry &e : vu0Programs_)
+                if (e.address % 8u == 0 && e.address < kVu0TableBytes)
+                {
+                    if (vu0ByPair_.empty())
+                        vu0ByPair_.assign(kVu0TableBytes / 8u, nullptr);
+                    if (!vu0ByPair_[e.address / 8u])
+                        vu0ByPair_[e.address / 8u] = e.function;
+                }
             vu0Code_ = registry->vu0CodeMemory();
             transfersAlwaysDone_ = registry->transfersAreAlwaysDone();
             d.setSyncVAtVblank(registry->syncVCallbackIsAtVblank());
@@ -272,6 +281,12 @@ namespace bozo::host
     void FreeHost::vu0Microprogram(ee::Dispatcher &, R5900Context *ctx, uint32_t address)
     {
         ++stats_.vu0Calls;
+        if (address % 8u == 0 && address < kVu0TableBytes && !vu0ByPair_.empty())
+            if (const RecompiledFunction f = vu0ByPair_[address / 8u])
+            {
+                f(d_->runtime().memory.ram(), ctx, &d_->runtime());
+                return;
+            }
         if (!vu0Programs_.empty())
         {
             for (const BozoFunctionEntry &e : vu0Programs_)

@@ -151,6 +151,10 @@ namespace bozo::host
         port::InstructionHandler instructionHandler_ = nullptr;
         bool transfersAlwaysDone_ = false;
         std::vector<BozoFunctionEntry> vu0Programs_;
+        // The port's VU0 programs by pair (VCALLMS targets in the 16 KB a micro memory can hold), found without a search:
+        // a game can call thousands a frame.
+        static constexpr uint32_t kVu0TableBytes = 0x4000u;
+        std::vector<RecompiledFunction> vu0ByPair_;
         uint8_t *vu0Code_ = nullptr; // port::Registry::vu0CodeMemory
         void runOverride(R5900Context *ctx, uint32_t target, port::Function fn);
         // Ends the run when no frame ended for opt_.stallFields fields (a wait that never ends), saying where.
