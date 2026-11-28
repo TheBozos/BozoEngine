@@ -486,7 +486,7 @@ namespace bozo::audio
     {
         const Callback &handler = m_state.spu2Handler;
         if (handler.function != 0u)
-            m_host.interruptCall(handler.function, 1u << core, handler.argument, handler.gp, kTransferDelay);
+            m_host.interruptCall(handler.function, 1u << core, handler.argument, handler.gp, kIrqResponse);
     }
 
     uint32_t Libsd::setIrqCallback(uint32_t function)
